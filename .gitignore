@@ -1,0 +1,6 @@
+# kişisel medya — asla depoya girmesin
+*.mp4
+*.mov
+# üretilen paketler
+*.zip
+*.pdf

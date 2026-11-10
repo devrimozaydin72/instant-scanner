@@ -301,9 +301,26 @@ function robustQuad(xs, ys, n){
   return quad;
 }
 
-/* ten rengi: kırmızı kitap kapağını (g çok düşük) dışarıda bırakır */
+/* ten rengi (ham): kırmızı kitap kapağını (g çok düşük) dışarıda bırakır */
 function isSkin(r, g, b){
   return r-g > 18 && r-b > 38 && r > 60 && g > r*0.42;
+}
+/* kağıt rengine göre ten testi. Sarı/sıcak ışıkta krem kağıdın kendisi ham
+   testten geçer → önce kağıt nötr beyaza dengelenir; ten ayrıca kağıttan
+   belirgin koyu olmalıdır. pc: kağıt rengi [r,g,b] */
+function skinRef(pc){
+  const pm = Math.max(pc[0], pc[1], pc[2], 1);
+  return {wr: pm/Math.max(pc[0],1), wg: pm/Math.max(pc[1],1), wb: pm/Math.max(pc[2],1),
+          L: 0.299*pc[0]+0.587*pc[1]+0.114*pc[2]};
+}
+function isSkinRef(r, g, b, ref){
+  const l = 0.299*r+0.587*g+0.114*b;
+  if(l > ref.L*0.93) return false;                 // ten kağıttan koyudur
+  const R = r*ref.wr, Gg = g*ref.wg, B = b*ref.wb; // kağıt = nötr
+  if(R < 60) return false;
+  // ten: kağıda göre belirgin kırmızımsı-turuncu, r > g ≥ b sıralı;
+  // kırmızı kitap kapağı (g çok düşük) hariç
+  return (R-Gg)/R > 0.085 && (R-B)/R > 0.14 && Gg > R*0.45 && B < Gg*1.06;
 }
 
 /* ============================================================
@@ -340,7 +357,14 @@ function detectPageData(px, sw, sh, W, H){
     }
     if(c1-c0 > 18){
       const mid=(c0+c1)/2;
-      for(let i=0;i<N;i++) if(mask[i] && warm[i] <= mid) mask[i]=0;
+      // soğuk küme karenin ortasını kaplıyorsa sayfanın kendisidir (gün ışığı /
+      // karışık ışık) → ayırma yapma; ekran hep arka planda, kenardadır
+      let cm=0, cc=0;
+      for(let y=(sh*0.3)|0; y<(sh*0.7)|0; y++) for(let x=(sw*0.3)|0; x<(sw*0.7)|0; x++){
+        const i=y*sw+x; if(mask[i]){ cm++; if(warm[i] <= mid) cc++; }
+      }
+      if(!cm || cc/cm < 0.25)
+        for(let i=0;i<N;i++) if(mask[i] && warm[i] <= mid) mask[i]=0;
     }
   }
   // 3) DİKEY kapama: metin bantlarını köprüler, sırt çizgisini korur
@@ -419,15 +443,19 @@ function detectPageData(px, sw, sh, W, H){
     let k=0; for(let j=1;j<4;j++) if(dB[j]<dB[k]) k=j;
     if(dB[k] < tol || tf[k] > 0.15) res.clipped[e] = true;
   }
-  // ten (parmak/el): dörtgen içinde, iç bölgede ayrıca
+  // ten (parmak/el): dörtgen içinde, iç bölgede ayrıca — kağıt rengine göre
   {
+    const rs=[], gs=[], bs=[];
+    for(let i=0;i<N;i+=2) if(comp[i]){ rs.push(px[i*4]); gs.push(px[i*4+1]); bs.push(px[i*4+2]); }
+    const ref = skinRef(rs.length ? [quantile(rs,0.6), quantile(gs,0.6), quantile(bs,0.6)] : [235,235,235]);
+    res.paper = ref;
     let inQ=0, sk=0, inI=0, skI=0;
     const qi = quadS.map(([x,y]) => [cx + (x-cx)*0.78, cy + (y-cy)*0.78]);
     const x0=Math.max(0,Math.floor(Math.min(...quadS.map(p=>p[0])))), x1=Math.min(sw-1,Math.ceil(Math.max(...quadS.map(p=>p[0]))));
     const y0=Math.max(0,Math.floor(Math.min(...quadS.map(p=>p[1])))), y1=Math.min(sh-1,Math.ceil(Math.max(...quadS.map(p=>p[1]))));
     for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
       if(!inQuad(quadS, x+0.5, y+0.5)) continue;
-      const i=(y*sw+x)*4, s = isSkin(px[i],px[i+1],px[i+2]) ? 1 : 0;
+      const i=(y*sw+x)*4, s = isSkinRef(px[i],px[i+1],px[i+2],ref) ? 1 : 0;
       inQ++; sk+=s;
       if(inQuad(qi, x+0.5, y+0.5)){ inI++; skI+=s; }
     }
@@ -1081,37 +1109,7 @@ function enhanceRGBA(d, w, h, mode){
   sharpenRGB(d, w, h, mode==='doc' ? 0.15 : 0.35);
 }
 
-/* ---------- parmak tespiti ve silme ---------- */
-function fingerMask(d, w, h){
-  const bh=(h*0.24)|0, bw=(w*0.24)|0;
-  const mask=new Uint8Array(w*h); let any=false;
-  for(let y=0;y<h;y++){
-    const inY = y<bh || y>=h-bh;
-    for(let x=0;x<w;x++){
-      if(!inY && x>=bw && x<w-bw) continue;
-      const i=(y*w+x)*4;
-      if(isSkin(d[i],d[i+1],d[i+2])){ mask[y*w+x]=1; any=true; }
-    }
-  }
-  if(!any) return null;
-  const L = labelComponents(mask, w, h);
-  const touches = new Uint8Array(L.count+1);
-  for(let x=0;x<w;x++) for(const y of [0,1,2,3,h-4,h-3,h-2,h-1]){ const l=L.labels[y*w+x]; if(l) touches[l]=1; }
-  for(let y=0;y<h;y++) for(const x of [0,1,2,3,w-4,w-3,w-2,w-1]){ const l=L.labels[y*w+x]; if(l) touches[l]=1; }
-  const minSize = Math.max(30, w*h*0.0006);
-  const keep=new Uint8Array(w*h); let found=false;
-  for(let i=0;i<w*h;i++){ const l=L.labels[i]; if(l && touches[l] && L.sizes[l]>=minSize){ keep[i]=1; found=true; } }
-  return found ? keep : null;
-}
-function featherMask(m, w, h, grow){
-  let mm=m;
-  for(let k=0;k<grow;k++) mm=dilate1(mm, w, h);
-  const f=new Float32Array(w*h);
-  for(let i=0;i<w*h;i++) f[i]=mm[i];
-  const a=boxBlur(f, w, h, Math.max(2, grow>>1), 2);
-  for(let i=0;i<w*h;i++) a[i]=Math.min(1, a[i]*1.4);
-  return a;
-}
+/* ---------- kağıt rengi ---------- */
 function paperColor(d, w, h){
   const rs=[],gs=[],bs=[];
   const step = Math.max(1, ((w*h)/40000)|0);
@@ -1287,14 +1285,18 @@ function processCanvas(src, opts){
   const paperL = 0.299*paperRaw[0]+0.587*paperRaw[1]+0.114*paperRaw[2];
   let fillQ = null, fingerQ = null;
   if(opts.smartCrop){
-    // a) sayfa maskesi dışında kalan VE kağıda benzemeyen (koyu/mavimsi/ten) bölgeler
+    // a) sayfa maskesi dışında kalan VE kağıda benzemeyen (koyu/mavimsi/ten) bölgeler.
+    //    Renkler kağıda göre dengelenir (sarı/mavi ışıkta kağıt "ten" ya da "ekran" sanılmasın)
+    const localPaper = localPaperGrid(qRaw, qw, qh);
     const cand = new Uint8Array(qw*qh);
     const comp = det && det.ok ? det.compFilled : null;
     for(let qy=0; qy<qh; qy++) for(let qx=0; qx<qw; qx++){
       const i = qy*qw+qx, j = i*3;
       const r=qRaw[j], gg=qRaw[j+1], b=qRaw[j+2], l=0.299*r+0.587*gg+0.114*b;
-      const skin = isSkin(r,gg,b);
-      const notPaper = l < paperL*0.55 || skin || (b - r > 12 && l < paperL*0.9);
+      const ref = skinRef(localPaper(qx+0.5, qy+0.5));
+      const skin = isSkinRef(r,gg,b,ref);
+      const blueish = b*ref.wb - r*ref.wr > 18 && l < ref.L*0.85;
+      const notPaper = skin || (comp && (l < paperL*0.5 || blueish));
       if(!notPaper) continue;
       let outsideComp = true;
       if(comp){
@@ -1314,17 +1316,34 @@ function processCanvas(src, opts){
     for(let qx=0;qx<qw;qx++){ touch[LC.labels[qx]]=1; touch[LC.labels[(qh-1)*qw+qx]]=1; }
     for(let qy=0;qy<qh;qy++){ touch[LC.labels[qy*qw]]=1; touch[LC.labels[qy*qw+qw-1]]=1; }
     for(let i=0;i<qw*qh;i++) if(cand[i]===2) skinCnt[LC.labels[i]]++;
+    // bileşen başına doku: parmak/zemin düzdür, yazı satır satır değişir
+    const Lq = new Float32Array(qw*qh);
+    for(let i=0;i<qw*qh;i++) Lq[i]=0.299*qRaw[i*3]+0.587*qRaw[i*3+1]+0.114*qRaw[i*3+2];
+    const texS = new Float32Array(LC.count+1), texN = new Int32Array(LC.count+1);
+    for(let y=1;y<qh-1;y++) for(let x=1;x<qw-1;x++){
+      const i=y*qw+x, l=LC.labels[i];
+      if(!l) continue;
+      texS[l] += Math.abs(Lq[i+qw]-Lq[i-qw]) + Math.abs(Lq[i+1]-Lq[i-1]);
+      texN[l]++;
+    }
+    const textured = l => texN[l] > 8 && texS[l]/texN[l] > paperL*0.11;
     const minF = Math.max(6, qw*qh*0.0008);
     fillQ = new Uint8Array(qw*qh); fingerQ = new Uint8Array(qw*qh);
     let anyF=false, anyFi=false;
     for(let i=0;i<qw*qh;i++){
       const l = LC.labels[i];
       if(!l || !touch[l]) continue;
+      if(skinCnt[l] > LC.sizes[l]*0.3 && textured(l)) continue;   // yazı olabilir → dokunma
       fillQ[i]=1; anyF=true;
       if(skinCnt[l] >= minF && skinCnt[l] > LC.sizes[l]*0.3){ fingerQ[i]=1; anyFi=true; }
     }
     if(!anyF) fillQ = null;
     if(!anyFi) fingerQ = null;
+    // güvenlik: büyük alan silinecekse bir şeyler ters gidiyordur → hiç silme
+    if(fillQ){
+      let nf=0; for(let i=0;i<qw*qh;i++) nf+=fillQ[i];
+      if(nf > qw*qh*0.2){ dbg.push(`doldurma iptal (%${(nf*100/(qw*qh))|0})`); fillQ = null; fingerQ = null; }
+    }
   }
   T('maske');
   // 6) iyileştirme, ardından zemin/parmak bölgelerini kağıtla doldur
@@ -1385,6 +1404,51 @@ function shrinkRGB(d, w, h, Q){
   }
   for(let i=0;i<qw*qh;i++){ const n=c[i]||1; o[i*3]/=n; o[i*3+1]/=n; o[i*3+2]/=n; }
   return o;
+}
+/* yerel kağıt rengi: sayfa 6×8 hücreye bölünür; her hücrede en parlak %15'in
+   ortalaması alınır, sonra komşular içinden en parlağı seçilir (parmağın
+   kapladığı hücre kendi rengini "kağıt" sanmasın). Karışık ışıkta (bir yanı
+   sarı lamba, öbür yanı gün ışığı) ten testi her bölgede kendi kağıdına göre yapılır. */
+function localPaperGrid(q, qw, qh){
+  const GX = 6, GY = 8, cw = qw/GX, ch = qh/GY;
+  const cells = new Float32Array(GX*GY*4);          // r, g, b, L
+  for(let cy=0; cy<GY; cy++) for(let cx=0; cx<GX; cx++){
+    const x0=Math.floor(cx*cw), x1=Math.max(x0+1, Math.floor((cx+1)*cw));
+    const y0=Math.floor(cy*ch), y1=Math.max(y0+1, Math.floor((cy+1)*ch));
+    const ls=[];
+    for(let y=y0;y<y1;y++) for(let x=x0;x<x1;x++){ const j=(y*qw+x)*3; ls.push(0.299*q[j]+0.587*q[j+1]+0.114*q[j+2]); }
+    const t = quantile(ls, 0.85);
+    let r=0,g=0,b=0,n=0;
+    for(let y=y0;y<y1;y++) for(let x=x0;x<x1;x++){
+      const j=(y*qw+x)*3, l=0.299*q[j]+0.587*q[j+1]+0.114*q[j+2];
+      if(l>=t){ r+=q[j]; g+=q[j+1]; b+=q[j+2]; n++; }
+    }
+    const k=(cy*GX+cx)*4; n=n||1;
+    cells[k]=r/n; cells[k+1]=g/n; cells[k+2]=b/n; cells[k+3]=0.299*r/n+0.587*g/n+0.114*b/n;
+  }
+  const best = new Float32Array(cells.length);
+  for(let cy=0; cy<GY; cy++) for(let cx=0; cx<GX; cx++){
+    let bk=(cy*GX+cx)*4;
+    for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){
+      const yy=cy+dy, xx=cx+dx;
+      if(yy<0||yy>=GY||xx<0||xx>=GX) continue;
+      const k=(yy*GX+xx)*4;
+      // kendi hücresi kağıda yakınsa kendisi; değilse komşulardan en parlak
+      if(cells[k+3] > cells[bk+3]*1.12) bk=k;
+    }
+    const o=(cy*GX+cx)*4;
+    best[o]=cells[bk]; best[o+1]=cells[bk+1]; best[o+2]=cells[bk+2]; best[o+3]=cells[bk+3];
+  }
+  return (x, y) => {
+    const fx=Math.max(0, Math.min(GX-1.001, x/cw-0.5)), fy=Math.max(0, Math.min(GY-1.001, y/ch-0.5));
+    const x0=fx|0, y0=fy|0, tx=fx-x0, ty=fy-y0;
+    const out=[0,0,0];
+    for(let c=0;c<3;c++){
+      const a=best[(y0*GX+x0)*4+c], b2=best[(y0*GX+x0+1)*4+c], c2=best[((y0+1)*GX+x0)*4+c], d=best[((y0+1)*GX+x0+1)*4+c];
+      out[c]=(a*(1-tx)+b2*tx)*(1-ty)+(c2*(1-tx)+d*tx)*ty;
+    }
+    return out;
+  };
 }
 function paperColorQ(q, n){
   const rs=[],gs=[],bs=[];

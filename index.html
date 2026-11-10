@@ -491,6 +491,13 @@ const CROP = 256;               // netlik ölçümü için merkezdeki doğal ç�
 const DUP_T = 11, NEW_T = 24;   // sayfa imzası farkı eşikleri
 const TURN_SUM = 60;           // sayfa çevirme sayılacak birikmiş hareket
 
+/* çerçeve anlamlı mı: sayfa gerçekten bulunmuş (kareyi neredeyse tamamen
+   kaplamıyor, en çok 2 kenarı kadraj dışında) */
+function meaningfulQuad(det){
+  if(!det || !det.ok || !det.quad) return false;
+  const nClip = det.clipped.filter(Boolean).length;
+  return nClip <= 2 && det.area < 0.9;
+}
 class FrameScanner {
   constructor(o){
     this.o = Object.assign({live:false, stableMs:250, maxSide:200}, o);
@@ -596,7 +603,7 @@ class FrameScanner {
     if(this.o.live && run.best){
       const b = run.best, gateOk = this.gateOk(b.det);
       res.gate = gateOk;
-      if(!run.emitted && dur*1000 >= this.o.stableMs && (gateOk || dur*1000 >= this.o.stableMs + 1300)){
+      if(!run.emitted && dur*1000 >= this.o.stableMs && (gateOk || dur*1000 >= this.o.stableMs + 400)){
         res.captured = this.emit(b, null);
         run.emitted = true; run.emitScore = b.score; run.emitId = res.captured && res.captured.id;
         run.fresh = false;
@@ -611,7 +618,7 @@ class FrameScanner {
   /* canlıda çekimden önce: sayfa tam görünüyor mu, parmak yazı üstünde mi */
   gateOk(det){
     if(!det || !det.ok) return false;
-    if(det.clipped.some(Boolean)) return false;
+    if(meaningfulQuad(det) && det.clipped.some(Boolean)) return false;
     if(det.skinInner > 0.012) return false;
     return true;
   }
@@ -1018,7 +1025,7 @@ const cam = {
     else if(performance.now() - this.lastHintT < 700){ txt = null; }
     else if(r.state === 'moving') txt = this.retake ? 'Sayfayı göster…' : 'Sayfayı çevir…';
     else if(!r.det || !r.det.ok) txt = 'Sayfayı kadraja al';
-    else if(r.det.clipped.some(Boolean)){ txt = 'Sayfanın tamamı görünsün — biraz uzaklaş'; cls = 'warn'; }
+    else if(meaningfulQuad(r.det) && r.det.clipped.some(Boolean)){ txt = 'Sayfanın tamamı görünsün — biraz uzaklaş'; cls = 'warn'; }
     else if(r.det.skinInner > 0.012){ txt = 'Parmağını yazının üstünden çek'; cls = 'warn'; }
     else if(this.scanner.run && this.scanner.run.emitted) { txt = '✓ Çekildi — sonraki sayfa'; cls = 'ok'; }
     else txt = 'Sabit…';
@@ -1032,27 +1039,33 @@ const cam = {
     const x = ov.getContext('2d');
     x.clearRect(0, 0, W, H);
     const det = r.det;
-    if(!det || !det.quad || !v.videoWidth) return;
+    if(!meaningfulQuad(det) || !v.videoWidth) return;      // anlamsız dikdörtgen gösterme
     // object-fit: contain eşlemesi
     const s = Math.min(W/v.videoWidth, H/v.videoHeight);
     const ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
-    const ok = det.ok && !det.clipped.some(Boolean) && det.skinInner <= 0.012;
+    const P = det.quad.map(p => [ox + p[0]*s, oy + p[1]*s]);
     const run = this.scanner.run;
+    const captured = run && run.emitted;
+    const warn = det.clipped.some(Boolean) || det.skinInner > 0.012;
+    const col = captured ? '#39d98a' : (warn ? '#ffb020' : '#4f8cff');
+    // hafif dolgu + ince kenar
+    x.fillStyle = captured ? '#39d98a30' : '#4f8cff14';
+    x.strokeStyle = col + 'aa'; x.lineWidth = 2;
+    x.beginPath(); P.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath(); x.fill(); x.stroke();
+    // köşe işaretleri (sayfa yakalandı hissi)
+    x.strokeStyle = col; x.lineWidth = 6; x.lineCap = 'round';
+    for(let i=0;i<4;i++){
+      const a = P[i], b = P[(i+1)%4], c = P[(i+3)%4];
+      const L = 0.16;
+      x.beginPath();
+      x.moveTo(a[0] + (b[0]-a[0])*L, a[1] + (b[1]-a[1])*L);
+      x.lineTo(a[0], a[1]);
+      x.lineTo(a[0] + (c[0]-a[0])*L, a[1] + (c[1]-a[1])*L);
+      x.stroke();
+    }
+    // sabitlik ilerlemesi (¼ sn)
     const prog = run && r.state === 'still' ? Math.min(1, r.dur*1000/settings.stableMs) : 0;
-    x.lineWidth = 4;
-    x.strokeStyle = !det.ok ? '#ff5c7a' : (ok ? (run && run.emitted ? '#39d98a' : '#4f8cff') : '#ffb020');
-    x.fillStyle = (run && run.emitted) ? '#39d98a33' : '#4f8cff1a';
-    x.beginPath();
-    det.quad.forEach((p, i) => { const px = ox + p[0]*s, py = oy + p[1]*s; i ? x.lineTo(px, py) : x.moveTo(px, py); });
-    x.closePath(); x.fill(); x.stroke();
-    // kadraj dışına taşan kenarları kırmızı çiz
-    x.strokeStyle = '#ff5c7a'; x.lineWidth = 7;
-    det.clipped.forEach((c, e) => {
-      if(!c) return;
-      const a = det.quad[e], b = det.quad[(e+1)%4];
-      x.beginPath(); x.moveTo(ox+a[0]*s, oy+a[1]*s); x.lineTo(ox+b[0]*s, oy+b[1]*s); x.stroke();
-    });
-    if(prog > 0 && prog < 1 && !(run && run.emitted)){
+    if(prog > 0 && prog < 1 && !captured){
       x.fillStyle = '#fff'; x.fillRect(W*0.3, H-10, W*0.4*prog, 5);
     }
   },

@@ -1,7 +1,7 @@
 {
-  "name": "INSTANT SCANNER — Videodan PDF",
+  "name": "INSTANT SCANNER — Kitaptan PDF",
   "short_name": "INSTANT SCANNER",
-  "description": "Kitap sayfalarını videoyla çek, otomatik olarak PDF'e dönüştür.",
+  "description": "Kitap ve notları canlı tarayarak saniyeler içinde düzgün PDF'e çevir.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

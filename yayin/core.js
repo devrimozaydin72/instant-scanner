@@ -1,0 +1,1594 @@
+/* ============================================================
+   INSTANT SCANNER — çekirdek görüntü işleme
+   Hem ana iş parçacığında (<script src="core.js">) hem de
+   Web Worker içinde (new Worker('core.js')) çalışır.
+   Harici kütüphane yok; her şey cihazda.
+   ============================================================ */
+(function(G){
+'use strict';
+const IN_WORKER = typeof document === 'undefined';
+
+/* ---------- tuval yardımcıları ---------- */
+function mkCanvas(w, h){
+  w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
+  if(IN_WORKER) return new OffscreenCanvas(w, h);
+  const c = document.createElement('canvas'); c.width = w; c.height = h; return c;
+}
+function ctx2d(c){ return c.getContext('2d', {willReadFrequently:true}); }
+function canvasToBlob(c, type, q){
+  if(typeof c.convertToBlob === 'function') return c.convertToBlob({type, quality:q});
+  return new Promise(res => c.toBlob(res, type, q));
+}
+function imgData(c){ return ctx2d(c).getImageData(0, 0, c.width, c.height); }
+function putRGBA(d, w, h){
+  const c = mkCanvas(w, h), x = ctx2d(c);
+  const id = x.createImageData(w, h); id.data.set(d); x.putImageData(id, 0, 0);
+  return c;
+}
+
+/* ---------- temel ölçümler ---------- */
+function grayOf(d, n){
+  const g = new Float32Array(n);
+  for(let i=0;i<n;i++){ const j=i*4; g[i] = 0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]; }
+  return g;
+}
+function toGray(id){ return grayOf(id.data, id.width*id.height); }
+function mean(a){ let s=0; for(let i=0;i<a.length;i++) s+=a[i]; return s/a.length; }
+function lapVar(g, w, h){
+  let sum=0, sum2=0, n=0;
+  for(let y=1;y<h-1;y++){
+    const r=y*w;
+    for(let x=1;x<w-1;x++){
+      const i=r+x, v = 4*g[i]-g[i-1]-g[i+1]-g[i-w]-g[i+w];
+      sum+=v; sum2+=v*v; n++;
+    }
+  }
+  const m=sum/n; return sum2/n - m*m;
+}
+function quantile(arr, q){
+  const a = Float32Array.from(arr).sort();
+  return a.length ? a[Math.min(a.length-1, Math.max(0, (a.length*q)|0))] : 0;
+}
+function boxBlur(src, w, h, r, iter){
+  let a = src, b = new Float32Array(src.length);
+  const k = 2*r+1;
+  for(let it=0; it<iter; it++){
+    for(let y=0;y<h;y++){
+      const row=y*w; let s=0;
+      for(let x=-r;x<=r;x++) s += a[row + Math.min(w-1, Math.max(0,x))];
+      for(let x=0;x<w;x++){
+        b[row+x] = s/k;
+        s += a[row + Math.min(w-1, x+r+1)] - a[row + Math.max(0, x-r)];
+      }
+    }
+    for(let x=0;x<w;x++){
+      let s=0;
+      for(let y=-r;y<=r;y++) s += b[Math.min(h-1, Math.max(0,y))*w + x];
+      for(let y=0;y<h;y++){
+        a[y*w+x] = s/k;
+        s += b[Math.min(h-1, y+r+1)*w + x] - b[Math.max(0, y-r)*w + x];
+      }
+    }
+  }
+  return a;
+}
+/* Chrome'da tek adımda büyük küçültme örtüşme (aliasing) yapar;
+   kademeli yarıya indirerek gerçek alan ortalaması elde ederiz */
+function downscale(src, tw, th){
+  const sw0 = src.videoWidth || src.width, sh0 = src.videoHeight || src.height;
+  let cur = src, cw = sw0, ch = sh0;
+  while(cw > tw*2 && ch > th*2){
+    const nw = Math.max(tw, Math.ceil(cw/2)), nh = Math.max(th, Math.ceil(ch/2));
+    const c = mkCanvas(nw, nh), x = ctx2d(c);
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+    x.drawImage(cur, 0, 0, nw, nh);
+    cur = c; cw = nw; ch = nh;
+  }
+  const c = mkCanvas(tw, th), x = ctx2d(c);
+  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+  x.drawImage(cur, 0, 0, tw, th);
+  return c;
+}
+
+/* ---------- geometri ---------- */
+function otsu(g){
+  const hist = new Float64Array(256);
+  for(let i=0;i<g.length;i++) hist[Math.max(0, Math.min(255, g[i]|0))]++;
+  const total = g.length;
+  let sum=0; for(let i=0;i<256;i++) sum += i*hist[i];
+  let sumB=0, wB=0, best=0, thr=127;
+  for(let i=0;i<256;i++){
+    wB += hist[i]; if(!wB) continue;
+    const wF = total-wB; if(!wF) break;
+    sumB += i*hist[i];
+    const mB = sumB/wB, mF = (sum-sumB)/wF;
+    const between = wB*wF*(mB-mF)*(mB-mF);
+    if(between > best){ best = between; thr = i; }
+  }
+  return thr;
+}
+/* 4 nokta çiftinden homografi: (u,v) hedef → (x,y) kaynak */
+function homography(dst, src){
+  const A = [], b = [];
+  for(let i=0;i<4;i++){
+    const [u,v] = dst[i], [x,y] = src[i];
+    A.push([u,v,1,0,0,0,-u*x,-v*x]); b.push(x);
+    A.push([0,0,0,u,v,1,-u*y,-v*y]); b.push(y);
+  }
+  const n=8;
+  for(let c=0;c<n;c++){
+    let p=c;
+    for(let r=c+1;r<n;r++) if(Math.abs(A[r][c])>Math.abs(A[p][c])) p=r;
+    if(Math.abs(A[p][c])<1e-10) return null;
+    [A[c],A[p]]=[A[p],A[c]]; [b[c],b[p]]=[b[p],b[c]];
+    for(let r=c+1;r<n;r++){
+      const f=A[r][c]/A[c][c];
+      for(let k=c;k<n;k++) A[r][k]-=f*A[c][k];
+      b[r]-=f*b[c];
+    }
+  }
+  const h=new Float64Array(n);
+  for(let r=n-1;r>=0;r--){
+    let s=b[r];
+    for(let k=r+1;k<n;k++) s-=A[r][k]*h[k];
+    h[r]=s/A[r][r];
+  }
+  return h;
+}
+function applyH(h, u, v){
+  const den = h[6]*u + h[7]*v + 1;
+  return [(h[0]*u + h[1]*v + h[2])/den, (h[3]*u + h[4]*v + h[5])/den];
+}
+function lineInter(p1,p2,p3,p4){
+  const d1x=p2[0]-p1[0], d1y=p2[1]-p1[1], d2x=p4[0]-p3[0], d2y=p4[1]-p3[1];
+  const den = d1x*d2y - d1y*d2x;
+  if(Math.abs(den) < 1e-9) return null;
+  const t = ((p3[0]-p1[0])*d2y - (p3[1]-p1[1])*d2x) / den;
+  return [p1[0]+t*d1x, p1[1]+t*d1y];
+}
+const dist = (a,b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
+function quadArea(q){
+  let s=0;
+  for(let i=0;i<4;i++){ const a=q[i], b=q[(i+1)%4]; s += a[0]*b[1]-b[0]*a[1]; }
+  return Math.abs(s)/2;
+}
+function isConvex(q){
+  let sign=0;
+  for(let i=0;i<4;i++){
+    const a=q[i], b=q[(i+1)%4], c=q[(i+2)%4];
+    const cr=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]);
+    if(Math.abs(cr)<1e-6) continue;
+    const s=Math.sign(cr);
+    if(sign===0) sign=s; else if(s!==sign) return false;
+  }
+  return true;
+}
+function inQuad(q, x, y){
+  let sign=0;
+  for(let i=0;i<4;i++){
+    const a=q[i], b=q[(i+1)%4];
+    const cr=(b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]);
+    const s = cr>0 ? 1 : cr<0 ? -1 : 0;
+    if(!s) continue;
+    if(!sign) sign=s; else if(s!==sign) return false;
+  }
+  return true;
+}
+/* Zhang & He (2007): kamera odak uzaklığı tahmini ile dörtgenin GERÇEK en/boy oranı */
+function estimateAspect(q, W, H){
+  const u0=W/2, v0=H/2;
+  const P = p => [p[0]-u0, p[1]-v0, 1];
+  const m1=P(q[0]), m2=P(q[1]), m3=P(q[3]), m4=P(q[2]);
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const side = ((dist(q[0],q[1])+dist(q[3],q[2]))/2) / ((dist(q[0],q[3])+dist(q[1],q[2]))/2);
+  const c14 = cross(m1,m4);
+  const k2 = dot(c14,m3)/dot(cross(m2,m4),m3);
+  const k3 = dot(c14,m2)/dot(cross(m3,m4),m2);
+  if(!isFinite(k2) || !isFinite(k3)) return side;
+  const n2 = [k2*m2[0]-m1[0], k2*m2[1]-m1[1], k2*m2[2]-m1[2]];
+  const n3 = [k3*m3[0]-m1[0], k3*m3[1]-m1[1], k3*m3[2]-m1[2]];
+  const fdef = 0.85*Math.max(W,H);
+  let f = fdef;
+  const f2 = -(n2[0]*n3[0] + n2[1]*n3[1]) / (n2[2]*n3[2]);
+  if(isFinite(f2) && f2 > 0){
+    const ff = Math.sqrt(f2);
+    if(ff > 0.45*fdef && ff < 2.2*fdef) f = ff;
+  }
+  const num = (n2[0]*n2[0]+n2[1]*n2[1])/(f*f) + n2[2]*n2[2];
+  const den = (n3[0]*n3[0]+n3[1]*n3[1])/(f*f) + n3[2]*n3[2];
+  let ar = Math.sqrt(num/den);
+  if(!isFinite(ar) || ar <= 0) return side;
+  return Math.max(side*0.7, Math.min(side*1.45, ar));
+}
+
+/* ---------- morfoloji & bileşenler ---------- */
+function dilate1(m, w, h){
+  const o = new Uint8Array(m);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i=y*w+x;
+    if(m[i]) continue;
+    if((x>0 && m[i-1]) || (x<w-1 && m[i+1]) || (y>0 && m[i-w]) || (y<h-1 && m[i+w])) o[i]=1;
+  }
+  return o;
+}
+/* aşındırma: görüntü kenarı "aynı değer" sayılır (kenara taşan sayfa
+   kenardan aşınmaz → kadraj dışına taşma doğru tespit edilir) */
+function erode1(m, w, h){
+  const o = new Uint8Array(w*h);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i=y*w+x;
+    if(!m[i]) continue;
+    o[i] = (x>0?m[i-1]:1) & (x<w-1?m[i+1]:1) & (y>0?m[i-w]:1) & (y<h-1?m[i+w]:1);
+  }
+  return o;
+}
+/* yalnızca dikey: yatay metin bantlarını köprüler, dikey sırt çizgisini korur */
+function dilateV(m, w, h){
+  const o = new Uint8Array(m);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i=y*w+x;
+    if(m[i]) continue;
+    if((y>0 && m[i-w]) || (y<h-1 && m[i+w])) o[i]=1;
+  }
+  return o;
+}
+function erodeV(m, w, h){
+  const o = new Uint8Array(w*h);
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i=y*w+x;
+    if(!m[i]) continue;
+    o[i] = (y>0?m[i-w]:1) & (y<h-1?m[i+w]:1);
+  }
+  return o;
+}
+function labelComponents(mask, w, h){
+  const labels = new Int32Array(w*h), stack = new Int32Array(w*h);
+  const sizes = [0]; let n=0;
+  for(let s=0;s<w*h;s++){
+    if(!mask[s] || labels[s]) continue;
+    n++; let top=0, size=0;
+    stack[top++]=s; labels[s]=n;
+    while(top){
+      const i=stack[--top]; size++;
+      const x=i%w, y=(i/w)|0;
+      if(x>0   && mask[i-1] && !labels[i-1]){ labels[i-1]=n; stack[top++]=i-1; }
+      if(x<w-1 && mask[i+1] && !labels[i+1]){ labels[i+1]=n; stack[top++]=i+1; }
+      if(y>0   && mask[i-w] && !labels[i-w]){ labels[i-w]=n; stack[top++]=i-w; }
+      if(y<h-1 && mask[i+w] && !labels[i+w]){ labels[i+w]=n; stack[top++]=i+w; }
+    }
+    sizes.push(size);
+  }
+  return {labels, sizes, count:n};
+}
+/* sağlam dörtgen: uç noktalar + her kenarı piksellerin %98.5'ini
+   kapsayana dek dışa kaydır (kıvrık köşe lobları dörtgeni şişiremez) */
+function robustQuad(xs, ys, n){
+  let iTL=0,iTR=0,iBR=0,iBL=0;
+  for(let i=1;i<n;i++){
+    if(xs[i]+ys[i] < xs[iTL]+ys[iTL]) iTL=i;
+    if(ys[i]-xs[i] < ys[iTR]-xs[iTR]) iTR=i;
+    if(xs[i]+ys[i] > xs[iBR]+ys[iBR]) iBR=i;
+    if(ys[i]-xs[i] > ys[iBL]-xs[iBL]) iBL=i;
+  }
+  const Q=[[xs[iTL],ys[iTL]],[xs[iTR],ys[iTR]],[xs[iBR],ys[iBR]],[xs[iBL],ys[iBL]]];
+  const C=[(Q[0][0]+Q[1][0]+Q[2][0]+Q[3][0])/4,(Q[0][1]+Q[1][1]+Q[2][1]+Q[3][1])/4];
+  const lines=[], proj=new Float32Array(n);
+  for(let e=0;e<4;e++){
+    const A=Q[e], B=Q[(e+1)%4];
+    let nx=B[1]-A[1], ny=-(B[0]-A[0]);
+    const len=Math.hypot(nx,ny);
+    if(len<1) return null;
+    nx/=len; ny/=len;
+    if(nx*(A[0]-C[0])+ny*(A[1]-C[1])<0){ nx=-nx; ny=-ny; }
+    let pmin=1e9, pmax=-1e9;
+    for(let i=0;i<n;i++){ const v=(xs[i]-A[0])*nx+(ys[i]-A[1])*ny; proj[i]=v; if(v<pmin) pmin=v; if(v>pmax) pmax=v; }
+    // %98.5 yüzdelik: sıralama yerine histogram (O(n))
+    const NB=512, bw=(pmax-pmin)/NB || 1, hist=new Int32Array(NB+1);
+    for(let i=0;i<n;i++) hist[Math.min(NB, ((proj[i]-pmin)/bw)|0)]++;
+    const need=Math.min(n-1, (n*0.985)|0); let acc=0, bi=0;
+    for(; bi<=NB; bi++){ acc+=hist[bi]; if(acc>need) break; }
+    const shift=Math.max(0, pmin + (bi+1)*bw);
+    lines.push([[A[0]+nx*shift,A[1]+ny*shift],[B[0]+nx*shift,B[1]+ny*shift]]);
+  }
+  const quad=[];
+  for(let e=0;e<4;e++){
+    const L1=lines[(e+3)%4], L2=lines[e];
+    const X=lineInter(L1[0],L1[1],L2[0],L2[1]);
+    if(!X) return null;
+    quad.push(X);
+  }
+  return quad;
+}
+
+/* ten rengi: kırmızı kitap kapağını (g çok düşük) dışarıda bırakır */
+function isSkin(r, g, b){
+  return r-g > 18 && r-b > 38 && r > 60 && g > r*0.42;
+}
+
+/* ============================================================
+   SAYFA TESPİTİ (düşük çözünürlük) — canlı tarama, video ve
+   tam işleme aynı fonksiyonu kullanır.
+   px: küçük RGBA, (sw,sh) küçük boyut, (W,H) gerçek kare boyutu
+   ============================================================ */
+function detectPageData(px, sw, sh, W, H){
+  const res = {ok:false, quad:null, quadS:null, comp:null, sw, sh, W, H,
+               area:0, fill:0, skin:0, skinInner:0, clipped:[false,false,false,false], reason:''};
+  const N = sw*sh;
+  const base = new Float32Array(N), warm = new Float32Array(N);
+  for(let i=0;i<N;i++){
+    const r=px[i*4], g=px[i*4+1], b=px[i*4+2];
+    base[i] = Math.min(r, g, b);
+    warm[i] = r - b;
+  }
+  // 1) Otsu ile parlak (kağıt) maskesi
+  const thrB = otsu(base) * 0.92;
+  let mask = new Uint8Array(N), nb=0;
+  for(let i=0;i<N;i++) if(base[i] > thrB){ mask[i]=1; nb++; }
+  if(nb < N*0.08){ res.reason='karanlık'; return res; }
+  // 2) sıcaklık kümelemesi: kağıt sıcak, ekran/soğuk ışık mavimsi
+  {
+    let c0=1e9, c1=-1e9;
+    for(let i=0;i<N;i++) if(mask[i]){ if(warm[i]<c0) c0=warm[i]; if(warm[i]>c1) c1=warm[i]; }
+    for(let k=0;k<12;k++){
+      let s0=0,n0=0,s1=0,n1=0;
+      for(let i=0;i<N;i++) if(mask[i]){
+        const v=warm[i];
+        if(Math.abs(v-c0)<=Math.abs(v-c1)){ s0+=v; n0++; } else { s1+=v; n1++; }
+      }
+      if(n0) c0=s0/n0; if(n1) c1=s1/n1;
+    }
+    if(c1-c0 > 18){
+      const mid=(c0+c1)/2;
+      for(let i=0;i<N;i++) if(mask[i] && warm[i] <= mid) mask[i]=0;
+    }
+  }
+  // 3) DİKEY kapama: metin bantlarını köprüler, sırt çizgisini korur
+  for(let k=0;k<5;k++) mask = dilateV(mask, sw, sh);
+  for(let k=0;k<5;k++) mask = erodeV(mask, sw, sh);
+  mask = erode1(mask, sw, sh);
+  for(let x=0;x<sw;x++){ mask[x]=0; mask[(sh-1)*sw+x]=0; }
+  for(let y=0;y<sh;y++){ mask[y*sw]=0; mask[y*sw+sw-1]=0; }
+  // 4) bileşenler; merkezdeki bileşeni tercih et
+  const L = labelComponents(mask, sw, sh);
+  if(!L.count){ res.reason='sayfa yok'; return res; }
+  const counts = new Float64Array(L.count+1);
+  const wx0=(sw*0.38)|0, wx1=(sw*0.62)|0, wy0=(sh*0.38)|0, wy1=(sh*0.62)|0;
+  for(let y=wy0;y<wy1;y++) for(let x=wx0;x<wx1;x++){ const l=L.labels[y*sw+x]; if(l) counts[l]++; }
+  let best=0;
+  for(let l=1;l<=L.count;l++) if(counts[l]>counts[best]) best=l;
+  if(!best || !counts[best]) for(let l=1;l<=L.count;l++) if(L.sizes[l]>L.sizes[best]) best=l;
+  if(L.sizes[best] < N*0.12){ res.reason='sayfa küçük'; return res; }
+  // 5) açma: ince kolları/yansımaları sil
+  let comp = new Uint8Array(N);
+  for(let i=0;i<N;i++) comp[i] = L.labels[i]===best ? 1 : 0;
+  const compPre = new Uint8Array(comp);   // açma öncesi (ince kenar boşlukları korunur)
+  {
+    let core = comp;
+    for(let k=0;k<8;k++) core = erode1(core, sw, sh);
+    let has=false; for(let i=0;i<N;i++) if(core[i]){ has=true; break; }
+    if(has){
+      const L2 = labelComponents(core, sw, sh);
+      let bl=0; for(let l=1;l<=L2.count;l++) if(L2.sizes[l]>L2.sizes[bl]) bl=l;
+      let big = new Uint8Array(N);
+      for(let i=0;i<N;i++) big[i] = L2.labels[i]===bl ? 1 : 0;
+      for(let k=0;k<8;k++) big = dilate1(big, sw, sh);
+      for(let i=0;i<N;i++) comp[i] &= big[i];
+    }
+  }
+  // delikleri doldur (sayfa içindeki fotoğraflar/koyu kutular maskeye dahil)
+  let filled;
+  {
+    const inv = new Uint8Array(N);
+    for(let i=0;i<N;i++) inv[i] = compPre[i] ? 0 : 1;
+    const LI = labelComponents(inv, sw, sh);
+    const border = new Uint8Array(LI.count+1);
+    for(let x=0;x<sw;x++){ border[LI.labels[x]]=1; border[LI.labels[(sh-1)*sw+x]]=1; }
+    for(let y=0;y<sh;y++){ border[LI.labels[y*sw]]=1; border[LI.labels[y*sw+sw-1]]=1; }
+    filled = new Uint8Array(comp);
+    for(let i=0;i<N;i++){ const l=LI.labels[i]; if(l && !border[l]) filled[i]=1; }
+  }
+  let np=0; for(let i=0;i<N;i++) if(filled[i]) np++;
+  if(np < 50){ res.reason='sayfa yok'; return res; }
+  const xs = new Float32Array(np), ys = new Float32Array(np);
+  { let k=0; for(let y=0;y<sh;y++) for(let x=0;x<sw;x++) if(filled[y*sw+x]){ xs[k]=x; ys[k]=y; k++; } }
+  const q4 = robustQuad(xs, ys, np);
+  if(!q4){ res.reason='dörtgen yok'; return res; }
+  const sc = sw / W;
+  const cx=(q4[0][0]+q4[1][0]+q4[2][0]+q4[3][0])/4, cy=(q4[0][1]+q4[1][1]+q4[2][1]+q4[3][1])/4;
+  const quad = q4.map(([x,y]) => [
+    Math.max(0, Math.min(W-1, (x + (x-cx)*0.015 + 0.5)/sc)),
+    Math.max(0, Math.min(H-1, (y + (y-cy)*0.015 + 0.5)/sc)),
+  ]);
+  const quadS = quad.map(([x,y]) => [x*sc, y*sc]);
+  res.quad = quad; res.quadS = quadS; res.comp = comp; res.compFilled = filled; res.sc = sc;
+  // ölçümler
+  const area = quadArea(quad);
+  res.area = area/(W*H);
+  res.fill = np / Math.max(1, quadArea(quadS));
+  // kadraj dışına taşan kenarlar: kenar orta noktası kareye çok yakınsa
+  // veya bileşen o kare kenarına geniş ölçüde değiyorsa
+  const tol = 0.03*Math.min(W,H);
+  const touch = [0,0,0,0];   // kare kenarları: üst, sağ, alt, sol
+  for(let x=1;x<sw-1;x++){ if(filled[sw+x]) touch[0]++; if(filled[(sh-2)*sw+x]) touch[2]++; }
+  for(let y=1;y<sh-1;y++){ if(filled[y*sw+1]) touch[3]++; if(filled[y*sw+sw-2]) touch[1]++; }
+  const tf = [touch[0]/sw, touch[1]/sh, touch[2]/sw, touch[3]/sh];
+  for(let e=0;e<4;e++){
+    const a=quad[e], b=quad[(e+1)%4], m=[(a[0]+b[0])/2, (a[1]+b[1])/2];
+    const dB = [m[1], W-1-m[0], H-1-m[1], m[0]];   // üst, sağ, alt, sol
+    let k=0; for(let j=1;j<4;j++) if(dB[j]<dB[k]) k=j;
+    if(dB[k] < tol || tf[k] > 0.15) res.clipped[e] = true;
+  }
+  // ten (parmak/el): dörtgen içinde, iç bölgede ayrıca
+  {
+    let inQ=0, sk=0, inI=0, skI=0;
+    const qi = quadS.map(([x,y]) => [cx + (x-cx)*0.78, cy + (y-cy)*0.78]);
+    const x0=Math.max(0,Math.floor(Math.min(...quadS.map(p=>p[0])))), x1=Math.min(sw-1,Math.ceil(Math.max(...quadS.map(p=>p[0]))));
+    const y0=Math.max(0,Math.floor(Math.min(...quadS.map(p=>p[1])))), y1=Math.min(sh-1,Math.ceil(Math.max(...quadS.map(p=>p[1]))));
+    for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+      if(!inQuad(quadS, x+0.5, y+0.5)) continue;
+      const i=(y*sw+x)*4, s = isSkin(px[i],px[i+1],px[i+2]) ? 1 : 0;
+      inQ++; sk+=s;
+      if(inQuad(qi, x+0.5, y+0.5)){ inI++; skI+=s; }
+    }
+    res.skin = inQ ? sk/inQ : 0;
+    res.skinInner = inI ? skI/inI : 0;
+  }
+  // güvenlik kontrolleri
+  const [TL,TR,BR,BL] = quad;
+  const tw = (dist(TL,TR)+dist(BL,BR))/2, th = (dist(TL,BL)+dist(TR,BR))/2;
+  const ar = tw/th;
+  if(!isConvex(quad)) { res.reason='dörtgen bozuk'; return res; }
+  if(tw < W*0.25 || th < H*0.25 || ar<0.28 || ar>3.6 || area < W*H*0.15 || area > W*H*1.02){
+    res.reason='oran dışı'; return res;
+  }
+  res.ok = true;
+  return res;
+}
+function detectPage(canvas, maxSide){
+  const W = canvas.width, H = canvas.height;
+  const sc = (maxSide||240)/Math.max(W,H);
+  const sw = Math.max(24, Math.round(W*sc)), sh = Math.max(24, Math.round(H*sc));
+  const small = downscale(canvas, sw, sh);
+  const px = ctx2d(small).getImageData(0,0,sw,sh).data;
+  const r = detectPageData(px, sw, sh, W, H);
+  r.px = px;
+  return r;
+}
+
+/* ---------- sayfa imzası (tekrar tespiti) ----------
+   Sayfa bulunduysa dörtgen içi düzleştirilip imzalanır → kamera
+   kayması / yakınlaşma imzayı bozmaz. */
+const SIG_W = 36, SIG_H = 48;
+function pageSignature(px, sw, sh, quadS){
+  const out = new Float32Array(SIG_W*SIG_H);
+  let q = quadS;
+  if(!q) q = [[0,0],[sw-1,0],[sw-1,sh-1],[0,sh-1]];
+  const hm = homography([[0,0],[SIG_W-1,0],[SIG_W-1,SIG_H-1],[0,SIG_H-1]], q);
+  if(!hm) return null;
+  for(let v=0; v<SIG_H; v++) for(let u=0; u<SIG_W; u++){
+    let [x,y] = applyH(hm, u, v);
+    x = Math.max(0, Math.min(sw-1.001, x)); y = Math.max(0, Math.min(sh-1.001, y));
+    const x0=x|0, y0=y|0, fx=x-x0, fy=y-y0;
+    const g = (i) => 0.299*px[i]+0.587*px[i+1]+0.114*px[i+2];
+    const i00=(y0*sw+x0)*4, i10=i00+4, i01=i00+sw*4, i11=i01+4;
+    out[v*SIG_W+u] = g(i00)*(1-fx)*(1-fy)+g(i10)*fx*(1-fy)+g(i01)*(1-fx)*fy+g(i11)*fx*fy;
+  }
+  // aydınlatma farkına dayanıklı: ortalamayı çıkar, std'ye böl
+  const m = mean(out); let s=0;
+  for(let i=0;i<out.length;i++){ out[i]-=m; s+=out[i]*out[i]; }
+  const sd = Math.sqrt(s/out.length) || 1;
+  for(let i=0;i<out.length;i++) out[i] = out[i]/sd*32;
+  return out;
+}
+/* ±R hücre kaydırarak en iyi hizadaki ortalama mutlak fark */
+function sigDiff(a, b, R){
+  if(!a || !b) return 99;
+  const w=SIG_W, h=SIG_H; let best=1e9;
+  R = R==null ? 2 : R;
+  for(let dy=-R; dy<=R; dy++) for(let dx=-R; dx<=R; dx++){
+    let s=0, cnt=0;
+    const y0=Math.max(0,dy), y1=h+Math.min(0,dy), x0=Math.max(0,dx), x1=w+Math.min(0,dx);
+    for(let y=y0;y<y1;y++){
+      const ra=y*w, rb=(y-dy)*w;
+      for(let x=x0;x<x1;x++){ s += Math.abs(a[ra+x]-b[rb+x-dx]); cnt++; }
+    }
+    const d=s/cnt; if(d<best) best=d;
+  }
+  return best;
+}
+
+/* ============================================================
+   YENİDEN ÖRNEKLEME (tek geçiş): çıktı pikseli → kaynak koordinatı
+   eşlemesi kaba bir ızgarada hesaplanır, aradaki pikseller ızgaradan
+   çift doğrusal enterpole edilir; örnekleme bikübik (Catmull-Rom).
+   ============================================================ */
+function buildGrid(outW, outH, gs, fn){
+  const gw = Math.floor((outW-1)/gs)+2, gh = Math.floor((outH-1)/gs)+2;
+  const mx = new Float32Array(gw*gh), my = new Float32Array(gw*gh);
+  for(let gy=0; gy<gh; gy++) for(let gx=0; gx<gw; gx++){
+    const p = fn(gx*gs, gy*gs);
+    mx[gy*gw+gx] = p[0]; my[gy*gw+gx] = p[1];
+  }
+  return {gw, gh, gs, mx, my};
+}
+function remap(src, W, H, outW, outH, grid, cubic){
+  const d = new Uint8ClampedArray(outW*outH*4);
+  const {gw, gs, mx, my} = grid;
+  const W1 = W-1, H1 = H-1, rs = W*4;
+  for(let v=0; v<outH; v++){
+    const gyf = v/gs, gy = gyf|0, fy = gyf-gy;
+    for(let u=0; u<outW; u++){
+      const gxf = u/gs, gx = gxf|0, fx = gxf-gx;
+      const i00 = gy*gw+gx, i01 = i00+gw;
+      const a0=(1-fx)*(1-fy), a1=fx*(1-fy), a2=(1-fx)*fy, a3=fx*fy;
+      let x = mx[i00]*a0 + mx[i00+1]*a1 + mx[i01]*a2 + mx[i01+1]*a3;
+      let y = my[i00]*a0 + my[i00+1]*a1 + my[i01]*a2 + my[i01+1]*a3;
+      const o = (v*outW+u)*4;
+      if(x < 0) x = 0; else if(x > W1) x = W1;
+      if(y < 0) y = 0; else if(y > H1) y = H1;
+      if(cubic){
+        const x0=Math.floor(x), y0=Math.floor(y), tx=x-x0, ty=y-y0;
+        const wx0=((-0.5*tx+1)*tx-0.5)*tx, wx1=((1.5*tx-2.5)*tx)*tx+1, wx2=((-1.5*tx+2)*tx+0.5)*tx, wx3=((0.5*tx-0.5)*tx)*tx;
+        const wy0=((-0.5*ty+1)*ty-0.5)*ty, wy1=((1.5*ty-2.5)*ty)*ty+1, wy2=((-1.5*ty+2)*ty+0.5)*ty, wy3=((0.5*ty-0.5)*ty)*ty;
+        const c0=(x0>0?x0-1:0)*4, c1=x0*4, c2=(x0<W1?x0+1:W1)*4, c3=(x0+2<=W1?x0+2:W1)*4;
+        const r0=(y0>0?y0-1:0)*rs, r1=y0*rs, r2=(y0<H1?y0+1:H1)*rs, r3=(y0+2<=H1?y0+2:H1)*rs;
+        for(let ch=0; ch<3; ch++){
+          const s0 = src[r0+c0+ch]*wx0 + src[r0+c1+ch]*wx1 + src[r0+c2+ch]*wx2 + src[r0+c3+ch]*wx3;
+          const s1 = src[r1+c0+ch]*wx0 + src[r1+c1+ch]*wx1 + src[r1+c2+ch]*wx2 + src[r1+c3+ch]*wx3;
+          const s2 = src[r2+c0+ch]*wx0 + src[r2+c1+ch]*wx1 + src[r2+c2+ch]*wx2 + src[r2+c3+ch]*wx3;
+          const s3 = src[r3+c0+ch]*wx0 + src[r3+c1+ch]*wx1 + src[r3+c2+ch]*wx2 + src[r3+c3+ch]*wx3;
+          d[o+ch] = s0*wy0 + s1*wy1 + s2*wy2 + s3*wy3;
+        }
+      } else {
+        const x0=x|0, y0=y|0, tx=x-x0, ty=y-y0;
+        const x1=x0<W1?x0+1:W1, y1=y0<H1?y0+1:H1;
+        const p00=y0*rs+x0*4, p10=y0*rs+x1*4, p01=y1*rs+x0*4, p11=y1*rs+x1*4;
+        for(let ch=0; ch<3; ch++){
+          d[o+ch] = (src[p00+ch]*(1-tx)+src[p10+ch]*tx)*(1-ty) + (src[p01+ch]*(1-tx)+src[p11+ch]*tx)*ty;
+        }
+      }
+      d[o+3] = 255;
+    }
+  }
+  return d;
+}
+function remapGray(g, w, h, fn){
+  // tek kanallı, çift doğrusal; fn(x,y) → [sx, sy]
+  const o = new Float32Array(w*h);
+  const grid = buildGrid(w, h, 8, fn);
+  const {gw, gs, mx, my} = grid;
+  for(let v=0; v<h; v++){
+    const gyf=v/gs, gy=gyf|0, fy=gyf-gy;
+    for(let u=0; u<w; u++){
+      const gxf=u/gs, gx=gxf|0, fx=gxf-gx;
+      const i00=gy*gw+gx, i01=i00+gw;
+      const a0=(1-fx)*(1-fy), a1=fx*(1-fy), a2=(1-fx)*fy, a3=fx*fy;
+      let x = mx[i00]*a0 + mx[i00+1]*a1 + mx[i01]*a2 + mx[i01+1]*a3;
+      let y = my[i00]*a0 + my[i00+1]*a1 + my[i01]*a2 + my[i01+1]*a3;
+      x = Math.max(0, Math.min(w-1.001, x)); y = Math.max(0, Math.min(h-1.001, y));
+      const x0=x|0, y0=y|0, tx=x-x0, ty=y-y0, p=y0*w+x0;
+      o[v*w+u] = (g[p]*(1-tx)+g[p+1]*tx)*(1-ty) + (g[p+w]*(1-tx)+g[p+w+1]*tx)*ty;
+    }
+  }
+  return o;
+}
+
+/* ============================================================
+   KIVRIK SAYFA DÜZELTME — yazı satırlarından
+   Sayfa dikey şeritlere bölünür; komşu şeritlerin yatay izdüşüm
+   profilleri pencereler hâlinde ilişkilendirilerek satırların yerel
+   düşey kayması ölçülür. Ölçümler düzgünleştirilmiş bir yer değiştirme
+   alanına (şerit × yükseklik düğümleri) en küçük kareler ile oturtulur.
+   Sonuç: çıktı(x,y) = giriş(x, y + D(x,y)) → satırlar dümdüz olur.
+   ============================================================ */
+function bgMapGray(g, w, h){
+  // kağıt (arka plan) parlaklığı: blok maksimumu → genişlet → bulanıklaştır
+  const bs = Math.max(6, Math.round(Math.max(w,h)/60));
+  const bw = Math.ceil(w/bs), bh = Math.ceil(h/bs);
+  let B = new Float32Array(bw*bh);
+  for(let by=0; by<bh; by++) for(let bx=0; bx<bw; bx++){
+    let m=0;
+    const y1=Math.min(h,(by+1)*bs), x1=Math.min(w,(bx+1)*bs);
+    for(let y=by*bs; y<y1; y+=2) for(let x=bx*bs; x<x1; x+=2){ const v=g[y*w+x]; if(v>m) m=v; }
+    B[by*bw+bx]=m;
+  }
+  const B2 = new Float32Array(B);
+  for(let by=0; by<bh; by++) for(let bx=0; bx<bw; bx++){
+    let m=0;
+    for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){
+      const yy=by+dy, xx=bx+dx;
+      if(yy>=0&&yy<bh&&xx>=0&&xx<bw){ const v=B[yy*bw+xx]; if(v>m) m=v; }
+    }
+    B2[by*bw+bx]=m;
+  }
+  B = boxBlur(B2, bw, bh, 1, 2);
+  const out = new Float32Array(w*h);
+  for(let y=0;y<h;y++){
+    const fy = Math.max(0, Math.min(bh-1.001, (y+0.5)/bs-0.5)), y0=fy|0, ty=fy-y0;
+    for(let x=0;x<w;x++){
+      const fx = Math.max(0, Math.min(bw-1.001, (x+0.5)/bs-0.5)), x0=fx|0, tx=fx-x0;
+      const p=y0*bw+x0;
+      out[y*w+x] = (B[p]*(1-tx)+B[p+1]*tx)*(1-ty) + (B[p+bw]*(1-tx)+B[p+bw+1]*tx)*ty;
+    }
+  }
+  return out;
+}
+function inkOf(g, w, h){
+  const bg = bgMapGray(g, w, h);
+  const medBg = quantile(bg.filter((_,i)=>i%7===0), 0.6);
+  const ink = new Float32Array(w*h);
+  for(let i=0;i<w*h;i++){
+    const b = bg[i];
+    if(b < medBg*0.6) continue;           // sayfa dışı koyu zemin
+    const v = (b - g[i]) / b;
+    if(v > 0.10) ink[i] = Math.min(1, (v-0.10)*2.5);
+  }
+  return ink;
+}
+function smooth1(a, r){
+  const n=a.length, o=new Float32Array(n), k=2*r+1;
+  let s=0;
+  for(let i=-r;i<=r;i++) s += a[Math.max(0,Math.min(n-1,i))];
+  for(let i=0;i<n;i++){ o[i]=s/k; s += a[Math.min(n-1,i+r+1)] - a[Math.max(0,i-r)]; }
+  return o;
+}
+/* satır aralığı: şerit profilleri geniş yapılardan (fotoğraf, kenar boşluğu)
+   arındırılır; her periyot için güç spektrumu hesaplanıp şeritler üzerinden
+   toplanır → en güçlü periyot = satır aralığı (özilişkideki geniş düşüşten
+   ve eğik satırlardan etkilenmez) */
+function estimatePitch(profiles){
+  const n=profiles[0].length;
+  const R = Math.min(50, Math.max(8, (n/10)|0));
+  const ds = [];
+  for(const S of profiles){
+    const m0 = mean(S);
+    if(m0 > 0.28 || m0 < 0.004) continue;          // fotoğraf ya da boş şerit
+    const tr = smooth1(S, R);
+    const loc = smooth1(S, 12);                      // yerel mürekkep yoğunluğu
+    const d=new Float32Array(n); let e=0;
+    for(let i=0;i<n;i++){
+      if(loc[i] > 0.26) continue;                    // fotoğraf satırları → 0
+      d[i]=S[i]-tr[i]; e+=d[i]*d[i];
+    }
+    if(e<=1e-6) continue;
+    const k = 1/Math.sqrt(e);
+    for(let i=0;i<n;i++) d[i]*=k;
+    ds.push(d);
+  }
+  if(!ds.length) return 0;
+  const Lmax = Math.min(120, n/5);
+  const cands = [];
+  for(let L=6; L<=Lmax; L*=1.02) cands.push(L);
+  const pw = new Float32Array(cands.length);
+  for(let ci=0; ci<cands.length; ci++){
+    const w = 2*Math.PI/cands[ci], cw = Math.cos(w), sw = Math.sin(w);
+    let tot = 0;
+    for(const d of ds){
+      let c=1, s=0, rc=0, rs=0;
+      for(let i=0;i<n;i++){
+        rc += d[i]*c; rs += d[i]*s;
+        const c2 = c*cw - s*sw; s = s*cw + c*sw; c = c2;
+      }
+      tot += rc*rc + rs*rs;
+    }
+    pw[ci] = tot/ds.length;
+  }
+  let bi=0; for(let i=1;i<pw.length;i++) if(pw[i]>pw[bi]) bi=i;
+  // yerel tepe olmalı ve ortalamadan belirgin yüksek
+  const avg = mean(pw);
+  if(pw[bi] < avg*2.2) return 0;
+  // parabolik ince ayar (logaritmik ızgara)
+  let L = cands[bi];
+  if(bi>0 && bi<pw.length-1){
+    const den = pw[bi-1]-2*pw[bi]+pw[bi+1];
+    if(den<0) L = cands[bi] * Math.pow(1.02, 0.5*(pw[bi-1]-pw[bi+1])/den);
+  }
+  return L;
+}
+function solveSPD(A, b, n){
+  // Cholesky (A simetrik pozitif tanımlı)
+  const L = new Float64Array(n*n);
+  for(let i=0;i<n;i++){
+    for(let j=0;j<=i;j++){
+      let s = A[i*n+j];
+      for(let k=0;k<j;k++) s -= L[i*n+k]*L[j*n+k];
+      if(i===j){ if(s<=1e-12) return null; L[i*n+i]=Math.sqrt(s); }
+      else L[i*n+j] = s/L[j*n+j];
+    }
+  }
+  const y = new Float64Array(n);
+  for(let i=0;i<n;i++){ let s=b[i]; for(let k=0;k<i;k++) s-=L[i*n+k]*y[k]; y[i]=s/L[i*n+i]; }
+  const x = new Float64Array(n);
+  for(let i=n-1;i>=0;i--){ let s=y[i]; for(let k=i+1;k<n;k++) s-=L[k*n+i]*x[k]; x[i]=s/L[i*n+i]; }
+  return x;
+}
+/* g: gri (w×h). Dönen alan: {ns, ny, D(Float32 ns*ny, piksel), w, h, pitch, nMeas} */
+/* satır aralığı için dar (≈14 px) şerit profilleri */
+function narrowProfiles(ink, w, h, x0, x1){
+  const nw = Math.max(10, Math.min(16, Math.round(w/40)));
+  const out = [];
+  for(let a=x0; a+nw<=x1; a+=nw){
+    const p=new Float32Array(h);
+    for(let y=0;y<h;y++){ let s=0; const r=y*w+a; for(let x=0;x<nw;x++) s+=ink[r+x]; p[y]=s/nw; }
+    out.push(smooth1(p, 1));
+  }
+  return out;
+}
+function estimateTextField(ink, w, h){
+  const ns = Math.max(8, Math.min(40, Math.round(w/26)));
+  const sw = w/ns;
+  const P = [];
+  for(let k=0;k<ns;k++){
+    const x0=Math.round(k*sw), x1=Math.round((k+1)*sw), cw=x1-x0;
+    const p=new Float32Array(h);
+    for(let y=0;y<h;y++){ let s=0; const r=y*w; for(let x=x0;x<x1;x++) s+=ink[r+x]; p[y]=s/cw; }
+    P.push(smooth1(p, 1));
+  }
+  // satır aralığı: orta bölgenin dar şeritlerinden
+  const kc = ns>>1;
+  let pitch = estimatePitch(narrowProfiles(ink, w, h, Math.round(w*0.2), Math.round(w*0.8)));
+  if(!pitch || pitch < 5 || pitch > h/5){ G.__fieldWhy = 'pitch:'+(pitch||0).toFixed(1); return null; }
+  const hw = Math.max(6, Math.round(pitch*1.6));
+  // arama aralığı: yarım satır aralığını aşmasın (bir satır kaymasın) ve
+  // ~20°'den dik eğime izin verme
+  const smax = Math.max(2, Math.min(Math.round(pitch*0.38), Math.round(sw*0.36)+1));
+  const step = Math.max(4, Math.round(pitch*0.9));
+  const wins = [];
+  for(let yc=hw+smax; yc<h-hw-smax; yc+=step) wins.push(yc);
+  if(wins.length < 3) return null;
+  // pencere enerjileri (metin var mı?)
+  const energy = (p, yc) => {
+    let s=0, s2=0, n=0;
+    for(let y=yc-hw;y<=yc+hw;y++){ s+=p[y]; s2+=p[y]*p[y]; n++; }
+    const m=s/n; return s2/n - m*m;
+  };
+  const E = P.map(p => wins.map(yc => energy(p, yc)));
+  const allE = []; E.forEach(r => r.forEach(v => { if(v>0) allE.push(v); }));
+  if(!allE.length) return null;
+  const eRef = quantile(allE, 0.75);
+  const meas = [];
+  const ncc = (a, b, yc, s) => {
+    let sa=0, sb=0, n=0;
+    for(let y=yc-hw;y<=yc+hw;y++){ sa+=a[y]; sb+=b[y+s]; n++; }
+    const ma=sa/n, mb=sb/n;
+    let num=0, ea=0, eb=0;
+    for(let y=yc-hw;y<=yc+hw;y++){
+      const da=a[y]-ma, db=b[y+s]-mb;
+      num+=da*db; ea+=da*da; eb+=db*db;
+    }
+    return ea>0 && eb>0 ? num/Math.sqrt(ea*eb) : 0;
+  };
+  // merkezden dışa doğru izleme: beklenen kayma bir önceki çiftten gelir
+  const track = (pairs) => {
+    const exp = new Float32Array(wins.length);
+    for(const k of pairs){             // çift: (k, k+1)
+      const a=P[k], b=P[k+1];
+      for(let wi=0; wi<wins.length; wi++){
+        const yc = wins[wi];
+        if(E[k][wi] < eRef*0.12 || E[k+1][wi] < eRef*0.12) continue;
+        const e0 = Math.round(exp[wi]);
+        let bs=0, bv=-2, vals={};
+        for(let s=e0-smax; s<=e0+smax; s++){
+          if(yc-hw+s<0 || yc+hw+s>=h) continue;
+          const v = ncc(a, b, yc, s); vals[s]=v;
+          if(v>bv){ bv=v; bs=s; }
+        }
+        if(bv < 0.45 || Math.abs(bs-e0) >= smax) continue;
+        let sub = bs;
+        if(vals[bs-1]!==undefined && vals[bs+1]!==undefined){
+          const den = vals[bs-1]-2*bv+vals[bs+1];
+          if(den<0) sub = bs + 0.5*(vals[bs-1]-vals[bs+1])/den;
+        }
+        const wgt = (bv-0.35)/0.65 * Math.min(1, Math.sqrt(Math.min(E[k][wi],E[k+1][wi])/eRef));
+        meas.push({k, yc, s:sub, w:wgt});
+        exp[wi] = sub;
+      }
+      // komşu pencerelerden boşlukları doldur (izleme kopmasın)
+      for(let wi=0; wi<wins.length; wi++) if(exp[wi]===0){
+        let s=0,c=0;
+        for(const d of [-2,-1,1,2]){ const j=wi+d; if(j>=0&&j<wins.length&&exp[j]!==0){ s+=exp[j]; c++; } }
+        if(c) exp[wi]=s/c;
+      }
+    }
+  };
+  const right=[]; for(let k=kc; k<ns-1; k++) right.push(k);
+  const left=[];  for(let k=kc-1; k>=0; k--) left.push(k);
+  track(right); track(left);
+  if(meas.length < Math.max(8, ns)){ G.__fieldWhy = 'meas:'+meas.length; return null; }
+  // en küçük kareler: bilinmeyenler D[k][j] (şerit merkezi × y düğümü)
+  const ny = Math.max(3, Math.min(10, Math.round(h/(pitch*5))+1));
+  const N = ns*ny;
+  const hat = y => { const t=Math.max(0,Math.min(ny-1-1e-6, y/(h-1)*(ny-1))); const j=t|0; return [j, 1-(t-j), t-j]; };
+  const solve = (use) => {
+    const A = new Float64Array(N*N), B = new Float64Array(N);
+    const add = (idx, cf, rhs, wt) => {
+      for(let a=0;a<idx.length;a++){
+        B[idx[a]] += wt*cf[a]*rhs;
+        for(let b=0;b<idx.length;b++) A[idx[a]*N+idx[b]] += wt*cf[a]*cf[b];
+      }
+    };
+    let wsum=0;
+    meas.forEach((m, i) => {
+      if(!use[i]) return;
+      const [j,f0,f1] = hat(m.yc);
+      add([(m.k+1)*ny+j, (m.k+1)*ny+j+1, m.k*ny+j, m.k*ny+j+1], [f0,f1,-f0,-f1], m.s, m.w);
+      wsum += m.w;
+    });
+    const lam = Math.max(1e-3, wsum/N);
+    const lamX = lam*0.8, lamY = lam*1.5;
+    for(let j=0;j<ny;j++) for(let k=1;k<ns-1;k++) add([(k-1)*ny+j, k*ny+j, (k+1)*ny+j], [1,-2,1], 0, lamX);
+    for(let k=0;k<ns;k++) for(let j=1;j<ny-1;j++) add([k*ny+j-1, k*ny+j, k*ny+j+1], [1,-2,1], 0, lamY);
+    for(let j=0;j<ny;j++) add([kc*ny+j], [1], 0, lam*50+1);
+    for(let i=0;i<N;i++) A[i*N+i] += 1e-4*(lam+1);
+    return solveSPD(A, B, N);
+  };
+  let use = meas.map(() => 1);
+  let sol = solve(use);
+  if(!sol) return null;
+  // kalıntısı büyük ölçümler (bir satır kaymış eşleşmeler) → at, yeniden çöz
+  const pred = m => { const [j,f0,f1] = hat(m.yc); return (sol[(m.k+1)*ny+j]*f0 + sol[(m.k+1)*ny+j+1]*f1) - (sol[m.k*ny+j]*f0 + sol[m.k*ny+j+1]*f1); };
+  let drop = 0;
+  use = meas.map(m => { const ok = Math.abs(m.s - pred(m)) < pitch*0.22; if(!ok) drop++; return ok ? 1 : 0; });
+  if(drop && drop < meas.length*0.6){
+    const s2 = solve(use);
+    if(s2) sol = s2;
+  }
+  const D = new Float32Array(N);
+  const cap = h*0.12;
+  for(let i=0;i<N;i++) D[i] = Math.max(-cap, Math.min(cap, sol[i]));
+  return {ns, ny, D, w, h, pitch, nMeas:meas.length - drop, sw};
+}
+/* alanı (x,y) noktasında değerlendir (piksel cinsinden düşey kayma) */
+function fieldAt(f, x, y){
+  const kx = Math.max(0, Math.min(f.ns-1-1e-6, x/f.sw - 0.5));
+  const k0 = kx|0, tk = kx-k0;
+  const jy = Math.max(0, Math.min(f.ny-1-1e-6, y/(f.h-1)*(f.ny-1)));
+  const j0 = jy|0, tj = jy-j0;
+  const k1 = Math.min(f.ns-1, k0+1), j1 = Math.min(f.ny-1, j0+1);
+  const D=f.D, ny=f.ny;
+  return (D[k0*ny+j0]*(1-tj)+D[k0*ny+j1]*tj)*(1-tk) + (D[k1*ny+j0]*(1-tj)+D[k1*ny+j1]*tj)*tk;
+}
+function fieldMagnitude(f){
+  let m=0; for(let i=0;i<f.D.length;i++) m=Math.max(m, Math.abs(f.D[i])); return m;
+}
+
+/* ---------- yatay hizalama: sol/sağ yazı kenarlarını dikleştir ----------
+   Düz satırlara getirilmiş görüntüde her satırın sol/sağ uç noktası
+   bulunur; sağlam doğru uydurma ile kenar çizgileri hesaplanır. */
+function robustLineFit(pts){
+  // pts: [[y, x, w]] → x = a + b*y ; IRLS + aykırı eleme
+  if(pts.length < 5) return null;
+  let a=0, b=0;
+  let use = pts.map(()=>1);
+  for(let it=0; it<6; it++){
+    let sw=0, sy=0, sx=0, syy=0, sxy=0;
+    pts.forEach((p,i)=>{ if(!use[i]) return; const w=p[2]; sw+=w; sy+=w*p[0]; sx+=w*p[1]; syy+=w*p[0]*p[0]; sxy+=w*p[0]*p[1]; });
+    const den = sw*syy - sy*sy;
+    if(sw<=0 || Math.abs(den)<1e-9) return null;
+    b = (sw*sxy - sy*sx)/den; a = (sx - b*sy)/sw;
+    const res = pts.map(p => Math.abs(p[1] - (a + b*p[0])));
+    const med = quantile(res.filter((_,i)=>use[i]), 0.5);
+    const lim = Math.max(2.5, med*2.5);
+    use = res.map(r => r <= lim ? 1 : 0);
+  }
+  const nIn = use.reduce((s,v)=>s+v,0);
+  return {a, b, inl: nIn/pts.length, n:nIn};
+}
+function estimateMargins(ink0, w, h, pitch, cut){
+  const ink = new Float32Array(ink0);
+  if(cut){ for(let y=0;y<h;y++){ const r=y*w; for(let x=0;x<cut.x0;x++) ink[r+x]=0; for(let x=cut.x1;x<w;x++) ink[r+x]=0; } }
+  // ana metin bloğu: sütun profili
+  const col = new Float32Array(w);
+  for(let y=0;y<h;y++){ const r=y*w; for(let x=0;x<w;x++) col[x]+=ink[r+x]; }
+  for(let x=0;x<w;x++) col[x]/=h;
+  const cs = smooth1(col, Math.max(2, Math.round(pitch/2)));
+  const cmax = quantile(cs, 0.9);
+  if(cmax <= 0) return null;
+  const on = x => cs[x] > cmax*0.12;
+  let xa = (w/2)|0, xb = xa;
+  const gapMax = Math.round(pitch*2.2);
+  { let gap=0; for(let x=(w/2)|0; x>=0; x--){ if(on(x)){ xa=x; gap=0; } else if(++gap>gapMax) break; } }
+  { let gap=0; for(let x=(w/2)|0; x<w; x++){ if(on(x)){ xb=x; gap=0; } else if(++gap>gapMax) break; } }
+  if(xb - xa < w*0.3) return null;
+  // satır bantları: satır profili
+  const row = new Float32Array(h);
+  for(let y=0;y<h;y++){ let s=0; const r=y*w; for(let x=xa;x<=xb;x++) s+=ink[r+x]; row[y]=s/(xb-xa+1); }
+  const rs = smooth1(row, Math.max(1, Math.round(pitch/6)));
+  const rmax = quantile(rs, 0.9);
+  const lefts=[], rights=[];
+  let y=0;
+  while(y<h){
+    if(rs[y] > rmax*0.25){
+      let y2=y; while(y2<h && rs[y2] > rmax*0.25) y2++;
+      const bh=y2-y;
+      if(bh >= pitch*0.25 && bh <= pitch*1.6){
+        // bant içi sütun mürekkebi
+        const c = new Float32Array(w);
+        for(let yy=y; yy<y2; yy++){ const r=yy*w; for(let x=Math.max(0,xa-pitch); x<=Math.min(w-1,xb+pitch); x++) c[x]+=ink[r+x]; }
+        const cc = smooth1(c, 2);
+        const t = bh*0.12;
+        let l=-1, r=-1;
+        for(let x=Math.max(0,xa-pitch); x<=Math.min(w-1,xb+pitch); x++) if(cc[x]>t){ if(l<0) l=x; r=x; }
+        if(l>=0 && r-l > (xb-xa)*0.25){
+          const ym=(y+y2)/2;
+          lefts.push([ym, l, 1]); rights.push([ym, r, 1]);
+        }
+      }
+      y=y2;
+    } else y++;
+  }
+  if(lefts.length < 6) return null;
+  const L = robustLineFit(lefts), R = robustLineFit(rights);
+  return {L, R, xa, xb, n:lefts.length};
+}
+
+/* ---------- ham (renkli) sayfa içinde kenar bandı kırpma ---------- */
+function trimBoxByMap(pm, w, h, box, need, maxFrac){
+  const bw=box.x1-box.x0, bh=box.y1-box.y0;
+  const rows=new Float32Array(bh), cols=new Float32Array(bw);
+  for(let y=0;y<bh;y++){ let s=0; const r=(box.y0+y)*w+box.x0; for(let x=0;x<bw;x++) s+=pm[r+x]; rows[y]=s/bw; }
+  for(let x=0;x<bw;x++){ let s=0; for(let y=0;y<bh;y++) s+=pm[(box.y0+y)*w+box.x0+x]; cols[x]=s/bh; }
+  const scan=(arr,from,step,limit)=>{ let i=0; while(i<limit && arr[from+i*step]<need) i++; return i; };
+  const t=scan(rows,0,1,(bh*maxFrac)|0), b=scan(rows,bh-1,-1,(bh*maxFrac)|0);
+  const l=scan(cols,0,1,(bw*maxFrac)|0), r=scan(cols,bw-1,-1,(bw*maxFrac)|0);
+  const nb = {x0:box.x0+l, y0:box.y0+t, x1:box.x1-r, y1:box.y1-b};
+  if(nb.x1-nb.x0 < bw*0.5 || nb.y1-nb.y0 < bh*0.5) return box;
+  return nb;
+}
+function trimBoxRaw(d, w, h, box){
+  const base=new Float32Array(w*h);
+  for(let i=0;i<w*h;i++) base[i]=Math.min(d[i*4],d[i*4+1],d[i*4+2]);
+  const core=[];
+  const bw=box.x1-box.x0, bh=box.y1-box.y0;
+  for(let y=box.y0+(bh*0.25|0); y<box.y0+(bh*0.75|0); y+=2)
+    for(let x=box.x0+(bw*0.25|0); x<box.x0+(bw*0.75|0); x+=2) core.push(base[y*w+x]);
+  const thr = quantile(core, 0.5)*0.55;
+  const pm=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) pm[i]=base[i]>thr?1:0;
+  return trimBoxByMap(pm, w, h, box, 0.84, 0.16);
+}
+/* kitap sırtı: dar + koyu dikey vadi → oradan kes, komşu sayfayı at */
+function spineBox(d, w, h, box){
+  const bw=box.x1-box.x0;
+  if(bw<60) return box;
+  const prof=new Float32Array(bw);
+  for(let x=0;x<bw;x++){
+    let s=0;
+    for(let y=box.y0;y<box.y1;y++){ const i=(y*w+box.x0+x)*4; s += 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; }
+    prof[x]=s/(box.y1-box.y0);
+  }
+  const sm = smooth1(prof, Math.max(1, (bw/120)|0));
+  const mid=[]; for(let x=(bw*0.3)|0;x<(bw*0.7)|0;x++) mid.push(sm[x]);
+  const med=quantile(mid, 0.5);
+  const thr=med-Math.max(18, med*0.10);
+  let left=0, right=bw, i=0;
+  while(i<bw){
+    if(sm[i]<thr){
+      let j=i; while(j<bw && sm[j]<thr) j++;
+      const width=j-i, cx=(i+j)>>1;
+      if(width < bw*0.10){
+        if(cx < bw*0.42) left=Math.max(left,j);
+        else if(cx > bw*0.58) right=Math.min(right,i);
+      }
+      i=j;
+    } else i++;
+  }
+  if(left===0 && right===bw) return box;
+  if(right-left < bw*0.5) return box;
+  return {x0:box.x0+left, y0:box.y0, x1:box.x0+right, y1:box.y1};
+}
+
+/* ---------- görüntü iyileştirme ---------- */
+/* kağıt parlaklığı ızgarası (RGBA'dan): blok maksimumu → 3×3 genişlet →
+   bulanıklaştır. ch: 0/1/2 = R/G/B kanalı, -1 = en parlak kanal.
+   Tam çözünürlüklü harita bellekte tutulmaz (satır satır enterpole edilir). */
+function bgGridRGBA(d, w, h, ch){
+  const bs = Math.max(8, Math.round(Math.max(w,h)/60));
+  const bw = Math.max(2, Math.ceil(w/bs)), bh = Math.max(2, Math.ceil(h/bs));
+  const B = new Float32Array(bw*bh);
+  for(let by=0; by<bh; by++){
+    const y0=Math.min(h-1, by*bs), y1=Math.min(h, y0+bs);
+    for(let bx=0; bx<bw; bx++){
+      const x0=Math.min(w-1, bx*bs), x1=Math.min(w, x0+bs);
+      let m=0;
+      for(let y=y0; y<y1; y+=2){
+        let j=(y*w+x0)*4;
+        for(let x=x0; x<x1; x+=2, j+=8){
+          let v;
+          if(ch >= 0) v = d[j+ch];
+          else { v=d[j]; if(d[j+1]>v) v=d[j+1]; if(d[j+2]>v) v=d[j+2]; }
+          if(v>m) m=v;
+        }
+      }
+      B[by*bw+bx]=m;
+    }
+  }
+  const B2 = new Float32Array(B.length);
+  for(let by=0; by<bh; by++) for(let bx=0; bx<bw; bx++){
+    let m=0;
+    for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){
+      const yy=by+dy, xx=bx+dx;
+      if(yy>=0&&yy<bh&&xx>=0&&xx<bw){ const v=B[yy*bw+xx]; if(v>m) m=v; }
+    }
+    B2[by*bw+bx]=m;
+  }
+  return {B: boxBlur(B2, bw, bh, 1, 2), bw, bh, bs};
+}
+/* keskinleştirme: 3 satırlık kayan tampon (tam kopya yok); alfa kanalı
+   255 sabit olduğundan Laplace'ı 0 → tüm baytlar tek döngüde */
+function sharpenRGB(data, w, h, amt){
+  const rs=w*4;
+  if(h < 3) return;
+  let prev = data.slice(0, rs), cur = data.slice(rs, 2*rs);
+  for(let y=1;y<h-1;y++){
+    const base=y*rs, nb=base+rs;
+    for(let x=4; x<rs-4; x++){
+      const c = cur[x];
+      data[base+x] = c + amt*(4*c - cur[x-4] - cur[x+4] - prev[x] - data[nb+x]);
+    }
+    const t = prev; prev = cur; cur = t;
+    cur.set(data.subarray(nb, nb+rs));
+  }
+}
+/* d: RGBA (yerinde değiştirilir)
+   renkli: her kanal kendi yerel kağıt parlaklığına bölünür → kağıt her yerde
+   nötr beyaz olur (sarı lamba, gölge, renkli ışık gider), yazı/fotoğraf rengi kalır */
+function enhanceRGBA(d, w, h, mode){
+  if(mode === 'orig') return;
+  const color = mode === 'color', gray = mode === 'gray';
+  const grids = color ? [bgGridRGBA(d,w,h,0), bgGridRGBA(d,w,h,1), bgGridRGBA(d,w,h,2)] : [bgGridRGBA(d,w,h,-1)];
+  const gw = grids[0].bw, gh = grids[0].bh, bs = grids[0].bs;
+  const curve = new Uint8ClampedArray(1024);   // 0..1023 (aşırı parlaklık payı)
+  for(let i=0;i<1024;i++){
+    // kağıt → saf beyaz, yazı → koyu; hafif S eğrisi
+    let t = (i - 18) / (236 - 18);
+    t = Math.max(0, Math.min(1, t));
+    curve[i] = Math.pow(t, 1.25)*255;
+  }
+  const docLut = new Uint8ClampedArray(1024);  // doc: net siyah yazı, saf beyaz kağıt (kenarlar yumuşak)
+  for(let i=0;i<1024;i++){ const t=Math.max(0, Math.min(1, (i-120)/(205-120))); docLut[i] = 255*t*t*(3-2*t); }
+  const xi = new Int32Array(w), xt = new Float32Array(w);
+  for(let x=0;x<w;x++){ const fx=Math.max(0, Math.min(gw-1.001, (x+0.5)/bs-0.5)); xi[x]=fx|0; xt[x]=fx-(fx|0); }
+  const BR = grids[0].B, BG = color ? grids[1].B : null, BB = color ? grids[2].B : null;
+  const fOf = v => v > 75 ? 240/v : 3.2;
+  for(let y=0;y<h;y++){
+    const fy=Math.max(0, Math.min(gh-1.001, (y+0.5)/bs-0.5)), y0=fy|0, ty=fy-y0;
+    const r0=y0*gw, r1=r0+gw;
+    let j=y*w*4;
+    for(let x=0;x<w;x++, j+=4){
+      const a=xi[x], t=xt[x];
+      const w00=(1-t)*(1-ty), w01=t*(1-ty), w10=(1-t)*ty, w11=t*ty;
+      const i00=r0+a, i10=r1+a;
+      const fr = fOf(BR[i00]*w00 + BR[i00+1]*w01 + BR[i10]*w10 + BR[i10+1]*w11);
+      if(color){
+        const fg = fOf(BG[i00]*w00 + BG[i00+1]*w01 + BG[i10]*w10 + BG[i10+1]*w11);
+        const fb = fOf(BB[i00]*w00 + BB[i00+1]*w01 + BB[i10]*w10 + BB[i10+1]*w11);
+        let r=d[j]*fr, g=d[j+1]*fg, b=d[j+2]*fb;
+        const avg=(r+g+b)/3;
+        r = avg+(r-avg)*1.1; g = avg+(g-avg)*1.1; b = avg+(b-avg)*1.1;
+        d[j]   = curve[r<0?0:r>1023?1023:r|0];
+        d[j+1] = curve[g<0?0:g>1023?1023:g|0];
+        d[j+2] = curve[b<0?0:b>1023?1023:b|0];
+      } else {
+        let l = (0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]) * fr;
+        l = l>1023 ? 1023 : l|0;
+        const o = gray ? curve[l] : docLut[l];
+        d[j]=d[j+1]=d[j+2]=o;
+      }
+    }
+  }
+  sharpenRGB(d, w, h, mode==='doc' ? 0.15 : 0.35);
+}
+
+/* ---------- parmak tespiti ve silme ---------- */
+function fingerMask(d, w, h){
+  const bh=(h*0.24)|0, bw=(w*0.24)|0;
+  const mask=new Uint8Array(w*h); let any=false;
+  for(let y=0;y<h;y++){
+    const inY = y<bh || y>=h-bh;
+    for(let x=0;x<w;x++){
+      if(!inY && x>=bw && x<w-bw) continue;
+      const i=(y*w+x)*4;
+      if(isSkin(d[i],d[i+1],d[i+2])){ mask[y*w+x]=1; any=true; }
+    }
+  }
+  if(!any) return null;
+  const L = labelComponents(mask, w, h);
+  const touches = new Uint8Array(L.count+1);
+  for(let x=0;x<w;x++) for(const y of [0,1,2,3,h-4,h-3,h-2,h-1]){ const l=L.labels[y*w+x]; if(l) touches[l]=1; }
+  for(let y=0;y<h;y++) for(const x of [0,1,2,3,w-4,w-3,w-2,w-1]){ const l=L.labels[y*w+x]; if(l) touches[l]=1; }
+  const minSize = Math.max(30, w*h*0.0006);
+  const keep=new Uint8Array(w*h); let found=false;
+  for(let i=0;i<w*h;i++){ const l=L.labels[i]; if(l && touches[l] && L.sizes[l]>=minSize){ keep[i]=1; found=true; } }
+  return found ? keep : null;
+}
+function featherMask(m, w, h, grow){
+  let mm=m;
+  for(let k=0;k<grow;k++) mm=dilate1(mm, w, h);
+  const f=new Float32Array(w*h);
+  for(let i=0;i<w*h;i++) f[i]=mm[i];
+  const a=boxBlur(f, w, h, Math.max(2, grow>>1), 2);
+  for(let i=0;i<w*h;i++) a[i]=Math.min(1, a[i]*1.4);
+  return a;
+}
+function paperColor(d, w, h){
+  const rs=[],gs=[],bs=[];
+  const step = Math.max(1, ((w*h)/40000)|0);
+  for(let i=0;i<w*h;i+=step){
+    const j=i*4, l=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];
+    if(l>150){ rs.push(d[j]); gs.push(d[j+1]); bs.push(d[j+2]); }
+  }
+  if(!rs.length) return [245,245,245];
+  return [quantile(rs,0.6), quantile(gs,0.6), quantile(bs,0.6)];
+}
+function fillAlpha(d, w, h, alpha, col){
+  for(let i=0;i<w*h;i++){
+    const a=alpha[i]; if(a<=0.01) continue;
+    const j=i*4;
+    d[j]=d[j]*(1-a)+col[0]*a; d[j+1]=d[j+1]*(1-a)+col[1]*a; d[j+2]=d[j+2]*(1-a)+col[2]*a;
+  }
+}
+
+/* iyileştirme sonrası: kağıt ~beyaz, gölge/sırt bantları koyu kalır */
+function trimEnhancedBox(d, w, h){
+  const pm=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++){ const j=i*4; pm[i] = (0.299*d[j]+0.587*d[j+1]+0.114*d[j+2]) > 168 ? 1 : 0; }
+  return trimBoxByMap(pm, w, h, {x0:0,y0:0,x1:w,y1:h}, 0.86, 0.10);
+}
+
+function rotateCanvas(src, rot){
+  if(!rot) return src;
+  const c = (rot===90||rot===270) ? mkCanvas(src.height, src.width) : mkCanvas(src.width, src.height);
+  const x=c.getContext('2d');
+  x.translate(c.width/2, c.height/2);
+  x.rotate(rot*Math.PI/180);
+  x.drawImage(src, -src.width/2, -src.height/2);
+  return c;
+}
+
+/* ============================================================
+   TAM SAYFA İŞLEME
+   opts: {mode, smartCrop, outW, outH}
+   ============================================================ */
+function processCanvas(src, opts){
+  const t0 = Date.now();
+  const W = src.width, H = src.height;
+  const outW = opts.outW || 1240, outH = opts.outH || 1754;
+  const issues = [], dbg = [];
+  let tl = Date.now(); const tms = [];
+  const T = name => { const n=Date.now(); tms.push(name+':'+(n-tl)); tl=n; };
+  const srcId = imgData(src), sd = srcId.data;
+  let det = null, quad = null;
+  if(opts.smartCrop){
+    det = detectPage(src, 240);
+    if(det.ok) quad = det.quad;
+    else issues.push({code:'nopage', side:-1});
+    dbg.push('tespit:' + (det.ok ? 'ok' : det.reason));
+  }
+  T('tespit');
+  if(!quad) quad = [[0,0],[W-1,0],[W-1,H-1],[0,H-1]];
+  // 1) perspektif: gerçek en/boy oranıyla analiz görüntüsü
+  const ar = det && det.ok ? estimateAspect(quad, W, H) : W/H;
+  const srcPageH = (dist(quad[0],quad[3]) + dist(quad[1],quad[2]))/2;
+  const Ha = Math.round(Math.max(800, Math.min(1200, srcPageH*1.2)));
+  const Wa = Math.round(Ha*ar);
+  const hm = homography([[0,0],[Wa,0],[Wa,Ha],[0,Ha]], quad);
+  if(!hm) throw new Error('homografi');
+  const rectGrid = buildGrid(Wa, Ha, 8, (u,v) => applyH(hm, u, v));
+  const rect = remap(sd, W, H, Wa, Ha, rectGrid, false);
+  T('rect');
+  // 2) kenar bantları + kitap sırtı
+  let box = {x0:0, y0:0, x1:Wa, y1:Ha};
+  if(opts.smartCrop){
+    box = trimBoxRaw(rect, Wa, Ha, box);
+    box = spineBox(rect, Wa, Ha, box);
+  }
+  let bw = box.x1-box.x0;
+  const bh = box.y1-box.y0;
+  T('kutu');
+  // 3) satırları düzleştir + yan sayfayı ayır + yan kenarları dikleştir
+  let fields = [];
+  let margins = null;
+  const cut = {x0:0, x1:bw}, neighborSide = [false,false,false,false];
+  function chainY(fl, x, y){
+    let yy = y;
+    for(let i=fl.length-1; i>=0; i--) yy = yy + fieldAt(fl[i], x, yy);
+    return yy;
+  }
+  const grayBox = () => {
+    const g = new Float32Array(bw*bh);
+    for(let y=0;y<bh;y++) for(let x=0;x<bw;x++){
+      const i=((box.y0+y)*Wa + box.x0+x)*4;
+      g[y*bw+x] = 0.299*rect[i]+0.587*rect[i+1]+0.114*rect[i+2];
+    }
+    return g;
+  };
+  // alanları tahmin et (en çok 2 geçiş); düzleştirilmiş gri + mürekkep döndür
+  const runFields = (g0, ink0) => {
+    const fl = []; let g = g0, ink = ink0;
+    for(let pass=0; pass<2; pass++){
+      G.__fieldWhy = '';
+      const f = estimateTextField(ink, bw, bh);
+      if(!f){ if(!pass) dbg.push('satır yok ' + G.__fieldWhy); break; }
+      fl.push(f);
+      dbg.push(`satır p=${f.pitch.toFixed(1)} n=${f.nMeas} max=${fieldMagnitude(f).toFixed(1)}`);
+      const mapF = (x,y) => [x, chainY(fl, x, y)];
+      ink = remapGray(ink0, bw, bh, mapF);
+      g = remapGray(g0, bw, bh, mapF);
+      if(fieldMagnitude(f) < 0.6) break;
+    }
+    return {fl, g, ink};
+  };
+  if(opts.smartCrop && opts.dewarp !== false){
+    let g0 = grayBox(), ink0 = inkOf(g0, bw, bh);
+    let r = runFields(g0, ink0);
+    if(r.fl.length){
+      const pitch = r.fl[r.fl.length-1].pitch;
+      const nc = findNeighborCut(r.ink, r.g, bw, bh, pitch);
+      dbg.push(`kesme ${nc.x0|0}-${nc.x1|0}/${bw}` + (G.__cutDbg||''));
+      if(nc.x0 > 0 || nc.x1 < bw){
+        // düşey alan x'i değiştirmez → kesim orijinal kırpmaya doğrudan uygulanır;
+        // alanlar yalnızca ana sayfa üzerinde yeniden tahmin edilir
+        if(nc.x0 > 0) neighborSide[3] = true;
+        if(nc.x1 < bw) neighborSide[1] = true;
+        box = {x0: box.x0 + nc.x0, y0: box.y0, x1: box.x0 + nc.x1, y1: box.y1};
+        bw = box.x1 - box.x0;
+        g0 = grayBox(); ink0 = inkOf(g0, bw, bh);
+        r = runFields(g0, ink0);
+      }
+      fields = r.fl;
+      cut.x1 = bw;
+      if(fields.length){
+        const m = estimateMargins(r.ink, bw, bh, fields[fields.length-1].pitch, null);
+        if(m && m.L && m.L.inl > 0.55 && m.L.n >= 6){
+          margins = m;
+          dbg.push(`kenar L(b=${m.L.b.toFixed(3)},%${(m.L.inl*100)|0}) R(b=${m.R?m.R.b.toFixed(3):'-'},%${m.R?(m.R.inl*100)|0:0})`);
+        }
+      }
+    }
+  }
+  T('satır');
+  // yatay eşleme: düz satırlı görüntüde sol (ve uygunsa sağ) yazı kenarını dik yap
+  let hmap = null;
+  if(margins && Math.abs(margins.L.b) < 0.3){
+    const yRef = bh/2;
+    const Lr = margins.L.a + margins.L.b*yRef;
+    const useR = margins.R && margins.R.inl > 0.6 && margins.R.n >= 6 &&
+                 Math.abs(margins.R.b - margins.L.b) < 0.2;
+    const Rr = useR ? margins.R.a + margins.R.b*yRef : 0;
+    hmap = (x, y) => {
+      const Ly = margins.L.a + margins.L.b*y;
+      if(useR && Rr - Lr > bw*0.3){
+        const Ry = margins.R.a + margins.R.b*y;
+        return Ly + (x - Lr) * (Ry - Ly)/(Rr - Lr);
+      }
+      return x + (Ly - Lr);
+    };
+  }
+  // 4) son örnekleme: çıktı → (yatay) → (satır alanı) → kırpma kutusu → homografi → kaynak
+  const cw = cut.x1 - cut.x0;
+  const s = Math.min(outW/cw, outH/bh);
+  const fw = Math.max(16, Math.round(cw*s)), fh = Math.max(16, Math.round(bh*s));
+  const toSrc = (u, v) => {
+    let x = cut.x0 + u/s, y = v/s;
+    if(hmap) x = hmap(x, y);
+    if(fields.length) y = chainY(fields, x, y);
+    return applyH(hm, box.x0 + x, box.y0 + y);
+  };
+  const grid = buildGrid(fw, fh, 8, toSrc);
+  const mag = fh / Math.max(1, srcPageH*bh/Ha);        // çıktı pikseli / kaynak pikseli
+  const pageData = remap(sd, W, H, fw, fh, grid, mag > 1.15);
+  T('örnekle');
+  // 5) düşük çözünürlüklü (1/4) analiz: sayfa dışı zemin + parmak
+  const Q = 4, qw = Math.ceil(fw/Q), qh = Math.ceil(fh/Q);
+  const qRaw = shrinkRGB(pageData, fw, fh, Q);
+  const paperRaw = paperColorQ(qRaw, qw*qh);
+  const paperL = 0.299*paperRaw[0]+0.587*paperRaw[1]+0.114*paperRaw[2];
+  let fillQ = null, fingerQ = null;
+  if(opts.smartCrop){
+    // a) sayfa maskesi dışında kalan VE kağıda benzemeyen (koyu/mavimsi/ten) bölgeler
+    const cand = new Uint8Array(qw*qh);
+    const comp = det && det.ok ? det.compFilled : null;
+    for(let qy=0; qy<qh; qy++) for(let qx=0; qx<qw; qx++){
+      const i = qy*qw+qx, j = i*3;
+      const r=qRaw[j], gg=qRaw[j+1], b=qRaw[j+2], l=0.299*r+0.587*gg+0.114*b;
+      const skin = isSkin(r,gg,b);
+      const notPaper = l < paperL*0.55 || skin || (b - r > 12 && l < paperL*0.9);
+      if(!notPaper) continue;
+      let outsideComp = true;
+      if(comp){
+        const [sx, sy] = gridAt(grid, qx*Q+Q/2, qy*Q+Q/2);
+        const cx=Math.round(sx*det.sc), cy=Math.round(sy*det.sc);
+        for(let dy=-1; dy<=1 && outsideComp; dy++) for(let dx=-1; dx<=1; dx++){
+          const xx=cx+dx, yy=cy+dy;
+          if(xx>=0 && yy>=0 && xx<det.sw && yy<det.sh && comp[yy*det.sw+xx]){ outsideComp=false; break; }
+        }
+      }
+      if(outsideComp || skin) cand[i] = skin ? 2 : 1;
+    }
+    // yalnızca kenara değen bölgeler (sayfa içi fotoğraflar asla silinmez)
+    const bin = new Uint8Array(qw*qh); for(let i=0;i<qw*qh;i++) bin[i] = cand[i] ? 1 : 0;
+    const LC = labelComponents(bin, qw, qh);
+    const touch = new Uint8Array(LC.count+1), skinCnt = new Int32Array(LC.count+1);
+    for(let qx=0;qx<qw;qx++){ touch[LC.labels[qx]]=1; touch[LC.labels[(qh-1)*qw+qx]]=1; }
+    for(let qy=0;qy<qh;qy++){ touch[LC.labels[qy*qw]]=1; touch[LC.labels[qy*qw+qw-1]]=1; }
+    for(let i=0;i<qw*qh;i++) if(cand[i]===2) skinCnt[LC.labels[i]]++;
+    const minF = Math.max(6, qw*qh*0.0008);
+    fillQ = new Uint8Array(qw*qh); fingerQ = new Uint8Array(qw*qh);
+    let anyF=false, anyFi=false;
+    for(let i=0;i<qw*qh;i++){
+      const l = LC.labels[i];
+      if(!l || !touch[l]) continue;
+      fillQ[i]=1; anyF=true;
+      if(skinCnt[l] >= minF && skinCnt[l] > LC.sizes[l]*0.3){ fingerQ[i]=1; anyFi=true; }
+    }
+    if(!anyF) fillQ = null;
+    if(!anyFi) fingerQ = null;
+  }
+  T('maske');
+  // 6) iyileştirme, ardından zemin/parmak bölgelerini kağıtla doldur
+  enhanceRGBA(pageData, fw, fh, opts.mode);
+  if(fillQ){
+    let m = dilate1(fillQ, qw, qh);              // ~4 px pay
+    if(fingerQ) for(let k=0;k<2;k++) m = dilate1(m, qw, qh);
+    const a = new Float32Array(qw*qh); for(let i=0;i<qw*qh;i++) a[i]=m[i];
+    const alpha = boxBlur(a, qw, qh, 1, 1);
+    for(let i=0;i<qw*qh;i++) alpha[i] = Math.min(1, alpha[i]*1.5);
+    fillAlphaQ(pageData, fw, fh, alpha, qw, qh, Q, paperColor(pageData, fw, fh));
+  }
+  T('iyileştir');
+  const pageCanvas = putRGBA(pageData, fw, fh);
+  let fbox = {x0:0,y0:0,x1:fw,y1:fh};
+  if(opts.smartCrop && opts.mode !== 'orig') fbox = trimEnhancedBox(pageData, fw, fh);
+  // 7) sorun analizi (kesik yazı, parmak yazının üstünde)
+  const st = inkStatsQ(pageData, fw, fh, Q, fbox, fingerQ);
+  if(det && det.ok){
+    // dörtgen kenar sırası: 0 üst, 1 sağ, 2 alt, 3 sol (çıktı kenarlarıyla aynı)
+    for(let e=0;e<4;e++){
+      if(neighborSide[e]) continue;
+      // kadraj dışına taşan kenarda yazı var → eksik; taşma görünmese de
+      // üst/alt kenara içerik boşluksuz dayanıyorsa (ör. fotoğrafın yarısı) → eksik
+      if((det.clipped[e] && st.edge[e] > 0.03) || ((e===0 || e===2) && st.edge[e] > 0.4)) issues.push({code:'cut', side:e});
+    }
+    dbg.push(`taşma ${det.clipped.map(v=>v?1:0).join('')} kenar-yazı ${st.edge.map(v=>v.toFixed(3)).join(',')}`);
+  }
+  if(st.fingerOnText > 0.002) issues.push({code:'finger', side:-1});
+  T('analiz');
+  const metrics = {sharp: st.sharp, inkFrac: st.frac, ms: 0};
+  // 8) tek tip çıktı sayfası (tam outW×outH)
+  const out = toFinalPage(pageCanvas, fbox, outW, outH);
+  T('son');
+  metrics.ms = Date.now()-t0;
+  dbg.push(tms.join(' '));
+  dbg.push(`${W}x${H} → ${fw}x${fh} → ${outW}x${outH}, ${metrics.ms} ms`);
+  return {canvas: out, issues, metrics, dbg: dbg.join(' | ')};
+}
+function gridAt(grid, u, v){
+  const gyf=v/grid.gs, gy=Math.min(grid.gh-2, gyf|0), fy=gyf-gy, gxf=u/grid.gs, gx=Math.min(grid.gw-2, gxf|0), fx=gxf-gx;
+  const i00=gy*grid.gw+gx, i01=i00+grid.gw;
+  return [
+    (grid.mx[i00]*(1-fx)+grid.mx[i00+1]*fx)*(1-fy)+(grid.mx[i01]*(1-fx)+grid.mx[i01+1]*fx)*fy,
+    (grid.my[i00]*(1-fx)+grid.my[i00+1]*fx)*(1-fy)+(grid.my[i01]*(1-fx)+grid.my[i01+1]*fx)*fy,
+  ];
+}
+/* RGBA → Q×Q blok ortalamalı RGB (Float32, 3 kanal) */
+function shrinkRGB(d, w, h, Q){
+  const qw=Math.ceil(w/Q), qh=Math.ceil(h/Q);
+  const o=new Float32Array(qw*qh*3), c=new Float32Array(qw*qh);
+  for(let y=0;y<h;y++){
+    const qrow=((y/Q)|0)*qw, row=y*w;
+    for(let x=0;x<w;x++){
+      const qi=qrow+((x/Q)|0), j=(row+x)*4, k=qi*3;
+      o[k]+=d[j]; o[k+1]+=d[j+1]; o[k+2]+=d[j+2]; c[qi]++;
+    }
+  }
+  for(let i=0;i<qw*qh;i++){ const n=c[i]||1; o[i*3]/=n; o[i*3+1]/=n; o[i*3+2]/=n; }
+  return o;
+}
+function paperColorQ(q, n){
+  const rs=[],gs=[],bs=[];
+  for(let i=0;i<n;i++){ const j=i*3, l=0.299*q[j]+0.587*q[j+1]+0.114*q[j+2]; if(l>140){ rs.push(q[j]); gs.push(q[j+1]); bs.push(q[j+2]); } }
+  if(rs.length < n*0.05) return [245,245,245];
+  return [quantile(rs,0.6), quantile(gs,0.6), quantile(bs,0.6)];
+}
+/* düşük çözünürlüklü alfa haritasını çift doğrusal büyüterek doldur */
+function fillAlphaQ(d, w, h, a, qw, qh, Q, col){
+  for(let y=0;y<h;y++){
+    const fy=Math.max(0, Math.min(qh-1.001, (y+0.5)/Q-0.5)), y0=fy|0, ty=fy-y0;
+    for(let x=0;x<w;x++){
+      const fx=Math.max(0, Math.min(qw-1.001, (x+0.5)/Q-0.5)), x0=fx|0, tx=fx-x0;
+      const p=y0*qw+x0;
+      const al=(a[p]*(1-tx)+a[p+1]*tx)*(1-ty)+(a[p+qw]*(1-tx)+a[p+qw+1]*tx)*ty;
+      if(al<=0.01) continue;
+      const j=(y*w+x)*4;
+      d[j]=d[j]*(1-al)+col[0]*al; d[j+1]=d[j+1]*(1-al)+col[1]*al; d[j+2]=d[j+2]*(1-al)+col[2]*al;
+    }
+  }
+}
+/* yan sayfa: ana sayfanın satırları düzleştirildikten sonra, komşu sayfanın
+   satırları ana sayfanınkilerle HİZALI OLMAZ. Dar şeritlerin satır profilleri
+   merkez referansla pencere pencere karşılaştırılır; merkezden dışa doğru
+   arka arkaya "hizasız yazı" şeritleri bulunursa, araya düşen en boş sütundan
+   kesilir (kesim yalnızca gerçek bir boşlukta yapılır → ana sayfadan yazı
+   asla kesilmez). */
+function findNeighborCut(ink, g, w, h, pitch){
+  const res = {x0:0, x1:w};
+  G.__cutDbg = '';
+  const P = pitch;
+  const sw = Math.max(8, Math.round(P*1.2));
+  const ns = Math.floor(w/sw);
+  if(ns < 6) return res;
+  const profs = [];
+  for(let k=0;k<ns;k++){
+    const x0=k*sw, x1=Math.min(w, x0+sw), p=new Float32Array(h);
+    for(let y=0;y<h;y++){ let s=0; const r=y*w; for(let x=x0;x<x1;x++) s+=ink[r+x]; p[y]=s/(x1-x0); }
+    profs.push(smooth1(p, 1));
+  }
+  const ka=Math.floor(ns*0.35), kb=Math.max(ka+1, Math.ceil(ns*0.65));
+  const ref=new Float32Array(h);
+  for(let k=ka;k<kb;k++) for(let y=0;y<h;y++) ref[y]+=profs[k][y]/(kb-ka);
+  const hw=Math.max(6, Math.round(2*P)), st=Math.max(4, Math.round(P)), smax=Math.max(1, Math.round(0.15*P));
+  const wins=[]; for(let yc=hw+smax; yc<h-hw-smax; yc+=st) wins.push(yc);
+  if(wins.length < 4) return res;
+  const en = (p, yc) => { let s=0,s2=0,n=0; for(let y=yc-hw;y<=yc+hw;y++){ s+=p[y]; s2+=p[y]*p[y]; n++; } const m=s/n; return s2/n-m*m; };
+  const refE = wins.map(yc => en(ref, yc));
+  const allE = []; profs.forEach(p => wins.forEach(yc => allE.push(en(p, yc))));
+  const eT = quantile(allE, 0.7)*0.15;
+  const rT = quantile(refE, 0.7)*0.15;
+  const ncc = (a, b, yc, s) => {
+    let sa=0,sb=0,n=0;
+    for(let y=yc-hw;y<=yc+hw;y++){ sa+=a[y]; sb+=b[y+s]; n++; }
+    const ma=sa/n, mb=sb/n; let num=0,ea=0,eb=0;
+    for(let y=yc-hw;y<=yc+hw;y++){ const da=a[y]-ma, db=b[y+s]-mb; num+=da*db; ea+=da*da; eb+=db*db; }
+    return ea>0&&eb>0 ? num/Math.sqrt(ea*eb) : 0;
+  };
+  const frac = profs.map(p => {
+    let n=0, good=0;
+    wins.forEach((yc, wi) => {
+      if(en(p, yc) < eT || refE[wi] < rT) return;
+      n++;
+      let b=-1; for(let s=-smax;s<=smax;s++) b=Math.max(b, ncc(ref, p, yc, s));
+      if(b > 0.5) good++;
+    });
+    return n >= 3 ? good/n : null;
+  });
+  // sütun "yazı enerjisi" (kesim yeri için): düşeyde yumuşak değişen sırt
+  // gölgesi elenir, yalnızca satır satır değişen gerçek yazı kalır
+  const col=new Float32Array(w);
+  {
+    const r = Math.max(2, Math.round(P*0.6));
+    for(let x=0;x<w;x++){
+      let s=0, acc=0;
+      const k=2*r+1;
+      for(let y=-r;y<=r;y++) acc += ink[Math.min(h-1,Math.max(0,y))*w+x];
+      for(let y=0;y<h;y++){
+        s += Math.abs(ink[y*w+x] - acc/k);
+        acc += ink[Math.min(h-1,y+r+1)*w+x] - ink[Math.max(0,y-r)*w+x];
+      }
+      col[x]=s;
+    }
+  }
+  const cs=smooth1(col, Math.max(1, Math.round(P/6)));
+  const textCol = quantile(cs.subarray((w*0.25)|0, (w*0.75)|0), 0.6);
+  G.__cutDbg = ' frac=' + frac.map(f => f==null ? '-' : Math.min(9, f*10|0)).join('');
+  const scan = (from, to, step) => {
+    let lastGood = -1, firstBad = -1, bad = 0;
+    for(let k=from; step>0 ? k<to : k>to; k+=step){
+      const f = frac[k];
+      if(f == null) continue;
+      if(f >= 0.45){ lastGood = k; firstBad = -1; bad = 0; }
+      else if(f < 0.3){
+        if(firstBad < 0) firstBad = k;
+        bad++;
+        if(bad >= 2) break;
+      }
+    }
+    if(firstBad < 0 || lastGood < 0) return -1;
+    // dış tarafta yalnız 1 hizasız şerit varsa, ötesinde yazı olmamalı (dar komşu şerit)
+    if(bad < 2){
+      for(let k=firstBad+step; step>0 ? k<ns : k>=0; k+=step) if(frac[k] != null) return -1;
+    }
+    // en boş sütun: son iyi şerit ile ilk kötü şerit arasında
+    const a = step>0 ? lastGood*sw + sw/2 : firstBad*sw + sw/2;
+    const b = step>0 ? firstBad*sw + sw/2 : lastGood*sw + sw/2;
+    let bx=-1, bv=1e9;
+    for(let x=Math.max(0, a|0); x<Math.min(w, b|0); x++) if(cs[x] < bv){ bv=cs[x]; bx=x; }
+    if(bx < 0 || bv > textCol*0.3) return -1;     // gerçek boşluk yok → kesme
+    return bx;
+  };
+  const kc = ns>>1;
+  const xr = scan(kc, ns, 1), xl = scan(kc, -1, -1);
+  if(xr > 0) res.x1 = xr;
+  if(xl > 0) res.x0 = xl;
+  if(res.x1 - res.x0 < w*0.4) return {x0:0, x1:w};
+  return res;
+}
+/* mürekkep istatistikleri (1/4 çözünürlükte): kenar bantlarındaki yazı,
+   parmak/yazı çakışması, netlik */
+function inkStatsQ(d, w, h, Q, box, fingerQ){
+  const qw=Math.ceil(w/Q), qh=Math.ceil(h/Q);
+  const q = shrinkRGB(d, w, h, Q);
+  const L = new Float32Array(qw*qh);
+  for(let i=0;i<qw*qh;i++) L[i]=0.299*q[i*3]+0.587*q[i*3+1]+0.114*q[i*3+2];
+  const paper = quantile(L, 0.8);
+  const thr = paper*0.86;
+  const bx0=(box.x0/Q)|0, bx1=Math.ceil(box.x1/Q), by0=(box.y0/Q)|0, by1=Math.ceil(box.y1/Q);
+  const band = Math.max(2, Math.round(Math.min(qw,qh)*0.03));
+  const frac = (x0,x1,y0,y1) => { let c=0,t=0; for(let y=Math.max(0,y0);y<Math.min(qh,y1);y++) for(let x=Math.max(0,x0);x<Math.min(qw,x1);x++){ t++; if(L[y*qw+x]<thr) c++; } return t?c/t:0; };
+  const edge = [frac(bx0,bx1,by0,by0+band), frac(bx1-band,bx1,by0,by1), frac(bx0,bx1,by1-band,by1), frac(bx0,bx0+band,by0,by1)];
+  const all = frac(bx0,bx1,by0,by1);
+  let fingerOnText = 0;
+  if(fingerQ){
+    // yazı bloğu sınırları; parmak bu blokla örtüşüyorsa metin kapanmıştır
+    const colI=new Float32Array(qw), rowI=new Float32Array(qh);
+    for(let y=0;y<qh;y++) for(let x=0;x<qw;x++){ const i=y*qw+x; if(!fingerQ[i] && L[i]<thr){ colI[x]++; rowI[y]++; } }
+    const cq=quantile(colI,0.9)*0.2, rq=quantile(rowI,0.9)*0.2;
+    let tx0=qw,tx1=0,ty0=qh,ty1=0;
+    for(let x=0;x<qw;x++) if(colI[x]>cq){ if(x<tx0) tx0=x; tx1=x; }
+    for(let y=0;y<qh;y++) if(rowI[y]>rq){ if(y<ty0) ty0=y; ty1=y; }
+    let ov=0;
+    for(let y=ty0;y<=ty1;y++) for(let x=tx0;x<=tx1;x++) if(fingerQ[y*qw+x]) ov++;
+    fingerOnText = ov/(qw*qh);
+  }
+  // netlik: tam çözünürlükte seyrek gradyan örneklemesi
+  let gs=0, gn=0;
+  const lum = i => 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+  for(let y=1;y<h-1;y+=4) for(let x=1;x<w-1;x+=4){
+    const i=(y*w+x)*4;
+    const m=Math.abs(lum(i+4)-lum(i-4))+Math.abs(lum(i+w*4)-lum(i-w*4));
+    if(m>30){ gs+=m; gn++; }
+  }
+  return {edge, frac: all, fingerOnText, sharp: gn ? gs/gn : 0};
+}
+/* tüm sayfalar TAM outW×outH; kırpma kutusu oranı korunarak ortalanır */
+function toFinalPage(canvas, box, W, H){
+  const w=box.x1-box.x0, h=box.y1-box.y0;
+  const s=Math.min(W/w, H/h);
+  const dw=Math.round(w*s), dh=Math.round(h*s);
+  const d=ctx2d(canvas).getImageData(box.x0, box.y0, w, h).data;
+  const rs=[],gs=[],bs=[];
+  for(let x=0;x<w;x+=3) for(const y of [0,h-1]){ const i=(y*w+x)*4; rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]); }
+  for(let y=0;y<h;y+=3) for(const x of [0,w-1]){ const i=(y*w+x)*4; rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]); }
+  const c=mkCanvas(W,H), x2=ctx2d(c);
+  x2.fillStyle=`rgb(${quantile(rs,0.5)|0},${quantile(gs,0.5)|0},${quantile(bs,0.5)|0})`;
+  x2.fillRect(0,0,W,H);
+  x2.imageSmoothingEnabled=true; x2.imageSmoothingQuality='high';
+  x2.drawImage(canvas, box.x0, box.y0, w, h, (W-dw)>>1, (H-dh)>>1, dw, dh);
+  return c;
+}
+
+/* ---------- Worker ---------- */
+async function handleProcess(m){
+  const bmp = await createImageBitmap(m.blob);
+  const c = mkCanvas(bmp.width, bmp.height);
+  ctx2d(c).drawImage(bmp, 0, 0);
+  if(bmp.close) bmp.close();
+  const r = processCanvas(c, m.opts);
+  const out = rotateCanvas(r.canvas, m.opts.rot||0);
+  const blob = await canvasToBlob(out, 'image/jpeg', m.opts.quality || 0.85);
+  const tw = 240, th = Math.round(out.height*tw/out.width);
+  const t = mkCanvas(tw, th), tx = t.getContext('2d');
+  tx.imageSmoothingEnabled = true; tx.imageSmoothingQuality = 'high';
+  tx.drawImage(downscale(out, tw*2, th*2), 0, 0, tw, th);
+  const thumb = await canvasToBlob(t, 'image/jpeg', 0.75);
+  return {blob, thumb, w:out.width, h:out.height, issues:r.issues, metrics:r.metrics, dbg:r.dbg};
+}
+if(IN_WORKER){
+  self.onmessage = async e => {
+    const m = e.data;
+    try{
+      const r = await handleProcess(m);
+      self.postMessage(Object.assign({id:m.id, ok:true}, r));
+    }catch(err){
+      self.postMessage({id:m.id, ok:false, error: String(err && err.stack || err)});
+    }
+  };
+}
+
+G.ScanCore = {
+  mkCanvas, ctx2d, canvasToBlob, downscale, grayOf, toGray, mean, lapVar, quantile,
+  detectPage, detectPageData, pageSignature, sigDiff, processCanvas, handleProcess,
+  rotateCanvas, estimateTextField, estimateAspect, homography, applyH, inQuad,
+};
+})(typeof self !== 'undefined' ? self : this);

@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f1420">
-<title>INSTANT SCANNER — Videodan PDF</title>
+<title>INSTANT SCANNER — Kitaptan PDF</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <style>
   :root{
     --bg:#0f1420; --card:#182034; --card2:#1f2942; --line:#2b3654;
     --text:#e8edf7; --dim:#93a0bd; --accent:#4f8cff; --accent2:#39d98a;
-    --danger:#ff5c7a; --radius:16px;
+    --danger:#ff5c7a; --warn:#ffb020; --radius:16px;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
   html,body{margin:0; padding:0}
@@ -44,11 +44,12 @@
   .bigbtn.alt{background:linear-gradient(135deg,#2aae72,#1d9e63)}
   .bigbtn small{font-weight:400; font-size:12px; opacity:.85}
   .bigbtn .ic{font-size:30px}
+  .linkbtn{background:none; border:0; color:var(--dim); text-decoration:underline; cursor:pointer; font-size:13px; padding:8px 0}
   .drop{outline:2px dashed transparent; transition:outline .15s}
   .drop.over{outline:2px dashed var(--accent); outline-offset:6px}
   .tips{color:var(--dim); font-size:13px; line-height:1.7; margin:14px 0 0}
   .tips b{color:var(--text)}
-  .settings{display:flex; gap:14px; flex-wrap:wrap; margin-top:14px}
+  .settings{display:flex; gap:14px; flex-wrap:wrap}
   .setting{display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--dim)}
   select,input[type=text]{
     background:var(--card2); color:var(--text); border:1px solid var(--line);
@@ -57,7 +58,6 @@
   .switch{display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
     background:var(--card2); border:1px solid var(--line); border-radius:10px; padding:9px 12px; font-size:14px; color:var(--text)}
   .switch input{accent-color:var(--accent); width:17px; height:17px}
-  /* progress */
   .bar{height:10px; background:var(--card2); border-radius:99px; overflow:hidden; margin:14px 0 8px}
   .bar>div{height:100%; width:0%; border-radius:99px;
     background:linear-gradient(90deg,var(--accent),var(--accent2)); transition:width .2s}
@@ -70,23 +70,34 @@
   .btn.gray{background:var(--card2); border:1px solid var(--line)}
   .btn.green{background:var(--accent2); color:#08301c}
   .btn.red{background:var(--danger)}
+  .btn.warn{background:var(--warn); color:#3a2800}
   .btn:active{transform:scale(.97)}
+  .btn:disabled{opacity:.5}
   .rowbtns{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
-  /* results */
+  /* sorun bandı */
+  #issueBar{display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+    background:#3a1d26; border:1px solid #6b2a3b; color:#ffd0da; border-radius:12px;
+    padding:12px 14px; margin-top:12px; font-size:14px}
+  #issueBar[hidden]{display:none}
+  #issueBar .txt{flex:1; min-width:200px; line-height:1.5}
+  /* sonuçlar */
   #grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:12px; margin-top:14px}
   .page{
     background:var(--card2); border:1px solid var(--line); border-radius:12px;
     overflow:hidden; position:relative;
   }
-  .page img{width:100%; display:block; aspect-ratio:3/4; object-fit:cover; cursor:pointer; background:#fff}
+  .page.bad{border-color:var(--danger); box-shadow:0 0 0 1px var(--danger) inset}
+  .page img{width:100%; display:block; aspect-ratio:1/1.414; object-fit:cover; cursor:pointer; background:#fff}
+  .page .ph{width:100%; aspect-ratio:1/1.414; display:flex; align-items:center; justify-content:center; background:#26314f}
   .page .num{
     position:absolute; top:6px; left:6px; background:#000a; color:#fff;
     font-size:12px; padding:2px 8px; border-radius:99px;
   }
-  .page .dupbadge{
-    position:absolute; top:6px; right:6px; background:#ffb020; color:#3a2800;
-    font-size:11px; font-weight:700; padding:2px 7px; border-radius:99px;
-  }
+  .badges{position:absolute; top:6px; right:6px; display:flex; flex-direction:column; gap:4px; align-items:flex-end}
+  .badge{font-size:11px; font-weight:700; padding:2px 7px; border-radius:99px}
+  .badge.dup{background:var(--warn); color:#3a2800}
+  .badge.bad{background:var(--danger); color:#fff}
+  .page .why{font-size:11px; color:#ffb3c1; padding:4px 8px 0; line-height:1.3}
   .page .acts{display:flex}
   .page .acts button{
     flex:1; border:0; background:transparent; color:var(--dim); font-size:16px;
@@ -96,14 +107,22 @@
   .exportbar{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:18px;
     padding-top:16px; border-top:1px solid var(--line)}
   #fname{flex:1; min-width:160px}
-  /* modal */
+  /* modallar */
   #modal{
     position:fixed; inset:0; background:#000d; z-index:50;
     display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;
   }
   #modal[hidden]{display:none}
-  #modalImg{max-width:94vw; max-height:78vh; border-radius:8px; background:#fff}
+  #modalImg{max-width:94vw; max-height:76vh; border-radius:8px; background:#fff}
+  #modalWhy{color:#ffb3c1; font-size:14px; min-height:18px; text-align:center; padding:0 12px}
   #modal .rowbtns{justify-content:center}
+  .dialog{position:fixed; inset:0; background:#000c; z-index:80; display:flex; align-items:center; justify-content:center; padding:16px}
+  .dialog[hidden]{display:none}
+  .dialog .box{background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; max-width:460px; width:100%}
+  .dialog h3{margin:0 0 8px; font-size:18px}
+  .dialog ul{margin:8px 0 14px; padding-left:20px; color:var(--dim); font-size:14px; line-height:1.6; max-height:40vh; overflow:auto}
+  .dialog ul b{color:var(--text)}
+  .dialog .rowbtns{flex-direction:column; align-items:stretch}
   .overlay{
     position:fixed; inset:0; background:#000b; z-index:60;
     display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px;
@@ -111,35 +130,45 @@
   .overlay[hidden]{display:none}
   .spin{width:40px;height:40px;border-radius:50%;border:4px solid var(--line);
     border-top-color:var(--accent); animation:sp 1s linear infinite}
+  .spin.sm{width:22px;height:22px;border-width:3px}
   @keyframes sp{to{transform:rotate(360deg)}}
   .err{color:var(--danger); font-size:14px; margin-top:10px; white-space:pre-wrap}
-  /* uygulama içi kamera */
-  #camModal{position:fixed; inset:0; background:#000; z-index:70; display:flex; flex-direction:column}
+  /* canlı tarama */
+  #camModal{position:fixed; inset:0; background:#000; z-index:70; display:flex; flex-direction:column; overflow:hidden}
   #camModal[hidden]{display:none}
-  #camView{flex:1; width:100%; object-fit:cover; background:#000}
+  #camStage{position:relative; flex:1; min-height:0}
+  #camView{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000}
+  #camOverlay{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
+  #camFlash{position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; transition:opacity .25s}
   .camhint{
-    position:absolute; top:14px; left:50%; transform:translateX(-50%);
-    background:#000a; color:#fff; padding:8px 14px; border-radius:99px;
-    font-size:13px; z-index:2; text-align:center; max-width:86vw;
+    position:absolute; top:max(14px, env(safe-area-inset-top)); left:50%; transform:translateX(-50%);
+    background:#000b; color:#fff; padding:9px 16px; border-radius:99px;
+    font-size:15px; font-weight:600; z-index:2; text-align:center; max-width:90vw; transition:background .2s;
   }
-  #camTimer{
-    position:absolute; top:54px; left:50%; transform:translateX(-50%);
-    color:#ff5c7a; font-weight:700; font-size:16px; z-index:2; display:none;
+  .camhint.ok{background:#1d9e63e6}
+  .camhint.warn{background:#c2410ce6}
+  #camCounter{
+    position:absolute; top:calc(max(14px, env(safe-area-inset-top)) + 48px); left:50%; transform:translateX(-50%);
+    color:#fff; font-size:13px; z-index:2; background:#0008; padding:4px 12px; border-radius:99px;
   }
+  #camRetake{position:absolute; left:12px; top:calc(max(14px, env(safe-area-inset-top)) + 84px); z-index:2;
+    background:#000b; border-radius:12px; padding:6px; display:flex; gap:8px; align-items:center; color:#fff; font-size:13px; max-width:70vw}
+  #camRetake[hidden]{display:none}
+  #camRetake img{width:54px; border-radius:4px; background:#fff}
   .cambar{
-    position:absolute; bottom:0; left:0; right:0; z-index:2;
-    display:flex; justify-content:center; align-items:center; gap:36px;
-    padding:22px 0 max(26px, env(safe-area-inset-bottom));
-    background:linear-gradient(transparent, #000c);
+    display:flex; justify-content:space-around; align-items:center; gap:14px;
+    padding:14px 12px max(18px, env(safe-area-inset-bottom));
+    background:#000;
   }
   .camround{
-    width:58px; height:58px; border-radius:50%; border:0; font-size:24px;
-    background:#ffffff26; color:#fff; cursor:pointer;
+    width:56px; height:56px; border-radius:50%; border:0; font-size:22px;
+    background:#ffffff26; color:#fff; cursor:pointer; flex:none;
   }
   .camround.on{background:#ffd54a; color:#000}
-  #camRec{width:76px; height:76px; font-size:32px; background:#fff; color:#e33}
-  #camRec.rec{background:#e33; color:#fff; animation:pulse 1.2s infinite}
-  @keyframes pulse{50%{box-shadow:0 0 0 12px #e3333344}}
+  #camThumb{width:56px; height:56px; border-radius:10px; border:2px solid #fff6; background:#222 center/cover no-repeat; position:relative; flex:none}
+  #camThumb span{position:absolute; right:-8px; top:-8px; background:var(--accent2); color:#08301c; font-weight:800; font-size:12px; border-radius:99px; padding:2px 7px}
+  #camDone{height:56px; padding:0 22px; border-radius:99px; border:0; background:var(--accent2); color:#08301c; font-size:17px; font-weight:800; cursor:pointer}
+  #camPause{width:56px; height:56px}
   .toast{
     position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
     background:#3a2c10; color:#ffd88a; border:1px solid #6b5220;
@@ -155,54 +184,62 @@
   <div class="logo">⚡</div>
   <div>
     <h1>INSTANT SCANNER</h1>
-    <p>Kitap sayfalarını videoyla çek → otomatik PDF</p>
+    <p>Kitap ve notları saniyeler içinde düzgün PDF'e çevir</p>
   </div>
 </header>
 
 <main>
   <!-- GİRİŞ -->
   <section class="card drop" id="introCard">
-    <h2>1 · Video</h2>
-    <p class="sub">Sayfaları tek tek çevirdiğin bir video çek veya hazır videoyu seç.</p>
+    <h2>1 · Tara</h2>
+    <p class="sub">Kamerayı sayfaya tut, sayfaları çevir — her sayfa göründüğü an otomatik çekilir.</p>
     <div class="bigbtns" style="margin-top:14px">
-      <button class="bigbtn" id="btnCapture">
-        <span class="ic">🎥</span>Video Çek
-        <small>Uygulama içi kamera · 🔦 ışık desteği</small>
+      <button class="bigbtn" id="btnLive">
+        <span class="ic">📷</span>Canlı Tara
+        <small>Otomatik çekim · ¼ sn yeter · 🔦 ışık</small>
       </button>
       <button class="bigbtn alt" id="btnPick">
-        <span class="ic">📁</span>Video Seç
-        <small>Galeriden / bilgisayardan</small>
+        <span class="ic">📁</span>Video / Foto Seç
+        <small>Galeriden veya bilgisayardan</small>
       </button>
     </div>
+    <button class="linkbtn" id="btnRecord">🎥 Telefonun kamerasıyla video kaydet</button>
     <p class="tips">
-      💡 <b>İyi sonuç için:</b> Her sayfayı çevirdikten sonra <b>~1 saniye sabit tut</b>.
-      Sayfa ekranı doldursun, ışık yeterli olsun, gölge düşürme.
-      Video bittiğinde sayfalar otomatik bulunur — buraya video <b>sürükleyip bırakabilirsin</b> de.
+      💡 <b>Nasıl çalışır:</b> Sayfanın <b>tamamı</b> görünsün, sayfayı çevir, kısa bir an (<b>¼ sn</b>) sabit kalsın — çekim sesi gelince sonraki sayfaya geç.
+      Açılı çekimler düzleştirilir, kıvrık satırlar doğrultulur, kenardaki parmaklar ve sayfa dışı alanlar temizlenir.
+      Eksik çıkan sayfaları sonra tek dokunuşla yeniden çekebilirsin.
     </p>
     <div class="err" id="introErr" hidden></div>
   </section>
 
   <!-- AYARLAR -->
   <section class="card" id="settingsCard">
-    <div class="settings" style="margin-top:0">
+    <div class="settings">
       <label class="setting">Görüntü modu
         <select id="selMode">
-          <option value="color" selected>🎨 Renkli (iyileştirilmiş)</option>
+          <option value="color" selected>🎨 Renkli (temiz beyaz kağıt)</option>
           <option value="gray">⬜ Gri tonlama</option>
-          <option value="doc">📄 Siyah-beyaz belge</option>
-          <option value="orig">📷 Orijinal (işlenmemiş)</option>
+          <option value="doc">📄 Siyah-beyaz (en net yazı)</option>
+          <option value="orig">📷 Orijinal renkler</option>
         </select>
       </label>
       <label class="setting">PDF kalitesi
         <select id="selQuality">
-          <option value="0.92">Yüksek</option>
-          <option value="0.85" selected>Orta</option>
+          <option value="0.92">Yüksek (200 dpi)</option>
+          <option value="0.85" selected>Orta (150 dpi)</option>
           <option value="0.7">Düşük (küçük dosya)</option>
+        </select>
+      </label>
+      <label class="setting">Otomatik çekim için sabit bekleme
+        <select id="selStable">
+          <option value="250" selected>¼ saniye (en hızlı)</option>
+          <option value="500">½ saniye</option>
+          <option value="1000">1 saniye</option>
         </select>
       </label>
       <label class="setting">Akıllı temizlik
         <label class="switch"><input type="checkbox" id="chkCrop" checked>
-          🤖 Kırp · düzleştir · parmak sil (yapay görü)</label>
+          🤖 Düzleştir · kırp · parmak sil</label>
       </label>
     </div>
   </section>
@@ -221,14 +258,20 @@
   <!-- SONUÇLAR -->
   <section class="card" id="resultCard" hidden>
     <h2>2 · Sayfalar <span id="pageCount" style="color:var(--accent2)"></span></h2>
-    <p class="sub">Bir sayfaya dokunarak büyüt. 🔄 döndürür, 🗑 siler. Ayarları değiştirirsen sayfalar yeniden işlenir.
-      Sarı <b style="color:#ffb020">TEKRAR?</b> rozeti: bir önceki sayfanın kopyası olabilir — kontrol edip gerekirse sil.</p>
+    <p class="sub">Dokunarak büyüt · 📷 yeniden çek · 🔄 döndür · 🗑 sil.
+      <b style="color:var(--danger)">Kırmızı</b> çerçeve: sayfada eksik/sorun var.
+      <b style="color:var(--warn)">TEKRAR?</b>: önceki sayfanın kopyası olabilir.</p>
+    <div id="issueBar" hidden>
+      <div class="txt" id="issueText"></div>
+      <button class="btn warn" id="btnRetakeAll">📷 Yeniden çek</button>
+    </div>
     <div id="grid"></div>
     <div class="exportbar">
       <input type="text" id="fname" value="tarama" placeholder="dosya adı">
       <button class="btn green" id="btnPdf">📄 PDF İndir</button>
-      <button class="btn gray" id="btnMore">➕ Video Ekle</button>
-      <button class="btn gray" id="btnReset">🔁 Baştan Başla</button>
+      <button class="btn gray" id="btnMoreLive">📷 Sayfa Ekle</button>
+      <button class="btn gray" id="btnMore">➕ Dosya Ekle</button>
+      <button class="btn gray" id="btnReset">🔁 Baştan</button>
     </div>
   </section>
 </main>
@@ -236,220 +279,426 @@
 <!-- ÖNİZLEME -->
 <div id="modal" hidden>
   <img id="modalImg" alt="sayfa önizleme">
+  <div id="modalWhy"></div>
   <div class="rowbtns">
-    <button class="btn gray" id="mPrev">‹ Önceki</button>
-    <button class="btn gray" id="mRotate">🔄 Döndür</button>
-    <button class="btn red" id="mDelete">🗑 Sil</button>
-    <button class="btn gray" id="mNext">Sonraki ›</button>
+    <button class="btn gray" id="mPrev">‹</button>
+    <button class="btn warn" id="mRetake">📷 Yeniden çek</button>
+    <button class="btn gray" id="mRotate">🔄</button>
+    <button class="btn red" id="mDelete">🗑</button>
+    <button class="btn gray" id="mNext">›</button>
     <button class="btn" id="mClose">Kapat</button>
   </div>
 </div>
 
-<!-- UYGULAMA İÇİ KAMERA -->
-<div id="camModal" hidden>
-  <video id="camView" autoplay playsinline muted></video>
-  <div class="camhint">Her sayfayı çevirince <b>~1 sn sabit tut</b> · karanlıkta 🔦 ışığı aç</div>
-  <div id="camTimer">● 00:00</div>
-  <div class="cambar">
-    <button class="camround" id="camTorch" title="El feneri" style="display:none">🔦</button>
-    <button class="camround" id="camRec" title="Kaydı başlat/durdur">⏺</button>
-    <button class="camround" id="camClose" title="Kapat">✕</button>
+<!-- EKSİK SAYFA DİYALOĞU -->
+<div class="dialog" id="issueDlg" hidden>
+  <div class="box">
+    <h3>⚠ Bazı sayfalarda eksik var</h3>
+    <div class="sub">Bu sayfaları yeniden çekmek ister misin? İstemezsen PDF yine de oluşturulur.</div>
+    <ul id="issueList"></ul>
+    <div class="rowbtns">
+      <button class="btn warn" id="dlgRetake">📷 Evet, yeniden çek</button>
+      <button class="btn green" id="dlgPdf">📄 Hayır, PDF'i yine de oluştur</button>
+      <button class="btn gray" id="dlgCancel">Vazgeç</button>
+    </div>
   </div>
 </div>
 
-<!-- YENİDEN İŞLEME -->
+<!-- CANLI TARAMA -->
+<div id="camModal" hidden>
+  <div id="camStage">
+    <video id="camView" autoplay playsinline muted></video>
+    <canvas id="camOverlay"></canvas>
+    <div id="camFlash"></div>
+    <div class="camhint" id="camHint">Sayfayı kadraja al</div>
+    <div id="camCounter">0 sayfa</div>
+    <div id="camRetake" hidden><img id="camRetakeImg" alt=""><span id="camRetakeTxt"></span></div>
+  </div>
+  <div class="cambar">
+    <button class="camround" id="camClose" title="Kapat">✕</button>
+    <button class="camround" id="camTorch" title="El feneri" style="display:none">🔦</button>
+    <div id="camThumb"><span id="camThumbN">0</span></div>
+    <button class="camround" id="camPause" title="Duraklat">⏸</button>
+    <button id="camDone">Bitti ✓</button>
+  </div>
+</div>
+
+<!-- MEŞGUL -->
 <div class="overlay" id="overlay" hidden>
   <div class="spin"></div>
   <div id="overlayText">İşleniyor…</div>
 </div>
 
 <video id="vid" muted playsinline preload="auto" hidden></video>
-<input type="file" id="filePick" accept="video/*" hidden>
+<input type="file" id="filePick" accept="video/*,image/*" multiple hidden>
 <input type="file" id="fileCapture" accept="video/*" capture="environment" hidden>
+<input type="file" id="photoCapture" accept="image/*" capture="environment" hidden>
 
+<script src="core.js"></script>
 <script>
 'use strict';
 /* ============================================================
-   INSTANT SCANNER — video → sayfa tespiti → iyileştirme → PDF
+   INSTANT SCANNER — canlı tarama / video → sayfa → düzgün PDF
    Tüm işlem cihazda yapılır; hiçbir veri yüklenmez.
    ============================================================ */
-
 const $ = id => document.getElementById(id);
 const log = (...a) => console.log('[scan]', ...a);
+const C = window.ScanCore;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const state = {
-  pages: [],        // {id, time, origBlob, w, h, rot, procBlob, outW, outH, thumbUrl, sharp, sig}
+  pages: [],      // {id, origBlob, rot, ver, status, procBlob, thumbUrl, outW, outH, issues, metrics, maybeDup, time}
   cancel: false,
   busy: false,
   nextId: 1,
+  issuesAccepted: false,
 };
-const settings = { mode:'color', quality:0.85, smartCrop:true };
+const settings = { mode:'color', quality:0.85, smartCrop:true, stableMs:250 };
+const OUT_SIZE = { '0.92':[1654,2339], '0.85':[1240,1754], '0.7':[1000,1414] };
+const SIDE_TR = ['üst','sağ','alt','sol'];
 
-/* ---------- yardımcılar ---------- */
-function canvasToBlob(c, type, q){
-  return new Promise(res => c.toBlob(b => res(b), type, q));
+function toast(msg, ms){
+  const t = document.createElement('div');
+  t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), ms || 5000);
 }
-function seekTo(v, t){
-  return new Promise(res => {
-    let done = false;
-    const fin = () => { if(!done){done=true; v.removeEventListener('seeked', fin); res();} };
-    v.addEventListener('seeked', fin);
-    setTimeout(fin, 2500); // güvenlik
-    v.currentTime = Math.max(0, Math.min(t, (v.duration||t) - 0.03));
-  });
+function setProg(status, pct, count){
+  $('progStatus').textContent = status;
+  $('progBar').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  if(count !== undefined) $('progCount').textContent = '📄 ' + count;
 }
-function toGray(imgData){
-  const d = imgData.data, n = d.length/4, g = new Float32Array(n);
-  for(let i=0;i<n;i++){ const j=i*4; g[i] = 0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]; }
-  return g;
-}
-function meanAbsDiff(a,b){
-  let s=0; for(let i=0;i<a.length;i++) s += Math.abs(a[i]-b[i]);
-  return s/a.length;
-}
-function mean(a){ let s=0; for(let i=0;i<a.length;i++) s+=a[i]; return s/a.length; }
-function lapVar(g,w,h){
-  let sum=0, sum2=0, n=0;
-  for(let y=1;y<h-1;y++){
-    const r=y*w;
-    for(let x=1;x<w-1;x++){
-      const i=r+x;
-      const v = 4*g[i]-g[i-1]-g[i+1]-g[i-w]-g[i+w];
-      sum+=v; sum2+=v*v; n++;
-    }
-  }
-  const m=sum/n; return sum2/n - m*m;
-}
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
-
-/* ---------- video analizi ---------- */
-async function analyzeVideo(video, onProg){
-  const dur = video.duration;
-  const step = dur > 240 ? 0.3 : 0.2;                 // analiz aralığı (sn)
-  const vw = video.videoWidth, vh = video.videoHeight;
-  const sc = 170/Math.max(vw,vh);
-  const aw = Math.max(24, Math.round(vw*sc)), ah = Math.max(24, Math.round(vh*sc));
-  const c = document.createElement('canvas'); c.width=aw; c.height=ah;
-  const cx = c.getContext('2d', {willReadFrequently:true});
-  const samples = [];
-  let prev = null;
-  for(let t=0.05; t<dur-0.05; t+=step){
-    if(state.cancel) throw new Error('cancelled');
-    await seekTo(video, t);
-    cx.drawImage(video, 0, 0, aw, ah);
-    const g = toGray(cx.getImageData(0,0,aw,ah));
-    const motion = prev ? meanAbsDiff(g, prev) : 99;
-    const sharp  = lapVar(g, aw, ah);
-    const bright = mean(g);
-    samples.push({t, motion, sharp, bright});
-    prev = g;
-    onProg(t/dur);
-  }
-  return samples;
-}
-
-/* hareket eşiği: 2-ortalamalı kümeleme (sabit / hareketli) */
-function motionThreshold(samples){
-  const m = samples.slice(1).map(s => Math.min(s.motion, 40));
-  if(!m.length) return 3;
-  let c0 = Math.min(...m), c1 = Math.max(...m);
-  for(let k=0;k<14;k++){
-    let s0=0,n0=0,s1=0,n1=0;
-    for(const v of m){
-      if(Math.abs(v-c0) <= Math.abs(v-c1)){ s0+=v; n0++; } else { s1+=v; n1++; }
-    }
-    if(n0) c0=s0/n0; if(n1) c1=s1/n1;
-  }
-  let thr = (c0+c1)/2;
-  thr = Math.min(thr, c0*2.5 + 1.0);   // sabit kümeye yakın tut
-  thr = Math.max(thr, 1.2);
-  log('motion clusters', c0.toFixed(2), c1.toFixed(2), '→ thr', thr.toFixed(2));
-  return thr;
-}
-
-function findSegments(samples, thr, minLen){
-  const segs=[]; let cur=null;
-  for(let i=1;i<samples.length;i++){
-    if(samples[i].motion <= thr && samples[i].bright > 25){
-      if(!cur) cur={a:i,b:i}; else cur.b=i;
-    } else if(cur){ segs.push(cur); cur=null; }
-  }
-  if(cur) segs.push(cur);
-  return segs.filter(s => s.b - s.a + 1 >= minLen);
-}
-
-function pickBest(samples, seg){
-  let a=seg.a, b=seg.b;
-  if(b-a >= 4){ a++; b--; }           // geçiş karelerini atla
-  let best=a;
-  for(let i=a;i<=b;i++) if(samples[i].sharp > samples[best].sharp) best=i;
-  return samples[best];
-}
-
-/* ---------- imza & tekrar tespiti ---------- */
-const TINY = 48;
-/* Chrome'da tek adımda aşırı küçültme örnekleme hatası (aliasing) yapar;
-   kademeli yarıya indirerek gerçek alan ortalaması elde ederiz */
-function downscale(src, tw, th){
-  let cur = src;
-  while(cur.width > tw*2 && cur.height > th*2){
-    const nw = Math.max(tw, Math.ceil(cur.width/2));
-    const nh = Math.max(th, Math.ceil(cur.height/2));
-    const c = document.createElement('canvas'); c.width=nw; c.height=nh;
-    const x = c.getContext('2d', {willReadFrequently:true});
-    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
-    x.drawImage(cur, 0, 0, nw, nh);
-    cur = c;
-  }
-  const c = document.createElement('canvas'); c.width=tw; c.height=th;
-  const x = c.getContext('2d', {willReadFrequently:true});
-  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
-  x.drawImage(cur, 0, 0, tw, th);
+function showOverlay(t){ $('overlayText').textContent=t; $('overlay').hidden=false; }
+function hideOverlay(){ $('overlay').hidden=true; }
+function mk(w, h, read){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  if(read) c.getContext('2d', {willReadFrequently:true});
   return c;
 }
-function makeSignature(srcCanvas){
-  const mid = downscale(srcCanvas, TINY, TINY);
-  const hc = downscale(mid, 9, 8);
-  const hg = toGray(hc.getContext('2d').getImageData(0,0,9,8));
-  const bits = new Uint8Array(64);
-  for(let y=0;y<8;y++) for(let x=0;x<8;x++)
-    bits[y*8+x] = hg[y*9+x] > hg[y*9+x+1] ? 1 : 0;
-  const tiny = toGray(mid.getContext('2d').getImageData(0,0,TINY,TINY));
-  const m = mean(tiny);
-  for(let i=0;i<tiny.length;i++) tiny[i] -= m;   // pozlama farkına dayanıklı
-  return {bits, tiny};
-}
-function hamming(a,b){ let d=0; for(let i=0;i<64;i++) d += a[i]!==b[i]; return d; }
-/* kamera kayması olsa da aynı sayfayı yakala: ±R piksel kaydırarak en iyi hizayı ara */
-function shiftMinDiff(a, b, R){
-  const n = TINY; let best = 1e9;
-  for(let dy=-R; dy<=R; dy++){
-    for(let dx=-R; dx<=R; dx++){
-      let s=0, cnt=0;
-      const y0=Math.max(0,dy), y1=n+Math.min(0,dy);
-      const x0=Math.max(0,dx), x1=n+Math.min(0,dx);
-      for(let y=y0;y<y1;y++){
-        const ra=y*n, rb=(y-dy)*n;
-        for(let x=x0;x<x1;x++){ s += Math.abs(a[ra+x]-b[rb+x-dx]); cnt++; }
-      }
-      const d=s/cnt;
-      if(d<best) best=d;
+
+/* ============================================================
+   İŞLEME KUYRUĞU — Web Worker havuzu (arayüz/kamera akıcı kalır).
+   Worker kullanılamazsa (ör. file://) ana iş parçacığında çalışır.
+   ============================================================ */
+const proc = {
+  workers: [], idle: [], queue: [], jobs: new Map(), seq: 0, fallback: false, running: 0, hold: false,
+  init(){
+    const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1));
+    if(typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' || location.protocol === 'file:'){
+      this.fallback = true; log('worker yok → ana iş parçacığı'); return;
     }
+    try{
+      for(let i=0;i<n;i++){
+        const w = new Worker('core.js');
+        w.onmessage = e => this.finish(w, e.data);
+        w.onerror = e => { log('worker hatası', e.message); this.fallback = true; };
+        this.workers.push(w); this.idle.push(w);
+      }
+      log('işleyici sayısı:', n);
+    }catch(e){ this.fallback = true; }
+  },
+  submit(msg){
+    return new Promise((resolve, reject) => {
+      const id = ++this.seq;
+      this.jobs.set(id, {resolve, reject, msg});
+      this.queue.push(id);
+      this.pump();
+    });
+  },
+  pending(){ return this.queue.length + this.running; },
+  setHold(v){ this.hold = v; if(!v) this.pump(); },
+  async pump(){
+    while(this.queue.length && !this.hold){
+      if(this.fallback){
+        if(this.running) return;              // ana iş parçacığında tek tek
+        const id = this.queue.shift(), job = this.jobs.get(id);
+        this.running++;
+        await sleep(0);
+        try{ job.resolve(await C.handleProcess(job.msg)); }
+        catch(err){ job.reject(err); }
+        this.jobs.delete(id); this.running--;
+        continue;
+      }
+      if(!this.idle.length) return;
+      const w = this.idle.pop(), id = this.queue.shift();
+      w._job = id; this.running++;
+      w.postMessage(Object.assign({id}, this.jobs.get(id).msg));
+    }
+  },
+  finish(w, data){
+    const id = w._job, job = this.jobs.get(id);
+    this.running--; this.idle.push(w); w._job = null;
+    if(job){
+      this.jobs.delete(id);
+      if(data.ok) job.resolve(data);
+      else {
+        log('worker işleyemedi, ana iş parçacığına düşülüyor:', data.error);
+        this.fallback = true;
+        C.handleProcess(job.msg).then(job.resolve, job.reject);
+      }
+    }
+    this.pump();
+  },
+  async drain(onProg){
+    while(this.pending()){
+      if(onProg) onProg(this.pending());
+      await sleep(120);
+    }
+  },
+};
+proc.init();
+
+function procOpts(p){
+  const [outW, outH] = OUT_SIZE[String(settings.quality)] || OUT_SIZE['0.85'];
+  return {mode:settings.mode, smartCrop:settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0};
+}
+/* sayfayı (yeniden) işle; eski sonuçlar sürüm numarasıyla elenir */
+function processPage(p){
+  p.ver = (p.ver||0) + 1;
+  const ver = p.ver;
+  p.status = 'busy';
+  return proc.submit({blob:p.origBlob, opts:procOpts(p)}).then(r => {
+    if(p.ver !== ver) return;
+    if(p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
+    p.procBlob = r.blob; p.thumbUrl = URL.createObjectURL(r.thumb);
+    p.outW = r.w; p.outH = r.h; p.issues = r.issues || []; p.metrics = r.metrics || {};
+    p.status = 'done';
+    log(`sayfa ${p.id}:`, r.dbg);
+    onPageProcessed(p);
+  }).catch(err => {
+    if(p.ver !== ver) return;
+    console.error(err); p.status = 'error'; p.issues = [{code:'error', side:-1}];
+    onPageProcessed(p);
+  });
+}
+let renderTimer = null;
+function onPageProcessed(p){
+  if(cam.active) cam.onPageDone(p);
+  if(!$('resultCard').hidden){
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => { computeDocIssues(); renderGrid(); }, 60);
   }
-  return best;
 }
 
-/* ---------- ana akış ---------- */
-async function runPipeline(file){
-  state.cancel = false;
-  state.busy = true;
-  $('introErr').hidden = true;
-  $('introCard').hidden = true;
-  $('settingsCard').hidden = true;
-  $('resultCard').hidden = true;
-  $('progCard').hidden = false;
-  setProg('Video açılıyor…', 0);
+/* ============================================================
+   KARE TARAYICI — canlı kamera ve video için ortak.
+   Her kare: kaba hareket (kaydırma telafili) + netlik + sayfa tespiti.
+   Sayfa stableMs kadar sabit kalınca en iyi kare tam çözünürlükte alınır.
+   Aynı sayfa tekrar görülürse yeni sayfa açılmaz; daha iyiyse eskisinin yerine geçer.
+   ============================================================ */
+const CAP_MAX = 2600;           // saklanan kare: uzun kenar en fazla (bellek)
+const CROP = 256;               // netlik ölçümü için merkezdeki doğal çözünürlüklü pencere
+const DUP_T = 11, NEW_T = 24;   // sayfa imzası farkı eşikleri
+const TURN_SUM = 60;           // sayfa çevirme sayılacak birikmiş hareket
 
+class FrameScanner {
+  constructor(o){
+    this.o = Object.assign({live:false, stableMs:250, maxSide:200}, o);
+    this.vw = 0; this.vh = 0; this.prevC = null; this.run = null;
+    this.mhist = []; this.shist = []; this.last = null; this.frames = 0; this.dtAvg = 0.033; this.lastT = null;
+    this.moveSum = 0;              // son çekimden bu yana birikmiş hareket (sayfa çevirme kanıtı)
+    this.cost = 0;                 // kare başına ortalama analiz süresi (ms)
+    this.debug = [];
+  }
+  ensure(vw, vh){
+    if(this.vw === vw && this.vh === vh) return;
+    this.vw = vw; this.vh = vh;
+    const sc = this.o.maxSide / Math.max(vw, vh);
+    this.sw = Math.max(24, Math.round(vw*sc)); this.sh = Math.max(24, Math.round(vh*sc));
+    this.mid = mk(this.sw*2, this.sh*2, false);
+    this.small = mk(this.sw, this.sh, true);
+    this.crop = mk(CROP, CROP, true);
+    const fs = Math.min(1, CAP_MAX/Math.max(vw, vh));
+    this.fw = Math.round(vw*fs); this.fh = Math.round(vh*fs);
+    this.full = mk(this.fw, this.fh, false);
+    this.prevC = null;
+  }
+  /* uyarlanır hareket eşiği: son ~4 sn'nin gürültü tabanına göre */
+  threshold(){
+    const h = this.mhist;
+    if(h.length < 8) return 4.0;
+    const s = h.slice().sort((a,b)=>a-b);
+    const floor = s[Math.floor(s.length*0.2)];
+    return Math.max(2.2, Math.min(8, floor*1.8 + 1.5));
+  }
+  feed(v, t){
+    const vw = v.videoWidth, vh = v.videoHeight;
+    if(!vw || !vh) return null;
+    const c0 = performance.now();
+    this.ensure(vw, vh); this.frames++;
+    if(this.lastT != null){ const dt = t - this.lastT; if(dt > 0 && dt < 1) this.dtAvg = this.dtAvg*0.85 + dt*0.15; }
+    this.lastT = t;
+    // 1) küçük kare (2 adımda küçült → örtüşme yok)
+    const mx = this.mid.getContext('2d');
+    mx.drawImage(v, 0, 0, this.mid.width, this.mid.height);
+    const sx = this.small.getContext('2d', {willReadFrequently:true});
+    sx.imageSmoothingEnabled = true; sx.imageSmoothingQuality = 'high';
+    sx.drawImage(this.mid, 0, 0, this.sw, this.sh);
+    const px = sx.getImageData(0, 0, this.sw, this.sh).data;
+    // 2) kaba hareket: 4×4 blok ortalaması, ±1 blok kaydırma telafisi (el titremesi elenir)
+    const cw = this.sw>>2, ch = this.sh>>2, cg = new Float32Array(cw*ch);
+    for(let y=0;y<ch*4;y++){
+      const row = y*this.sw, cr = (y>>2)*cw;
+      for(let x=0;x<cw*4;x++){
+        const j = (row+x)*4;
+        cg[cr+(x>>2)] += 0.299*px[j] + 0.587*px[j+1] + 0.114*px[j+2];
+      }
+    }
+    for(let i=0;i<cg.length;i++) cg[i] /= 16;
+    let motion = 99;
+    if(this.prevC && this.prevC.length === cg.length){
+      motion = 1e9;
+      for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){
+        let s=0, n=0;
+        for(let y=Math.max(0,dy); y<ch+Math.min(0,dy); y++){
+          const ra=y*cw, rb=(y-dy)*cw;
+          for(let x=Math.max(0,dx); x<cw+Math.min(0,dx); x++){ s += Math.abs(cg[ra+x]-this.prevC[rb+x-dx]); n++; }
+        }
+        motion = Math.min(motion, s/n);
+      }
+    }
+    this.prevC = cg;
+    if(motion < 99){ this.mhist.push(motion); if(this.mhist.length > 90) this.mhist.shift(); }
+    const thr = this.threshold();
+    const still = motion <= thr;
+    if(!still){
+      if(motion < 99) this.moveSum += motion;
+      if(this.run) this.endRun();
+      this.cost = this.cost*0.9 + (performance.now()-c0)*0.1;
+      if(this.o.debug) this.debug.push([+t.toFixed(3), +motion.toFixed(2), +thr.toFixed(2), 0]);
+      return {state:'moving', motion, thr};
+    }
+    // 3) netlik: merkezde doğal çözünürlükte Laplace varyansı
+    const cs = Math.min(CROP, vw, vh);
+    const cx = this.crop.getContext('2d', {willReadFrequently:true});
+    cx.drawImage(v, (vw-cs)>>1, (vh-cs)>>1, cs, cs, 0, 0, cs, cs);
+    const sharp = C.lapVar(C.grayOf(cx.getImageData(0, 0, cs, cs).data, cs*cs), cs, cs);
+    this.shist.push(sharp); if(this.shist.length > 300) this.shist.shift();
+    if(this.o.debug) this.debug.push([+t.toFixed(3), +motion.toFixed(2), +thr.toFixed(2), sharp|0]);
+    if(!this.run) this.run = {t0:t, t1:t, best:null, emitted:false, emitId:null, emitScore:0, lastDet:null, lastDetT:-9};
+    const run = this.run; run.t1 = t;
+    const dur = run.t1 - run.t0 + this.dtAvg;
+    // 4) sayfa tespiti (yalnızca en iyi olmaya aday karelerde)
+    let det = run.lastDet;
+    const cand = !run.best || sharp > run.best.sharp*0.9;
+    if(this.o.live || (cand && t - run.lastDetT >= 0.1)){
+      det = C.detectPageData(px, this.sw, this.sh, vw, vh);
+      run.lastDet = det; run.lastDetT = t;
+      const score = this.score(sharp, det);
+      if(!run.best || score > run.best.score){
+        this.full.getContext('2d').drawImage(v, 0, 0, this.fw, this.fh);
+        run.best = {t, sharp, score, det, sig: C.pageSignature(px, this.sw, this.sh, det.ok ? det.quadS : null)};
+        run.fresh = true;
+      }
+    }
+    const res = {state:'still', motion, thr, det, dur, stableMs:this.o.stableMs};
+    // 5) canlı: süre dolunca hemen çek; sonra daha iyisi gelirse yerine koy
+    if(this.o.live && run.best){
+      const b = run.best, gateOk = this.gateOk(b.det);
+      res.gate = gateOk;
+      if(!run.emitted && dur*1000 >= this.o.stableMs && (gateOk || dur*1000 >= this.o.stableMs + 1300)){
+        res.captured = this.emit(b, null);
+        run.emitted = true; run.emitScore = b.score; run.emitId = res.captured && res.captured.id;
+        run.fresh = false;
+      } else if(run.emitted && run.fresh && run.emitId && b.score > run.emitScore*1.2 && dur < 4){
+        res.captured = this.emit(b, run.emitId);     // aynı sayfanın daha iyi karesi
+        run.emitScore = b.score; run.fresh = false;
+      }
+    }
+    this.cost = this.cost*0.9 + (performance.now()-c0)*0.1;
+    return res;
+  }
+  /* canlıda çekimden önce: sayfa tam görünüyor mu, parmak yazı üstünde mi */
+  gateOk(det){
+    if(!det || !det.ok) return false;
+    if(det.clipped.some(Boolean)) return false;
+    if(det.skinInner > 0.012) return false;
+    return true;
+  }
+  score(sharp, det){
+    let q = det.ok ? 1 : 0.35;
+    if(det.ok){
+      q *= 1 - Math.min(0.8, det.skinInner*10);
+      if(det.clipped.some(Boolean)) q *= 0.75;
+      q *= 0.6 + 0.4*Math.min(1, det.area/0.45);
+    }
+    return Math.sqrt(Math.max(1, sharp)) * q;
+  }
+  sharpMedian(){
+    if(this.shist.length < 10) return 0;
+    const s = this.shist.slice().sort((a,b)=>a-b);
+    return s[s.length>>1];
+  }
+  endRun(){
+    const run = this.run; this.run = null;
+    if(!run || this.o.live || !run.best) return;
+    const dur = run.t1 - run.t0 + this.dtAvg;
+    if(dur*1000 < this.o.stableMs*0.98) return;
+    // çevirme anındaki bulanık ara kareler: videonun tipik netliğinin çok altında
+    const med = this.sharpMedian();
+    if(med && run.best.sharp < med*0.3) return;
+    if(!run.best.det.ok && dur < 0.6) return;
+    this.emit(run.best, null);
+  }
+  flush(){ if(this.run) this.endRun(); }
+  /* tam çözünürlüklü kareyi bırak; aynı sayfaysa öncekinin yerine geç ya da at.
+     Yeni sayfa kararı: imza farkı + araya giren hareket miktarı (sayfa çevirme) */
+  emit(b, replaceId){
+    const snap = new Promise(res => this.full.toBlob(res, 'image/jpeg', 0.92));
+    if(replaceId){
+      if(this.last && this.last.id === replaceId){ this.last.sig = b.sig; this.last.score = b.score; }
+      this.o.onCapture({replaceId, blob:snap, t:b.t, det:b.det, score:b.score});
+      return {id:replaceId, replaced:true};
+    }
+    let dd = 99;
+    if(this.last) dd = C.sigDiff(b.sig, this.last.sig, 2);
+    const ms = this.moveSum;
+    // yeni sayfa: çok farklı görünüm (ve biraz hareket) ya da belirgin çevirme hareketi
+    const isNew = !this.last || (dd >= NEW_T && ms >= 20) || (ms >= TURN_SUM && dd >= DUP_T);
+    // emin olunamayan durum → "TEKRAR?" ile işaretle (kullanıcı kontrol eder)
+    const maybe = !!this.last && isNew && ((dd < NEW_T && ms < 200) || ms < 70);
+    if(this.o.debug) this.debug.push(['emit', +b.t.toFixed(2), +dd.toFixed(1), +ms.toFixed(0), b.det.ok, b.score|0, isNew, maybe]);
+    if(!isNew){
+      if(b.score > this.last.score*1.1){
+        this.last.sig = b.sig; this.last.score = b.score;
+        this.o.onCapture({replaceId:this.last.id, blob:snap, t:b.t, det:b.det, score:b.score});
+        this.moveSum = 0;
+        return {id:this.last.id, replaced:true};
+      }
+      this.moveSum = 0;
+      return null;                                   // aynı sayfa, daha iyi değil
+    }
+    const id = state.nextId++;
+    this.last = {id, sig:b.sig, score:b.score};
+    this.moveSum = 0;
+    this.o.onCapture({id, blob:snap, t:b.t, det:b.det, score:b.score, maybeDup: maybe});
+    return {id};
+  }
+}
+
+/* çekilen kare → sayfa listesine ekle / değiştir, işleme gönder */
+async function addCapture(c, opts){
+  const blob = await c.blob;
+  if(!blob) return;
+  if(c.replaceId){
+    const p = state.pages.find(q => q.id === c.replaceId);
+    if(!p) return;
+    p.origBlob = blob; p.time = c.t;
+    processPage(p);
+    return p;
+  }
+  const p = {id:c.id, origBlob:blob, rot:0, time:c.t, maybeDup:!!c.maybeDup, issues:[], status:'busy'};
+  if(opts && opts.insertAt != null) state.pages.splice(opts.insertAt, 0, p);
+  else state.pages.push(p);
+  processPage(p);
+  return p;
+}
+
+/* ============================================================
+   VİDEO DOSYASI: oynatarak her kareyi analiz et (requestVideoFrameCallback).
+   Saniyede ~15+ kare incelenir → ¼ sn duran sayfa bile yakalanır.
+   ============================================================ */
+async function scanVideo(file){
   const video = $('vid');
   const url = URL.createObjectURL(file);
   try{
@@ -458,885 +707,213 @@ async function runPipeline(file){
       video.onloadeddata = res;
       video.onerror = () => rej(new Error('Video açılamadı. Format desteklenmiyor olabilir (ör. HEVC).'));
     });
-    if(!isFinite(video.duration)){ // MediaRecorder webm düzeltmesi
+    if(!isFinite(video.duration)){                 // MediaRecorder webm düzeltmesi
       video.currentTime = 1e9;
       await new Promise(r => { video.onseeked = r; setTimeout(r, 3000); });
       video.currentTime = 0;
+      await new Promise(r => { video.onseeked = r; setTimeout(r, 1500); });
     }
-    log('video', video.videoWidth+'x'+video.videoHeight, video.duration.toFixed(1)+'s');
-
-    // 1) analiz
-    $('progTitle').textContent = 'Video analiz ediliyor…';
-    const samples = await analyzeVideo(video, p => setProg(
-      `Kareler taranıyor… ${(p*100)|0}%`, p*55));
-    const thr = motionThreshold(samples);
-    const step = samples.length > 1 ? samples[1].t - samples[0].t : 0.2;
-    const minLen = Math.max(3, Math.round(0.75/step));   // en az ~0.8 sn sabitlik
-    const segs = findSegments(samples, thr, minLen);
-    log('segments', segs.length, segs.map(s=>`${samples[s.a].t.toFixed(1)}-${samples[s.b].t.toFixed(1)}`).join(' '));
-    if(!segs.length) throw new Error(
-      'Sabit sayfa bulunamadı.\nHer sayfayı çevirdikten sonra ~1 sn sabit tutarak tekrar dene.');
-
-    // 2) en net kareleri tam çözünürlükte yakala + tekrarları ele
-    $('progTitle').textContent = 'Sayfalar yakalanıyor…';
-    const cands = segs.map(s => pickBest(samples, s));
-    const vw = video.videoWidth, vh = video.videoHeight;
-    const cap = document.createElement('canvas'); cap.width=vw; cap.height=vh;
-    const capx = cap.getContext('2d', {willReadFrequently:true});
-    const captured = [];
-    for(let i=0;i<cands.length;i++){
-      if(state.cancel) throw new Error('cancelled');
-      const cd = cands[i];
-      await seekTo(video, cd.t);
-      capx.drawImage(video, 0, 0);
-      const sig = makeSignature(cap);
-      const last = captured[captured.length-1];
-      let maybeDup = false;
-      if(last){
-        const h = hamming(sig.bits, last.sig.bits);
-        const smd = shiftMinDiff(sig.tiny, last.sig.tiny, 6);
-        const dup = h<=8 || smd < 12;      // kesin tekrar → otomatik ele
-        maybeDup = !dup && smd < 20;       // şüpheli → rozetle işaretle
-        log(`aday @${cd.t.toFixed(1)}s ham=${h} smd=${smd.toFixed(1)}${dup?' → TEKRAR':maybeDup?' → TEKRAR?':''}`);
-        if(dup){
-          if(cd.sharp > last.sharp){    // daha netse öncekinin yerine geç
-            last.time = cd.t; last.sharp = cd.sharp; last.sig = sig;
-            last.blob = await canvasToBlob(cap, 'image/jpeg', 0.93);
+    const dur = video.duration;
+    log('video', video.videoWidth+'x'+video.videoHeight, dur.toFixed(1)+'s');
+    const before = state.pages.length;
+    const sc = new FrameScanner({live:false, stableMs:settings.stableMs, debug:!!window.__scanDebug,
+      onCapture: c => { addCapture(c); }});
+    const t0 = performance.now();
+    proc.setHold(true);             // analiz bitene dek işleyiciler beklesin (yoğun kare örnekleme)
+    if('requestVideoFrameCallback' in HTMLVideoElement.prototype){
+      video.muted = true;
+      let rate = 3;
+      video.playbackRate = rate;
+      let lastAdj = 0, lastMT = null;
+      const gaps = [];
+      await new Promise((resolve, reject) => {
+        let done = false;
+        const fin = () => { if(!done){ done = true; resolve(); } };
+        const onFrame = (now, meta) => {
+          if(done) return;
+          if(state.cancel){ done = true; video.pause(); reject(new Error('cancelled')); return; }
+          sc.feed(video, meta.mediaTime);
+          // ¼ sn sabitliği yakalamak için ~0.07 sn'de bir kare gerekir: hızı ona göre ayarla
+          if(lastMT != null){ const g = meta.mediaTime - lastMT; if(g > 0 && g < 2){ gaps.push(g); if(gaps.length > 15) gaps.shift(); } }
+          lastMT = meta.mediaTime;
+          if(gaps.length >= 10 && now - lastAdj > 700){
+            const sg = gaps.slice().sort((a,b)=>a-b), med = sg[sg.length>>1];
+            let nr = rate;
+            if(med > 0.085) nr = Math.max(0.75, rate*0.75);
+            else if(med < 0.05) nr = Math.min(4, rate*1.25);
+            if(Math.abs(nr-rate) > 0.01){ rate = nr; video.playbackRate = rate; lastAdj = now; gaps.length = 0; }
           }
-          continue;
-        }
+          setProg(`Kareler inceleniyor… ${Math.round(meta.mediaTime/dur*100)}%`, meta.mediaTime/dur*80,
+                  `${state.pages.length - before} sayfa bulundu`);
+          if(!video.ended) video.requestVideoFrameCallback(onFrame);
+        };
+        video.requestVideoFrameCallback(onFrame);
+        video.onended = fin;
+        video.onpause = () => { if(video.ended) fin(); };
+        video.play().catch(err => { done = true; reject(err); });
+      });
+    } else {
+      // yedek: adım adım konumlan (yavaş ama her tarayıcıda çalışır)
+      for(let t=0.05; t<dur-0.05; t+=0.1){
+        if(state.cancel) throw new Error('cancelled');
+        await new Promise(r => { const f=()=>{video.removeEventListener('seeked',f); r();}; video.addEventListener('seeked',f); setTimeout(f,2500); video.currentTime=t; });
+        sc.feed(video, t);
+        setProg(`Kareler inceleniyor… ${Math.round(t/dur*100)}%`, t/dur*80, `${state.pages.length - before} sayfa bulundu`);
       }
-      const blob = await canvasToBlob(cap, 'image/jpeg', 0.93);
-      captured.push({time:cd.t, sharp:cd.sharp, sig, blob, w:vw, h:vh, maybeDup});
-      setProg(`Sayfa yakalanıyor… ${i+1}/${cands.length}`, 55 + 20*(i+1)/cands.length,
-              `${captured.length} sayfa bulundu`);
     }
-    log('pages after dedup:', captured.length);
-    if(!captured.length) throw new Error('Sayfa bulunamadı.');
+    sc.flush();
+    log(`analiz: ${sc.frames} kare, ${((performance.now()-t0)/1000).toFixed(1)} sn, kare başı ${sc.cost.toFixed(1)} ms`);
+    if(window.__scanDebug) window.__scanDebugLog = sc.debug;
+  } finally {
+    proc.setHold(false);
+    video.pause();
+    URL.revokeObjectURL(url);
+    video.removeAttribute('src'); video.load();
+  }
+}
 
-    // 3) iyileştir
-    $('progTitle').textContent = 'Sayfalar iyileştiriliyor…';
-    for(let i=0;i<captured.length;i++){
-      if(state.cancel) throw new Error('cancelled');
-      const p = captured[i];
-      p.id = state.nextId++;
-      p.rot = 0;
-      await processPage(p);
-      state.pages.push(p);
-      setProg(`İyileştiriliyor… ${i+1}/${captured.length}`, 75 + 25*(i+1)/captured.length,
-              `${captured.length} sayfa`);
-      await sleep(0);
+/* giriş: video(lar) ve/veya fotoğraflar */
+async function runFiles(files){
+  if(state.busy) return;
+  files = Array.from(files || []).filter(f => /^(video|image)\//.test(f.type) || /\.(mp4|mov|webm|m4v|jpe?g|png|heic|webp)$/i.test(f.name||''));
+  if(!files.length) return;
+  state.cancel = false; state.busy = true;
+  $('introErr').hidden = true;
+  $('introCard').hidden = true; $('settingsCard').hidden = true; $('resultCard').hidden = true;
+  $('progCard').hidden = false;
+  $('progTitle').textContent = 'Hazırlanıyor…';
+  setProg('Dosya açılıyor…', 0, '');
+  const before = state.pages.length;
+  try{
+    for(const f of files){
+      if((f.type||'').startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name||'')){
+        $('progTitle').textContent = 'Fotoğraflar ekleniyor…';
+        addCapture({id:state.nextId++, blob:Promise.resolve(f), t:0});
+      } else {
+        $('progTitle').textContent = 'Video analiz ediliyor…';
+        await scanVideo(f);
+      }
     }
-    renderGrid();
-    $('progCard').hidden = true;
-    $('settingsCard').hidden = false;
-    $('resultCard').hidden = false;
+    if(state.pages.length === before) throw new Error(
+      'Sayfa bulunamadı.\nSayfanın tamamı görünecek şekilde tut ve her sayfada kısa bir an (¼ sn) sabit kal.');
+    $('progTitle').textContent = 'Sayfalar düzleştiriliyor…';
+    await proc.drain(n => {
+      const total = state.pages.length - before, done = Math.max(0, total - n);
+      setProg(`Düzleştiriliyor, temizleniyor… ${done}/${total}`, 80 + 20*done/Math.max(1,total), `${total} sayfa`);
+    });
+    state.issuesAccepted = false;
+    showResults();
   } catch(e){
-    $('progCard').hidden = true;
-    $('settingsCard').hidden = false;
-    if(state.pages.length){ renderGrid(); $('resultCard').hidden = false; }
+    $('progCard').hidden = true; $('settingsCard').hidden = false;
+    if(state.pages.length){ await proc.drain(); showResults(); }
     else {
       $('introCard').hidden = false;
-      if(e.message !== 'cancelled'){
-        $('introErr').textContent = '⚠ ' + e.message;
-        $('introErr').hidden = false;
-      }
+      if(e.message !== 'cancelled'){ $('introErr').textContent = '⚠ ' + e.message; $('introErr').hidden = false; }
     }
     if(e.message !== 'cancelled') console.error(e);
   } finally {
-    URL.revokeObjectURL(url);
-    video.removeAttribute('src'); video.load();
     state.busy = false;
   }
 }
-
-function setProg(status, pct, count){
-  $('progStatus').textContent = status;
-  $('progBar').style.width = Math.min(100,pct) + '%';
-  if(count !== undefined) $('progCount').textContent = '📄 ' + count;
+function showResults(){
+  $('progCard').hidden = true; $('introCard').hidden = !!state.pages.length ? true : false;
+  $('settingsCard').hidden = false;
+  $('resultCard').hidden = !state.pages.length;
+  if(!state.pages.length){ $('introCard').hidden = false; return; }
+  computeDocIssues(); renderGrid();
+  const bad = badPages();
+  if(bad.length && !state.issuesAccepted) $('resultCard').scrollIntoView({behavior:'smooth', block:'start'});
 }
 
-/* ---------- görüntü iyileştirme ---------- */
-function boxBlurGray(src, w, h, r, iter){
-  let a = src, b = new Float32Array(src.length);
-  for(let it=0; it<iter; it++){
-    // yatay
-    for(let y=0;y<h;y++){
-      const row=y*w; let s=0;
-      for(let x=-r;x<=r;x++) s += a[row + Math.min(w-1, Math.max(0,x))];
-      for(let x=0;x<w;x++){
-        b[row+x] = s/(2*r+1);
-        s += a[row + Math.min(w-1, x+r+1)] - a[row + Math.max(0, x-r)];
-      }
-    }
-    // dikey
-    for(let x=0;x<w;x++){
-      let s=0;
-      for(let y=-r;y<=r;y++) s += b[Math.min(h-1, Math.max(0,y))*w + x];
-      for(let y=0;y<h;y++){
-        a[y*w+x] = s/(2*r+1);
-        s += b[Math.min(h-1, y+r+1)*w + x] - b[Math.max(0, y-r)*w + x];
-      }
-    }
+/* ============================================================
+   SORUNLAR: kesik kenar, parmak, sayfa bulunamadı, bulanık
+   ============================================================ */
+function computeDocIssues(){
+  const done = state.pages.filter(p => p.status === 'done' && p.metrics && p.metrics.sharp > 0);
+  const sh = done.map(p => p.metrics.sharp).sort((a,b)=>a-b);
+  const med = sh.length ? sh[sh.length>>1] : 0;
+  for(const p of state.pages){
+    p.issues = (p.issues||[]).filter(i => i.code !== 'blur');
+    if(med && done.length >= 4 && p.metrics && p.metrics.sharp > 0 && p.metrics.sharp < med*0.62)
+      p.issues.push({code:'blur', side:-1});
   }
-  return a;
 }
+function issueText(i){
+  switch(i.code){
+    case 'cut': return `${SIDE_TR[i.side] || ''} kenarı kadraj dışında kalmış`;
+    case 'finger': return 'parmak yazının üstünde';
+    case 'nopage': return 'sayfa kenarları bulunamadı';
+    case 'blur': return 'bulanık';
+    case 'error': return 'işlenemedi';
+    default: return i.code;
+  }
+}
+function pageIssueText(p){
+  const seen = new Set(), out = [];
+  for(const i of (p.issues||[])){ const t = issueText(i); if(!seen.has(t)){ seen.add(t); out.push(t); } }
+  return out.join(', ');
+}
+const badPages = () => state.pages.filter(p => p.issues && p.issues.length);
 
-/* Arka plan (aydınlatma) haritasını düşük çözünürlükte çıkar, tam boyuta ölçekle */
-function backgroundMap(canvas){
-  const w=canvas.width, h=canvas.height;
-  const sw=Math.max(12, Math.round(w/16)), sh=Math.max(12, Math.round(h/16));
-  const sc=document.createElement('canvas'); sc.width=sw; sc.height=sh;
-  const sx=sc.getContext('2d',{willReadFrequently:true});
-  sx.drawImage(canvas, 0, 0, sw, sh);
-  const sd = sx.getImageData(0,0,sw,sh).data;
-  let bg = new Float32Array(sw*sh);
-  for(let i=0;i<sw*sh;i++){
-    const j=i*4;
-    bg[i] = Math.max(sd[j], sd[j+1], sd[j+2]);   // kağıt = en parlak kanal
-  }
-  bg = boxBlurGray(bg, sw, sh, Math.max(2, Math.round(Math.max(sw,sh)/10)), 2);
-  // tam boyuta ölçekle
-  const id = sx.createImageData(sw, sh);
-  for(let i=0;i<sw*sh;i++){
-    const v = Math.max(0, Math.min(255, bg[i]));
-    id.data[i*4]=v; id.data[i*4+1]=v; id.data[i*4+2]=v; id.data[i*4+3]=255;
-  }
-  sx.putImageData(id, 0, 0);
-  const fc=document.createElement('canvas'); fc.width=w; fc.height=h;
-  const fx=fc.getContext('2d',{willReadFrequently:true});
-  fx.imageSmoothingEnabled = true; fx.imageSmoothingQuality = 'high';
-  fx.drawImage(sc, 0, 0, w, h);
-  const fd = fx.getImageData(0,0,w,h).data;
-  const out = new Float32Array(w*h);
-  for(let i=0;i<w*h;i++) out[i] = fd[i*4];
-  return out;
-}
-
-function sharpenRGB(data, w, h, amt){
-  const src = new Uint8ClampedArray(data);
-  for(let y=1;y<h-1;y++){
-    for(let x=1;x<w-1;x++){
-      const i=(y*w+x)*4;
-      for(let ch=0;ch<3;ch++){
-        const j=i+ch;
-        const lap = 4*src[j] - src[j-4] - src[j+4] - src[j-w*4] - src[j+w*4];
-        data[j] = src[j] + amt*lap;
-      }
-    }
-  }
-}
-
-function enhanceCanvas(canvas, mode){
-  if(mode === 'orig') return canvas;
-  const w=canvas.width, h=canvas.height;
-  const bg = backgroundMap(canvas);
-  const cx = canvas.getContext('2d', {willReadFrequently:true});
-  const img = cx.getImageData(0,0,w,h);
-  const d = img.data;
-  for(let i=0;i<w*h;i++){
-    const j=i*4;
-    const f = Math.min(3.2, 244 / Math.max(bg[i], 45));
-    if(mode === 'color'){
-      let r=d[j]*f, g=d[j+1]*f, b=d[j+2]*f;
-      const avg=(r+g+b)/3;
-      r = avg + (r-avg)*1.12; g = avg + (g-avg)*1.12; b = avg + (b-avg)*1.12; // doygunluk
-      d[j]   = 128 + (r-128)*1.07;
-      d[j+1] = 128 + (g-128)*1.07;
-      d[j+2] = 128 + (b-128)*1.07;
-    } else {
-      let l = (0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]) * f;
-      if(mode === 'gray'){
-        l = 128 + (l-128)*1.12;
-      } else { // doc: yumuşak eşikleme
-        l = (l - 105) * 255 / (232 - 105);
-      }
-      d[j]=d[j+1]=d[j+2]=l;
-    }
-  }
-  sharpenRGB(d, w, h, mode==='doc' ? 0.28 : 0.42);
-  cx.putImageData(img, 0, 0);
-  return canvas;
-}
-
-function rotateCanvas(src, rot){
-  if(!rot) return src;
-  const c=document.createElement('canvas');
-  if(rot===90||rot===270){ c.width=src.height; c.height=src.width; }
-  else { c.width=src.width; c.height=src.height; }
-  const x=c.getContext('2d');
-  x.translate(c.width/2, c.height/2);
-  x.rotate(rot*Math.PI/180);
-  x.drawImage(src, -src.width/2, -src.height/2);
-  return c;
-}
-
-/* ---------- sayfa temizliği: kenar kırpma, parmak silme, tek boyut ---------- */
-/* kağıt olmayan kenar bantlarını kırp; pm: piksel "kağıt mı" Uint8 haritası */
-function trimByMap(canvas, pm, need, maxFrac){
-  const w=canvas.width, h=canvas.height;
-  const rows = new Float32Array(h), cols = new Float32Array(w);
-  for(let y=0;y<h;y++){
-    let s=0; for(let x=0;x<w;x++) s+=pm[y*w+x];
-    rows[y]=s/w;
-  }
-  for(let x=0;x<w;x++){
-    let s=0; for(let y=0;y<h;y++) s+=pm[y*w+x];
-    cols[x]=s/h;
-  }
-  const scan=(arr,from,step,limit)=>{
-    let i=0;
-    while(i<limit && arr[from+i*step]<need) i++;
-    return i;
-  };
-  const top = scan(rows,0,1,(h*maxFrac)|0);
-  const bot = scan(rows,h-1,-1,(h*maxFrac)|0);
-  const left = scan(cols,0,1,(w*maxFrac)|0);
-  const right = scan(cols,w-1,-1,(w*maxFrac)|0);
-  if(!top && !bot && !left && !right) return canvas;
-  const w2=w-left-right, h2=h-top-bot;
-  if(w2<w*0.5 || h2<h*0.5) return canvas;
-  const c=document.createElement('canvas'); c.width=w2; c.height=h2;
-  c.getContext('2d').drawImage(canvas, left, top, w2, h2, 0, 0, w2, h2);
-  return c;
-}
-/* ham renklerde: min-kanal, orta bölge medyanına göre */
-function trimRaw(canvas){
-  const w=canvas.width, h=canvas.height;
-  const d=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h).data;
-  const base=new Float32Array(w*h);
-  for(let i=0;i<w*h;i++) base[i]=Math.min(d[i*4],d[i*4+1],d[i*4+2]);
-  const core=[];
-  for(let y=(h*0.25)|0;y<(h*0.75)|0;y+=2)
-    for(let x=(w*0.25)|0;x<(w*0.75)|0;x+=2) core.push(base[y*w+x]);
-  core.sort((a,b)=>a-b);
-  const thr=core[(core.length/2)|0]*0.55;
-  const pm=new Uint8Array(w*h);
-  for(let i=0;i<w*h;i++) pm[i]=base[i]>thr?1:0;
-  return trimByMap(canvas, pm, 0.84, 0.16);
-}
-/* kitap sırtı: dar + koyu dikey vadi → oradan kes, komşu sayfayı at
-   (fotoğraflar geniş vadi oluşturur, dar-genişlik şartına takılmaz) */
-function cutSpine(canvas){
-  const w=canvas.width, h=canvas.height;
-  if(w<60) return canvas;
-  const d=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h).data;
-  const prof=new Float32Array(w);
-  for(let x=0;x<w;x++){
-    let s=0;
-    for(let y=0;y<h;y++){
-      const i=(y*w+x)*4;
-      s += 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
-    }
-    prof[x]=s/h;
-  }
-  const k=Math.max(3,(w/60)|0);
-  const sm=new Float32Array(w);
-  for(let x=0;x<w;x++){
-    let s=0,c=0;
-    for(let j=-(k>>1);j<=(k>>1);j++){
-      const xx=x+j;
-      if(xx>=0&&xx<w){ s+=prof[xx]; c++; }
-    }
-    sm[x]=s/c;
-  }
-  const mid=[];
-  for(let x=(w*0.3)|0;x<(w*0.7)|0;x++) mid.push(sm[x]);
-  mid.sort((a,b)=>a-b);
-  const med=mid[(mid.length/2)|0];
-  const thr=med-Math.max(18, med*0.10);
-  let left=0, right=w, i=0;
-  while(i<w){
-    if(sm[i]<thr){
-      let j=i;
-      while(j<w && sm[j]<thr) j++;
-      const width=j-i, cx=(i+j)>>1;
-      if(width < w*0.10){
-        if(cx < w*0.42) left=Math.max(left,j);
-        else if(cx > w*0.58) right=Math.min(right,i);
-      }
-      i=j;
-    } else i++;
-  }
-  if(left===0 && right===w) return canvas;
-  if(right-left < w*0.5) return canvas;
-  const c=document.createElement('canvas'); c.width=right-left; c.height=h;
-  c.getContext('2d').drawImage(canvas, left, 0, right-left, h, 0, 0, right-left, h);
-  return c;
-}
-
-/* iyileştirme sonrası: kağıt ~beyaz, gölge/sırt bantları koyu kalır */
-function trimEnhanced(canvas){
-  const w=canvas.width, h=canvas.height;
-  const d=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h).data;
-  const pm=new Uint8Array(w*h);
-  for(let i=0;i<w*h;i++){
-    const l=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
-    pm[i]=l>168?1:0;
-  }
-  return trimByMap(canvas, pm, 0.86, 0.10);
-}
-/* kenardan giren ten rengi bölgeler → yumuşak geçişli doldurma haritası (alpha) */
-function fingerAlpha(canvas){
-  const w=canvas.width, h=canvas.height;
-  const d=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h).data;
-  const bh=(h*0.24)|0, bw=(w*0.24)|0;
-  let mask=new Uint8Array(w*h), any=false;
-  for(let y=0;y<h;y++){
-    const inY = y<bh || y>=h-bh;
-    for(let x=0;x<w;x++){
-      if(!inY && x>=bw && x<w-bw) continue;
-      const i=(y*w+x)*4, r=d[i], g=d[i+1], b=d[i+2];
-      if(r-g>18 && r-b>38 && r>60){ mask[y*w+x]=1; any=true; }
-    }
-  }
-  if(!any) return null;
-  // kenara değen, yeterince büyük bileşenler
-  const labels=new Int32Array(w*h); const stack=new Int32Array(w*h);
-  const keep=new Uint8Array(w*h);
-  let nextL=0;
-  for(let s=0;s<w*h;s++){
-    if(!mask[s]||labels[s]) continue;
-    nextL++;
-    let top=0, size=0, touches=false;
-    const px=[];
-    stack[top++]=s; labels[s]=nextL;
-    while(top){
-      const i=stack[--top]; size++; px.push(i);
-      const x=i%w, y=(i/w)|0;
-      if(x<=3||x>=w-4||y<=3||y>=h-4) touches=true;
-      if(x>0&&mask[i-1]&&!labels[i-1]){labels[i-1]=nextL;stack[top++]=i-1;}
-      if(x<w-1&&mask[i+1]&&!labels[i+1]){labels[i+1]=nextL;stack[top++]=i+1;}
-      if(y>0&&mask[i-w]&&!labels[i-w]){labels[i-w]=nextL;stack[top++]=i-w;}
-      if(y<h-1&&mask[i+w]&&!labels[i+w]){labels[i+w]=nextL;stack[top++]=i+w;}
-    }
-    if(touches && size>=30) for(const i of px) keep[i]=1;
-  }
-  let found=false;
-  for(let i=0;i<w*h;i++) if(keep[i]){found=true;break;}
-  if(!found) return null;
-  // genişlet + yumuşat → alpha
-  let m=keep;
-  for(let k=0;k<6;k++){
-    const o=new Uint8Array(m);
-    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
-      const i=y*w+x;
-      if(m[i]) continue;
-      if((x>0&&m[i-1])||(x<w-1&&m[i+1])||(y>0&&m[i-w])||(y<h-1&&m[i+w])) o[i]=1;
-    }
-    m=o;
-  }
-  const f=new Float32Array(w*h);
-  for(let i=0;i<w*h;i++) f[i]=m[i];
-  const a=boxBlurGray(f, w, h, 4, 2);
-  for(let i=0;i<w*h;i++) a[i]=Math.min(1, a[i]*1.4);
-  return a;
-}
-/* iyileştirilmiş görüntüde parmakları kağıt rengiyle doldur */
-function fillFingers(canvas, alpha){
-  const w=canvas.width, h=canvas.height;
-  const cx=canvas.getContext('2d',{willReadFrequently:true});
-  const img=cx.getImageData(0,0,w,h); const d=img.data;
-  const rs=[],gs=[],bs=[];
-  for(let i=0;i<w*h;i+=4){
-    const l=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
-    if(l>150){ rs.push(d[i*4]); gs.push(d[i*4+1]); bs.push(d[i*4+2]); }
-  }
-  const med=a=>{ a.sort((x,y)=>x-y); return a.length?a[(a.length*0.6)|0]:245; };
-  const fr=med(rs), fg=med(gs), fb=med(bs);
-  for(let i=0;i<w*h;i++){
-    const a=alpha[i];
-    if(a<=0.01) continue;
-    const j=i*4;
-    d[j]  =d[j]  *(1-a)+fr*a;
-    d[j+1]=d[j+1]*(1-a)+fg*a;
-    d[j+2]=d[j+2]*(1-a)+fb*a;
-  }
-  cx.putImageData(img,0,0);
-  return canvas;
-}
-/* her sayfayı TAM 1000×1414 (A4 oranı) tuvale sığdır ve ortala —
-   tüm PDF sayfaları birebir aynı boyutta olur */
-function toFinalPage(canvas){
-  const W=1000, H=1414;
-  const w=canvas.width, h=canvas.height;
-  const s=Math.min(W/w, H/h);
-  const dw=Math.round(w*s), dh=Math.round(h*s);
-  // dolgu rengi: kenar piksellerinin medyanı (kağıt tonu)
-  const d=canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h).data;
-  const rs=[],gs=[],bs=[];
-  for(let x=0;x<w;x+=3){
-    for(const y of [0,h-1]){ const i=(y*w+x)*4; rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]); }
-  }
-  for(let y=0;y<h;y+=3){
-    for(const x of [0,w-1]){ const i=(y*w+x)*4; rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]); }
-  }
-  const med=a=>{ a.sort((x,y)=>x-y); return a[(a.length/2)|0]; };
-  const c=document.createElement('canvas'); c.width=W; c.height=H;
-  const x2=c.getContext('2d',{willReadFrequently:true});
-  x2.fillStyle=`rgb(${med(rs)},${med(gs)},${med(bs)})`;
-  x2.fillRect(0,0,W,H);
-  x2.imageSmoothingEnabled=true; x2.imageSmoothingQuality='high';
-  x2.drawImage(canvas, (W-dw)>>1, (H-dh)>>1, dw, dh);
-  if(s>1.05){                       // büyütüldüyse netleştir
-    const img=x2.getImageData(0,0,W,H);
-    sharpenRGB(img.data, W, H, 0.3);
-    x2.putImageData(img,0,0);
-  }
-  return c;
-}
-
-async function processPage(p){
-  const bmp = await createImageBitmap(p.origBlob || p.blob);
-  if(!p.origBlob){ p.origBlob = p.blob; delete p.blob; }
-  let c = document.createElement('canvas');
-  c.width = bmp.width; c.height = bmp.height;
-  c.getContext('2d', {willReadFrequently:true}).drawImage(bmp, 0, 0);
-  bmp.close();
-  const dbg = [`giriş ${c.width}x${c.height}`];
-  if(settings.smartCrop){
-    const cropped = smartCrop(c);
-    if(cropped) c = cropped;
-    dbg.push(`kırp ${cropped?'ok':'YOK'} ${c.width}x${c.height}`);
-    c = trimRaw(c);                              // kalan arka plan bantları
-    c = cutSpine(c);                             // komşu sayfayı sırttan kes
-    dbg.push(`trim+sırt ${c.width}x${c.height}`);
-  }
-  const alpha = settings.smartCrop ? fingerAlpha(c) : null;   // ten tespiti ham renkte
-  c = enhanceCanvas(c, settings.mode);
-  if(alpha) c = fillFingers(c, alpha);           // parmakları kağıtla doldur
-  if(settings.smartCrop && settings.mode !== 'orig') c = trimEnhanced(c);
-  c = toFinalPage(c);                            // tüm sayfalar tam 1000×1414
-  dbg.push(`son ${c.width}x${c.height}`);
-  log('sayfa işlem:', dbg.join(' → '));
-  c = rotateCanvas(c, p.rot);
-  p.outW = c.width; p.outH = c.height;
-  p.procBlob = await canvasToBlob(c, 'image/jpeg', settings.quality);
-  // küçük önizleme
-  const tw = 240, th = Math.round(c.height * tw / c.width);
-  const t = document.createElement('canvas'); t.width=tw; t.height=th;
-  t.getContext('2d').drawImage(c, 0, 0, tw, th);
-  p.thumbUrl = t.toDataURL('image/jpeg', 0.7);
-}
-
-/* ---------- akıllı kırpma (saf JS: sayfayı bul + perspektif düzelt) ---------- */
-function toast(msg){
-  const t = document.createElement('div');
-  t.className = 'toast';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 6000);
-}
-
-/* Otsu eşiği: parlak kağıt / koyu zemin ayrımı */
-function otsu(g){
-  const hist = new Float64Array(256);
-  for(let i=0;i<g.length;i++) hist[Math.max(0, Math.min(255, g[i]|0))]++;
-  const total = g.length;
-  let sum=0; for(let i=0;i<256;i++) sum += i*hist[i];
-  let sumB=0, wB=0, best=0, thr=127;
-  for(let i=0;i<256;i++){
-    wB += hist[i]; if(!wB) continue;
-    const wF = total-wB; if(!wF) break;
-    sumB += i*hist[i];
-    const mB = sumB/wB, mF = (sum-sumB)/wF;
-    const between = wB*wF*(mB-mF)*(mB-mF);
-    if(between > best){ best = between; thr = i; }
-  }
-  return thr;
-}
-
-/* 4 nokta çiftinden homografi: (u,v) hedef → (x,y) kaynak; 8x8 Gauss eliminasyonu */
-function homography(dst, src){
-  const A = [], b = [];
-  for(let i=0;i<4;i++){
-    const [u,v] = dst[i], [x,y] = src[i];
-    A.push([u,v,1,0,0,0,-u*x,-v*x]); b.push(x);
-    A.push([0,0,0,u,v,1,-u*y,-v*y]); b.push(y);
-  }
-  const n=8;
-  for(let c=0;c<n;c++){
-    let p=c;
-    for(let r=c+1;r<n;r++) if(Math.abs(A[r][c])>Math.abs(A[p][c])) p=r;
-    if(Math.abs(A[p][c])<1e-10) return null;
-    [A[c],A[p]]=[A[p],A[c]]; [b[c],b[p]]=[b[p],b[c]];
-    for(let r=c+1;r<n;r++){
-      const f=A[r][c]/A[c][c];
-      for(let k=c;k<n;k++) A[r][k]-=f*A[c][k];
-      b[r]-=f*b[c];
-    }
-  }
-  const h=new Float64Array(n);
-  for(let r=n-1;r>=0;r--){
-    let s=b[r];
-    for(let k=r+1;k<n;k++) s-=A[r][k]*h[k];
-    h[r]=s/A[r][r];
-  }
-  return h; // [a,b,c,d,e,f,g,h]: x=(au+bv+c)/(gu+hv+1), y=(du+ev+f)/(gu+hv+1)
-}
-
-function dilate1(mask, sw, sh){
-  const o = new Uint8Array(mask);
-  for(let y=0;y<sh;y++) for(let x=0;x<sw;x++){
-    const i=y*sw+x;
-    if(mask[i]) continue;
-    if((x>0 && mask[i-1]) || (x<sw-1 && mask[i+1]) ||
-       (y>0 && mask[i-sw]) || (y<sh-1 && mask[i+sw])) o[i]=1;
-  }
-  return o;
-}
-function erode1(mask, sw, sh){
-  const o = new Uint8Array(sw*sh);
-  for(let y=1;y<sh-1;y++) for(let x=1;x<sw-1;x++){
-    const i=y*sw+x;
-    o[i] = mask[i] & mask[i-1] & mask[i+1] & mask[i-sw] & mask[i+sw];
-  }
-  return o;
-}
-function lineInter(p1,p2,p3,p4){
-  const d1x=p2[0]-p1[0], d1y=p2[1]-p1[1], d2x=p4[0]-p3[0], d2y=p4[1]-p3[1];
-  const den = d1x*d2y - d1y*d2x;
-  if(Math.abs(den) < 1e-9) return null;
-  const t = ((p3[0]-p1[0])*d2y - (p3[1]-p1[1])*d2x) / den;
-  return [p1[0]+t*d1x, p1[1]+t*d1y];
-}
-/* yalnızca dikey genişlet/aşındır: yatay metin bantlarını köprüler,
-   dikey sırt çizgisini korur (komşu sayfa ayrı bileşen kalır) */
-function dilateV(mask, sw, sh){
-  const o = new Uint8Array(mask);
-  for(let y=0;y<sh;y++) for(let x=0;x<sw;x++){
-    const i=y*sw+x;
-    if(mask[i]) continue;
-    if((y>0 && mask[i-sw]) || (y<sh-1 && mask[i+sw])) o[i]=1;
-  }
-  return o;
-}
-function erodeV(mask, sw, sh){
-  const o = new Uint8Array(sw*sh);
-  for(let y=1;y<sh-1;y++) for(let x=0;x<sw;x++){
-    const i=y*sw+x;
-    o[i] = mask[i] & mask[i-sw] & mask[i+sw];
-  }
-  return o;
-}
-/* sağlam dörtgen: uç noktalar + her kenarı piksellerin %98.5'ini
-   kapsayana dek dışa kaydır (kıvrık köşe lobları dörtgeni şişiremez) */
-function robustQuad(xs, ys, n){
-  let iTL=0,iTR=0,iBR=0,iBL=0;
-  for(let i=1;i<n;i++){
-    if(xs[i]+ys[i] < xs[iTL]+ys[iTL]) iTL=i;
-    if(ys[i]-xs[i] < ys[iTR]-xs[iTR]) iTR=i;
-    if(xs[i]+ys[i] > xs[iBR]+ys[iBR]) iBR=i;
-    if(ys[i]-xs[i] > ys[iBL]-xs[iBL]) iBL=i;
-  }
-  const Q=[[xs[iTL],ys[iTL]],[xs[iTR],ys[iTR]],[xs[iBR],ys[iBR]],[xs[iBL],ys[iBL]]];
-  const C=[(Q[0][0]+Q[1][0]+Q[2][0]+Q[3][0])/4,(Q[0][1]+Q[1][1]+Q[2][1]+Q[3][1])/4];
-  const lines=[];
-  const proj=new Float32Array(n);
-  for(let e=0;e<4;e++){
-    const A=Q[e], B=Q[(e+1)%4];
-    let nx=B[1]-A[1], ny=-(B[0]-A[0]);
-    const len=Math.hypot(nx,ny);
-    if(len<1) return null;
-    nx/=len; ny/=len;
-    if(nx*(A[0]-C[0])+ny*(A[1]-C[1])<0){ nx=-nx; ny=-ny; }
-    for(let i=0;i<n;i++) proj[i]=(xs[i]-A[0])*nx+(ys[i]-A[1])*ny;
-    const sorted=Float32Array.from(proj).sort();
-    const shift=Math.max(0, sorted[Math.min(n-1,(n*0.985)|0)]);
-    lines.push([[A[0]+nx*shift,A[1]+ny*shift],[B[0]+nx*shift,B[1]+ny*shift]]);
-  }
-  const quad=[];
-  for(let e=0;e<4;e++){
-    const L1=lines[(e+3)%4], L2=lines[e];
-    const X=lineInter(L1[0],L1[1],L2[0],L2[1]);
-    if(!X) return null;
-    quad.push(X);
-  }
-  return quad;
-}
-
-function smartCrop(canvas){
-  const W = canvas.width, H = canvas.height;
-  // 1) küçült; parlaklık = min(R,G,B) → doymuş renkli zeminler (kapak vb.) elenir
-  const sc = 240/Math.max(W,H);
-  const sw = Math.max(24, Math.round(W*sc)), sh = Math.max(24, Math.round(H*sc));
-  const small = downscale(canvas, sw, sh);
-  const px = small.getContext('2d').getImageData(0,0,sw,sh).data;
-  const base = new Float32Array(sw*sh);
-  const warm = new Float32Array(sw*sh);
-  for(let i=0;i<sw*sh;i++){
-    const r=px[i*4], gg=px[i*4+1], b=px[i*4+2];
-    base[i] = Math.min(r, gg, b);
-    warm[i] = r - b;
-  }
-  // 2) Otsu ile parlak maske
-  const thrB = otsu(base) * 0.92;
-  let mask = new Uint8Array(sw*sh);
-  let nb = 0;
-  for(let i=0;i<sw*sh;i++) if(base[i] > thrB){ mask[i]=1; nb++; }
-  if(nb < sw*sh*0.08) return null;
-  // 3) sıcaklık kümelemesi: kağıt sıcak, ekran/soğuk ışık mavimsi.
-  //    İki küme belirgin ayrılıyorsa soğuk parlakları (ekran) çıkar.
-  {
-    let c0=1e9, c1=-1e9;
-    for(let i=0;i<sw*sh;i++) if(mask[i]){
-      if(warm[i]<c0) c0=warm[i];
-      if(warm[i]>c1) c1=warm[i];
-    }
-    for(let k=0;k<12;k++){
-      let s0=0,n0=0,s1=0,n1=0;
-      for(let i=0;i<sw*sh;i++) if(mask[i]){
-        const v=warm[i];
-        if(Math.abs(v-c0)<=Math.abs(v-c1)){ s0+=v; n0++; } else { s1+=v; n1++; }
-      }
-      if(n0) c0=s0/n0; if(n1) c1=s1/n1;
-    }
-    if(c1-c0 > 18){
-      const mid=(c0+c1)/2;
-      for(let i=0;i<sw*sh;i++) if(mask[i] && warm[i] <= mid) mask[i]=0;
-    }
-  }
-  // 4) DİKEY kapama: metin bantlarını köprüler, sırt çizgisini korur
-  for(let k=0;k<5;k++) mask = dilateV(mask, sw, sh);
-  for(let k=0;k<5;k++) mask = erodeV(mask, sw, sh);
-  mask = erode1(mask, sw, sh);
-  for(let x=0;x<sw;x++){ mask[x]=0; mask[(sh-1)*sw+x]=0; }
-  for(let y=0;y<sh;y++){ mask[y*sw]=0; mask[y*sw+sw-1]=0; }
-  // 4) bağlı bileşenler (BFS); merkez bölgedeki bileşeni tercih et (sayfa hep ortada)
-  const labels = new Int32Array(sw*sh);
-  const sizes = [0];
-  let nextLabel=0;
-  const stack = new Int32Array(sw*sh);
-  for(let s=0;s<sw*sh;s++){
-    if(!mask[s] || labels[s]) continue;
-    nextLabel++;
-    let top=0, size=0;
-    stack[top++]=s; labels[s]=nextLabel;
-    while(top){
-      const i=stack[--top]; size++;
-      const x=i%sw, y=(i/sw)|0;
-      if(x>0    && mask[i-1]  && !labels[i-1]) { labels[i-1]=nextLabel;  stack[top++]=i-1; }
-      if(x<sw-1 && mask[i+1]  && !labels[i+1]) { labels[i+1]=nextLabel;  stack[top++]=i+1; }
-      if(y>0    && mask[i-sw] && !labels[i-sw]){ labels[i-sw]=nextLabel; stack[top++]=i-sw; }
-      if(y<sh-1 && mask[i+sw] && !labels[i+sw]){ labels[i+sw]=nextLabel; stack[top++]=i+sw; }
-    }
-    sizes.push(size);
-  }
-  if(!nextLabel) return null;
-  // merkezdeki %24'lük pencerede en sık görülen etiket
-  const counts = new Float64Array(nextLabel+1);
-  const wx0=(sw*0.38)|0, wx1=(sw*0.62)|0, wy0=(sh*0.38)|0, wy1=(sh*0.62)|0;
-  for(let y=wy0;y<wy1;y++) for(let x=wx0;x<wx1;x++){
-    const l=labels[y*sw+x]; if(l) counts[l]++;
-  }
-  let bestLabel=0;
-  for(let l=1;l<=nextLabel;l++) if(counts[l]>counts[bestLabel]) bestLabel=l;
-  if(!bestLabel || !counts[bestLabel]){          // merkezde kağıt yoksa en büyüğü al
-    for(let l=1;l<=nextLabel;l++) if(sizes[l]>sizes[bestLabel]) bestLabel=l;
-  }
-  if(sizes[bestLabel] < sw*sh*0.12) return null;
-  // 5) açma: ince kolları/yansımaları sil (aşındır 8 → en büyük parça → genişlet 8)
-  let comp = new Uint8Array(sw*sh);
-  for(let i=0;i<sw*sh;i++) comp[i] = labels[i]===bestLabel ? 1 : 0;
-  {
-    let core = comp;
-    for(let k=0;k<8;k++) core = erode1(core, sw, sh);
-    let hasCore = false;
-    for(let i=0;i<sw*sh;i++) if(core[i]){ hasCore=true; break; }
-    if(hasCore){
-      const l2 = new Int32Array(sw*sh); const st = new Int32Array(sw*sh);
-      let nl=0, bigL=0, bigS=0;
-      for(let s=0;s<sw*sh;s++){
-        if(!core[s]||l2[s]) continue;
-        nl++; let top=0, size=0;
-        st[top++]=s; l2[s]=nl;
-        while(top){
-          const i=st[--top]; size++;
-          const x=i%sw, y=(i/sw)|0;
-          if(x>0&&core[i-1]&&!l2[i-1]){l2[i-1]=nl;st[top++]=i-1;}
-          if(x<sw-1&&core[i+1]&&!l2[i+1]){l2[i+1]=nl;st[top++]=i+1;}
-          if(y>0&&core[i-sw]&&!l2[i-sw]){l2[i-sw]=nl;st[top++]=i-sw;}
-          if(y<sh-1&&core[i+sw]&&!l2[i+sw]){l2[i+sw]=nl;st[top++]=i+sw;}
-        }
-        if(size>bigS){ bigS=size; bigL=nl; }
-      }
-      let big = new Uint8Array(sw*sh);
-      for(let i=0;i<sw*sh;i++) big[i] = l2[i]===bigL ? 1 : 0;
-      for(let k=0;k<8;k++) big = dilate1(big, sw, sh);
-      for(let i=0;i<sw*sh;i++) comp[i] &= big[i];
-    }
-  }
-  // 6) sağlam dörtgen (uç noktalar + %98.5 kapsayan kenar kaydırma)
-  let np=0;
-  for(let i=0;i<sw*sh;i++) if(comp[i]) np++;
-  if(np < 50) return null;
-  const pxs = new Float32Array(np), pys = new Float32Array(np);
-  let k2=0;
-  for(let y=0;y<sh;y++) for(let x=0;x<sw;x++)
-    if(comp[y*sw+x]){ pxs[k2]=x; pys[k2]=y; k2++; }
-  const quad4 = robustQuad(pxs, pys, np);
-  if(!quad4) return null;
-  // aşındırma telafisi (%1.5 dışarı), kadraja kıstır, tam çözünürlüğe ölçekle
-  const cx=(quad4[0][0]+quad4[1][0]+quad4[2][0]+quad4[3][0])/4;
-  const cy=(quad4[0][1]+quad4[1][1]+quad4[2][1]+quad4[3][1])/4;
-  const quad = quad4.map(([x,y]) => [
-    Math.max(0, Math.min(W-1, (x + (x-cx)*0.015 + 0.5)/sc)),
-    Math.max(0, Math.min(H-1, (y + (y-cy)*0.015 + 0.5)/sc)),
-  ]);
-  // 6) güvenlik kontrolleri
-  const [TL,TR,BR,BL] = quad;
-  const dist=(a,b)=>Math.hypot(a[0]-b[0], a[1]-b[1]);
-  const tw = Math.round((dist(TL,TR)+dist(BL,BR))/2);
-  const th = Math.round((dist(TL,BL)+dist(TR,BR))/2);
-  const area = Math.abs(
-    (TL[0]*TR[1]-TR[0]*TL[1]) + (TR[0]*BR[1]-BR[0]*TR[1]) +
-    (BR[0]*BL[1]-BL[0]*BR[1]) + (BL[0]*TL[1]-TL[0]*BL[1]))/2;
-  const ar = tw/th;
-  const convex = (()=>{
-    let sign=0;
-    for(let i=0;i<4;i++){
-      const a=quad[i], b=quad[(i+1)%4], c=quad[(i+2)%4];
-      const cr=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]);
-      if(Math.abs(cr)<1){continue;}
-      const s=Math.sign(cr);
-      if(sign===0) sign=s; else if(s!==sign) return false;
-    }
-    return true;
-  })();
-  if(!convex || tw < W*0.25 || th < H*0.25 || ar<0.28 || ar>3.6 ||
-     area < W*H*0.18 || area > W*H*1.02) return null;
-  // 7) homografi + çift doğrusal örnekleme ile düzleştir
-  const hm = homography([[0,0],[tw,0],[tw,th],[0,th]], quad);
-  if(!hm) return null;
-  const srcData = canvas.getContext('2d',{willReadFrequently:true}).getImageData(0,0,W,H).data;
-  const out = document.createElement('canvas'); out.width=tw; out.height=th;
-  const octx = out.getContext('2d');
-  const od = octx.createImageData(tw,th);
-  const dd = od.data;
-  const [a,b2,c,d,e,f,g2,h2] = hm;
-  for(let v=0;v<th;v++){
-    for(let u=0;u<tw;u++){
-      const den = g2*u + h2*v + 1;
-      let sx=(a*u+b2*v+c)/den, sy=(d*u+e*v+f)/den;
-      sx = Math.max(0, Math.min(W-1.001, sx));
-      sy = Math.max(0, Math.min(H-1.001, sy));
-      const x0=sx|0, y0=sy|0, fx=sx-x0, fy=sy-y0;
-      const i00=(y0*W+x0)*4, i10=i00+4, i01=i00+W*4, i11=i01+4;
-      const o=(v*tw+u)*4;
-      for(let ch=0;ch<3;ch++){
-        dd[o+ch] =
-          srcData[i00+ch]*(1-fx)*(1-fy) + srcData[i10+ch]*fx*(1-fy) +
-          srcData[i01+ch]*(1-fx)*fy     + srcData[i11+ch]*fx*fy;
-      }
-      dd[o+3]=255;
-    }
-  }
-  octx.putImageData(od, 0, 0);
-  return out;
-}
-
-/* ---------- PDF üretimi (harici kütüphane yok) ---------- */
-async function buildPdf(pages){
-  const enc = new TextEncoder();
-  const parts = []; let off = 0;
-  const offsets = {};
-  const push = u8 => { parts.push(u8); off += u8.length; };
-  const pushStr = s => push(enc.encode(s));
-
-  pushStr('%PDF-1.4\n');
-  push(new Uint8Array([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A])); // binary işareti
-
-  const n = pages.length;
-  const total = 2 + n*3;
-  const kids = pages.map((_,i)=>`${3+i*3} 0 R`).join(' ');
-
-  offsets[1] = off;
-  pushStr(`1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n`);
-  offsets[2] = off;
-  pushStr(`2 0 obj\n<</Type /Pages /Kids [${kids}] /Count ${n}>>\nendobj\n`);
-
-  for(let i=0;i<n;i++){
-    const p = pages[i];
-    const buf = new Uint8Array(await p.procBlob.arrayBuffer());
-    const pw = 595.28;
-    const ph = +(pw * p.outH / p.outW).toFixed(2);
-    const po = 3+i*3, co = po+1, io = po+2;
-
-    offsets[po] = off;
-    pushStr(`${po} 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] `+
-      `/Resources <</XObject <</I${i} ${io} 0 R>> /ProcSet [/PDF /ImageC]>> `+
-      `/Contents ${co} 0 R>>\nendobj\n`);
-
-    const content = `q ${pw} 0 0 ${ph} 0 0 cm /I${i} Do Q\n`;
-    offsets[co] = off;
-    pushStr(`${co} 0 obj\n<</Length ${content.length}>>\nstream\n${content}endstream\nendobj\n`);
-
-    offsets[io] = off;
-    pushStr(`${io} 0 obj\n<</Type /XObject /Subtype /Image /Width ${p.outW} /Height ${p.outH} `+
-      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${buf.length}>>\nstream\n`);
-    push(buf);
-    pushStr(`\nendstream\nendobj\n`);
-  }
-
-  const xrefOff = off;
-  let xref = `xref\n0 ${total+1}\n0000000000 65535 f \n`;
-  for(let i=1;i<=total;i++)
-    xref += String(offsets[i]).padStart(10,'0') + ' 00000 n \n';
-  xref += `trailer\n<</Size ${total+1} /Root 1 0 R>>\nstartxref\n${xrefOff}\n%%EOF\n`;
-  pushStr(xref);
-
-  return new Blob(parts, {type:'application/pdf'});
-}
-
-/* ---------- arayüz ---------- */
+/* ============================================================
+   SONUÇ IZGARASI
+   ============================================================ */
 function renderGrid(){
   const grid = $('grid');
   grid.innerHTML = '';
   state.pages.forEach((p, idx) => {
     const el = document.createElement('div');
-    el.className = 'page';
+    const bad = p.issues && p.issues.length;
+    el.className = 'page' + (bad ? ' bad' : '');
+    const why = bad ? `<div class="why">⚠ ${pageIssueText(p)}</div>` : '';
+    const badges = [];
+    if(bad) badges.push('<span class="badge bad">EKSİK?</span>');
+    if(p.maybeDup) badges.push('<span class="badge dup" title="Önceki sayfayla aynı olabilir — kontrol et">TEKRAR?</span>');
     el.innerHTML = `
       <span class="num">${idx+1}</span>
-      ${p.maybeDup ? '<span class="dupbadge" title="Önceki sayfayla aynı olabilir — kontrol et">TEKRAR?</span>' : ''}
-      <img src="${p.thumbUrl}" alt="sayfa ${idx+1}" loading="lazy">
+      <div class="badges">${badges.join('')}</div>
+      ${p.thumbUrl ? `<img src="${p.thumbUrl}" alt="sayfa ${idx+1}" loading="lazy">` : '<div class="ph"><div class="spin sm"></div></div>'}
+      ${why}
       <div class="acts">
+        <button title="Yeniden çek">📷</button>
         <button title="Döndür">🔄</button>
         <button title="Sil">🗑</button>
       </div>`;
-    el.querySelector('img').onclick = () => openModal(idx);
-    const [rotBtn, delBtn] = el.querySelectorAll('.acts button');
+    const img = el.querySelector('img'); if(img) img.onclick = () => openModal(idx);
+    const [retBtn, rotBtn, delBtn] = el.querySelectorAll('.acts button');
+    retBtn.onclick = () => startRetake([p.id]);
     rotBtn.onclick = () => rotatePage(idx);
     delBtn.onclick = () => { state.pages.splice(idx,1); renderGrid(); };
     grid.appendChild(el);
   });
   $('pageCount').textContent = `(${state.pages.length})`;
+  const bad = badPages();
+  $('issueBar').hidden = !bad.length;
+  if(bad.length){
+    $('issueText').innerHTML = `⚠ <b>${bad.length} sayfada</b> eksik/sorun olabilir: ` +
+      bad.slice(0,6).map(p => `${state.pages.indexOf(p)+1}. sayfa (${pageIssueText(p)})`).join(' · ') +
+      (bad.length > 6 ? ' …' : '');
+  }
   if(!state.pages.length){ $('resultCard').hidden = true; $('introCard').hidden = false; }
 }
 
 async function rotatePage(idx){
   const p = state.pages[idx];
-  p.rot = (p.rot + 90) % 360;
+  p.rot = ((p.rot||0) + 90) % 360;
   showOverlay('Döndürülüyor…');
   await processPage(p);
-  hideOverlay();
-  renderGrid();
+  hideOverlay(); renderGrid();
   if(!$('modal').hidden) showModalPage(modalIdx);
 }
-
 async function reprocessAll(){
-  if(!state.pages.length) return;
+  if(!state.pages.length || state.busy) return;
   showOverlay('Sayfalar yeniden işleniyor…');
-  for(let i=0;i<state.pages.length;i++){
-    $('overlayText').textContent = `Yeniden işleniyor… ${i+1}/${state.pages.length}`;
-    await processPage(state.pages[i]);
-    await sleep(0);
-  }
-  hideOverlay();
-  renderGrid();
+  const all = state.pages.map(p => processPage(p));
+  let done = 0;
+  all.forEach(pr => pr.then(() => { done++; $('overlayText').textContent = `Yeniden işleniyor… ${done}/${all.length}`; }));
+  await Promise.all(all);
+  hideOverlay(); computeDocIssues(); renderGrid();
 }
-
-function showOverlay(t){ $('overlayText').textContent=t; $('overlay').hidden=false; }
-function hideOverlay(){ $('overlay').hidden=true; }
 
 /* önizleme */
 let modalIdx = 0, modalUrl = null;
@@ -1344,9 +921,11 @@ function openModal(idx){ modalIdx = idx; $('modal').hidden = false; showModalPag
 function showModalPage(idx){
   if(idx<0 || idx>=state.pages.length){ closeModal(); return; }
   modalIdx = idx;
+  const p = state.pages[idx];
   if(modalUrl) URL.revokeObjectURL(modalUrl);
-  modalUrl = URL.createObjectURL(state.pages[idx].procBlob);
-  $('modalImg').src = modalUrl;
+  modalUrl = p.procBlob ? URL.createObjectURL(p.procBlob) : null;
+  $('modalImg').src = modalUrl || p.thumbUrl || '';
+  $('modalWhy').textContent = (p.issues && p.issues.length) ? '⚠ ' + pageIssueText(p) : '';
 }
 function closeModal(){
   $('modal').hidden = true;
@@ -1357,6 +936,7 @@ $('modal').onclick = e => { if(e.target === $('modal')) closeModal(); };
 $('mPrev').onclick = () => showModalPage(Math.max(0, modalIdx-1));
 $('mNext').onclick = () => showModalPage(Math.min(state.pages.length-1, modalIdx+1));
 $('mRotate').onclick = () => rotatePage(modalIdx);
+$('mRetake').onclick = () => { const p = state.pages[modalIdx]; closeModal(); if(p) startRetake([p.id]); };
 $('mDelete').onclick = () => {
   state.pages.splice(modalIdx,1); renderGrid();
   if(!state.pages.length) closeModal();
@@ -1369,147 +949,361 @@ document.addEventListener('keydown', e => {
   if(e.key==='ArrowRight') showModalPage(Math.min(state.pages.length-1, modalIdx+1));
 });
 
-/* ---------- uygulama içi kamera (🔦 ışık kontrollü) ---------- */
-let camStream=null, camRecorder=null, camChunks=[], camTorchOn=false;
-let camTimerInt=null, camT0=0;
-
-async function openCamera(){
-  // getUserMedia yoksa veya güvenli bağlam değilse: cihazın kamera uygulaması
-  if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ||
-     !window.isSecureContext || !window.MediaRecorder){
-    $('fileCapture').click(); return;
-  }
-  try{
-    camStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: {ideal:'environment'},
-               width: {ideal:1920}, height: {ideal:1080} },
-      audio: false
+/* ============================================================
+   CANLI TARAMA — kamera açık kalır, sayfa her göründüğünde çekilir
+   ============================================================ */
+const cam = {
+  active:false, stream:null, scanner:null, torch:false, paused:false, count:0,
+  retake:null,          // {ids:[...], i}
+  audio:null, lastHintT:0, flashT:0, raf:0, lastFeed:0, lastStatus:null,
+  async open(opts){
+    opts = opts || {};
+    if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || !window.isSecureContext){
+      if(opts.retake){ this.photoFallback(opts.retake); return; }
+      toast('Canlı kamera bu bağlantıda açılamıyor (https gerekli). Telefonun kamerasıyla video kaydı açılıyor.');
+      $('fileCapture').click(); return;
+    }
+    try{
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio:false,
+        video:{ facingMode:{ideal:'environment'}, width:{ideal:3840}, height:{ideal:2160},
+                frameRate:{ideal:30}, advanced:[{focusMode:'continuous'}] }
+      });
+    }catch(e){
+      log('kamera açılamadı:', e.name);
+      if(opts.retake){ this.photoFallback(opts.retake); return; }
+      toast('Kameraya erişilemedi (' + e.name + '). Video kaydı ile devam edebilirsin.');
+      $('fileCapture').click(); return;
+    }
+    const v = $('camView');
+    v.srcObject = this.stream;
+    $('camModal').hidden = false;
+    this.active = true; this.paused = false; this.count = 0; this.torch = false;
+    this.retake = opts.retake ? {ids:opts.retake.slice(), i:0} : null;
+    $('camPause').textContent = '⏸';
+    this.updateTorchBtn(); $('camTorch').style.display = 'none';
+    const track = this.stream.getVideoTracks()[0];
+    const showTorch = () => { const caps = track.getCapabilities ? track.getCapabilities() : {}; if(caps.torch) $('camTorch').style.display = ''; };
+    showTorch(); setTimeout(showTorch, 1200);
+    try{ this.audio = this.audio || new (window.AudioContext || window.webkitAudioContext)(); }catch(_){}
+    this.newScanner();
+    this.updateRetakeUi();
+    this.updateCounter();
+    await v.play().catch(()=>{});
+    this.loop();
+  },
+  newScanner(){
+    this.scanner = new FrameScanner({live:true, stableMs:settings.stableMs, onCapture: c => this.onCapture(c)});
+  },
+  loop(){
+    const v = $('camView');
+    const step = (now) => {
+      if(!this.active) return;
+      if(!this.paused && v.readyState >= 2 && now - this.lastFeed >= 55){   // ≤ ~18 analiz/sn
+        this.lastFeed = now;
+        const r = this.scanner.feed(v, now/1000);
+        if(r) this.status(r);
+      }
+      if('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(step);
+      else this.raf = requestAnimationFrame(step);
+    };
+    if('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(step);
+    else this.raf = requestAnimationFrame(step);
+  },
+  /* ipucu + sayfa çerçevesi */
+  status(r){
+    const hint = $('camHint');
+    let txt, cls = '';
+    if(r.captured && !r.captured.replaced){ txt = '✓ Çekildi — sonraki sayfa'; cls = 'ok'; this.lastHintT = performance.now(); }
+    else if(performance.now() - this.lastHintT < 700){ txt = null; }
+    else if(r.state === 'moving') txt = this.retake ? 'Sayfayı göster…' : 'Sayfayı çevir…';
+    else if(!r.det || !r.det.ok) txt = 'Sayfayı kadraja al';
+    else if(r.det.clipped.some(Boolean)){ txt = 'Sayfanın tamamı görünsün — biraz uzaklaş'; cls = 'warn'; }
+    else if(r.det.skinInner > 0.012){ txt = 'Parmağını yazının üstünden çek'; cls = 'warn'; }
+    else if(this.scanner.run && this.scanner.run.emitted) { txt = '✓ Çekildi — sonraki sayfa'; cls = 'ok'; }
+    else txt = 'Sabit…';
+    if(txt != null){ hint.textContent = txt; hint.className = 'camhint ' + cls; }
+    this.draw(r);
+  },
+  draw(r){
+    const ov = $('camOverlay'), v = $('camView');
+    const W = ov.clientWidth, H = ov.clientHeight;
+    if(ov.width !== W || ov.height !== H){ ov.width = W; ov.height = H; }
+    const x = ov.getContext('2d');
+    x.clearRect(0, 0, W, H);
+    const det = r.det;
+    if(!det || !det.quad || !v.videoWidth) return;
+    // object-fit: contain eşlemesi
+    const s = Math.min(W/v.videoWidth, H/v.videoHeight);
+    const ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
+    const ok = det.ok && !det.clipped.some(Boolean) && det.skinInner <= 0.012;
+    const run = this.scanner.run;
+    const prog = run && r.state === 'still' ? Math.min(1, r.dur*1000/settings.stableMs) : 0;
+    x.lineWidth = 4;
+    x.strokeStyle = !det.ok ? '#ff5c7a' : (ok ? (run && run.emitted ? '#39d98a' : '#4f8cff') : '#ffb020');
+    x.fillStyle = (run && run.emitted) ? '#39d98a33' : '#4f8cff1a';
+    x.beginPath();
+    det.quad.forEach((p, i) => { const px = ox + p[0]*s, py = oy + p[1]*s; i ? x.lineTo(px, py) : x.moveTo(px, py); });
+    x.closePath(); x.fill(); x.stroke();
+    // kadraj dışına taşan kenarları kırmızı çiz
+    x.strokeStyle = '#ff5c7a'; x.lineWidth = 7;
+    det.clipped.forEach((c, e) => {
+      if(!c) return;
+      const a = det.quad[e], b = det.quad[(e+1)%4];
+      x.beginPath(); x.moveTo(ox+a[0]*s, oy+a[1]*s); x.lineTo(ox+b[0]*s, oy+b[1]*s); x.stroke();
     });
-  }catch(e){
-    log('kamera açılamadı, cihaz kamerasına düşülüyor:', e.name);
-    $('fileCapture').click(); return;
-  }
-  $('camView').srcObject = camStream;
-  $('camModal').hidden = false;
-  camTorchOn = false; updateTorchBtn();
-  const track = camStream.getVideoTracks()[0];
-  const showTorch = () => {
-    const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if(caps.torch) $('camTorch').style.display = '';
-  };
-  $('camTorch').style.display = 'none';
-  showTorch();
-  setTimeout(showTorch, 1200);   // bazı cihazlar yetenekleri geç bildirir
+    if(prog > 0 && prog < 1 && !(run && run.emitted)){
+      x.fillStyle = '#fff'; x.fillRect(W*0.3, H-10, W*0.4*prog, 5);
+    }
+  },
+  async onCapture(c){
+    // yeniden çekim: yeni sayfa yerine hedef sayfanın yerine geç
+    if(this.retake){
+      const targetId = this.retake.ids[this.retake.i];
+      const target = state.pages.find(p => p.id === targetId);
+      if(c.replaceId == null && target){
+        this.feedback();
+        const blob = await c.blob;
+        target.origBlob = blob; target.issues = []; target.maybeDup = false;
+        processPage(target);
+        this.retake.i++;
+        if(this.retake.i >= this.retake.ids.length){ setTimeout(() => this.finish(), 450); }
+        else { this.newScanner(); this.updateRetakeUi(); }
+        return;
+      }
+      if(c.replaceId != null && target){ const blob = await c.blob; if(blob){ target.origBlob = blob; processPage(target); } }
+      return;
+    }
+    if(c.replaceId == null){ this.feedback(); this.count++; this.updateCounter(); }
+    const p = await addCapture(c);
+    if(p && p.thumbUrl) this.setThumb(p.thumbUrl);
+  },
+  onPageDone(p){ if(!this.retake && p.thumbUrl && state.pages[state.pages.length-1] === p) this.setThumb(p.thumbUrl); },
+  setThumb(url){ $('camThumb').style.backgroundImage = `url("${url}")`; },
+  updateCounter(){
+    const n = this.retake ? this.retake.ids.length : state.pages.length;
+    $('camThumbN').textContent = this.retake ? `${Math.min(this.retake.i+1, n)}/${n}` : state.pages.length;
+    $('camCounter').textContent = this.retake ? `Yeniden çekim ${Math.min(this.retake.i+1, n)}/${n}` : `${state.pages.length} sayfa`;
+  },
+  updateRetakeUi(){
+    const box = $('camRetake');
+    if(!this.retake){ box.hidden = true; return; }
+    const p = state.pages.find(q => q.id === this.retake.ids[this.retake.i]);
+    if(!p){ box.hidden = true; return; }
+    box.hidden = false;
+    $('camRetakeImg').src = p.thumbUrl || '';
+    $('camRetakeTxt').innerHTML = `<b>${state.pages.indexOf(p)+1}. sayfayı</b> çek<br><small>${pageIssueText(p) || ''}</small>`;
+    this.updateCounter();
+  },
+  feedback(){
+    const f = $('camFlash'); f.style.transition = 'none'; f.style.opacity = '0.55';
+    requestAnimationFrame(() => { f.style.transition = 'opacity .3s'; f.style.opacity = '0'; });
+    try{ navigator.vibrate && navigator.vibrate(35); }catch(_){}
+    try{
+      const a = this.audio; if(!a) return;
+      if(a.state === 'suspended') a.resume();
+      const o = a.createOscillator(), g = a.createGain();
+      o.type = 'square'; o.frequency.value = 1400;
+      g.gain.setValueAtTime(0.0001, a.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.25, a.currentTime + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + 0.07);
+      o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime + 0.08);
+    }catch(_){}
+  },
+  updateTorchBtn(){ $('camTorch').classList.toggle('on', this.torch); },
+  async toggleTorch(){
+    const track = this.stream && this.stream.getVideoTracks()[0];
+    if(!track) return;
+    this.torch = !this.torch;
+    try{ await track.applyConstraints({advanced:[{torch:this.torch}]}); }
+    catch(e){ this.torch = false; toast('⚠ Bu cihazda el feneri web üzerinden kontrol edilemiyor.'); }
+    this.updateTorchBtn();
+  },
+  close(){
+    this.active = false;
+    cancelAnimationFrame(this.raf);
+    if(this.stream){ this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
+    $('camView').srcObject = null;
+    $('camModal').hidden = true;
+  },
+  async finish(){
+    const wasRetake = !!this.retake;
+    this.close();
+    if(!state.pages.length){ $('introCard').hidden = false; return; }
+    $('introCard').hidden = true; $('settingsCard').hidden = true; $('resultCard').hidden = true;
+    $('progCard').hidden = false;
+    $('progTitle').textContent = 'Sayfalar düzleştiriliyor…';
+    $('btnCancel').hidden = true;
+    await proc.drain(n => setProg(`Kalan ${n} sayfa işleniyor…`, 100 - Math.min(95, n*8), `${state.pages.length} sayfa`));
+    $('btnCancel').hidden = false;
+    if(!wasRetake) state.issuesAccepted = false;
+    showResults();
+    if(pendingPdfAfterRetake){ pendingPdfAfterRetake = false; if(!badPages().length) exportPdf(true); }
+  },
+  /* canlı kamera yoksa: tek tek fotoğraf çekerek yeniden çekim */
+  photoFallback(ids){
+    photoRetakeQueue = ids.slice();
+    nextPhotoRetake();
+  },
+};
+let photoRetakeQueue = [];
+function nextPhotoRetake(){
+  if(!photoRetakeQueue.length) return;
+  const p = state.pages.find(q => q.id === photoRetakeQueue[0]);
+  if(!p){ photoRetakeQueue.shift(); nextPhotoRetake(); return; }
+  toast(`${state.pages.indexOf(p)+1}. sayfanın fotoğrafını çek`);
+  $('photoCapture').click();
+}
+$('photoCapture').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  const id = photoRetakeQueue.shift();
+  const p = state.pages.find(q => q.id === id);
+  if(f && p){ p.origBlob = f; p.issues = []; showOverlay('İşleniyor…'); await processPage(p); hideOverlay(); computeDocIssues(); renderGrid(); }
+  if(photoRetakeQueue.length) setTimeout(nextPhotoRetake, 300);
+};
+
+$('camTorch').onclick = () => cam.toggleTorch();
+$('camDone').onclick = () => cam.finish();
+$('camClose').onclick = () => cam.finish();
+$('camPause').onclick = () => {
+  cam.paused = !cam.paused;
+  $('camPause').textContent = cam.paused ? '▶' : '⏸';
+  $('camHint').textContent = cam.paused ? 'Duraklatıldı' : 'Sayfayı kadraja al';
+  $('camHint').className = 'camhint';
+  if(!cam.paused) cam.newScanner();
+};
+$('camThumb').onclick = () => cam.finish();
+
+/* yeniden çekim başlat */
+let pendingPdfAfterRetake = false;
+function startRetake(ids){
+  if(!ids.length) return;
+  closeModal();
+  cam.open({retake: ids});
 }
 
-function updateTorchBtn(){ $('camTorch').classList.toggle('on', camTorchOn); }
+/* ============================================================
+   PDF üretimi (harici kütüphane yok)
+   ============================================================ */
+async function buildPdf(pages){
+  const enc = new TextEncoder();
+  const parts = []; let off = 0;
+  const offsets = {};
+  const push = u8 => { parts.push(u8); off += u8.length; };
+  const pushStr = s => push(enc.encode(s));
+  pushStr('%PDF-1.4\n');
+  push(new Uint8Array([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]));
+  const n = pages.length;
+  const total = 2 + n*3;
+  const kids = pages.map((_,i)=>`${3+i*3} 0 R`).join(' ');
+  offsets[1] = off;
+  pushStr(`1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n`);
+  offsets[2] = off;
+  pushStr(`2 0 obj\n<</Type /Pages /Kids [${kids}] /Count ${n}>>\nendobj\n`);
+  for(let i=0;i<n;i++){
+    const p = pages[i];
+    const buf = new Uint8Array(await p.procBlob.arrayBuffer());
+    const pw = 595.28;
+    const ph = +(pw * p.outH / p.outW).toFixed(2);
+    const po = 3+i*3, co = po+1, io = po+2;
+    offsets[po] = off;
+    pushStr(`${po} 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] `+
+      `/Resources <</XObject <</I${i} ${io} 0 R>> /ProcSet [/PDF /ImageC]>> `+
+      `/Contents ${co} 0 R>>\nendobj\n`);
+    const content = `q ${pw} 0 0 ${ph} 0 0 cm /I${i} Do Q\n`;
+    offsets[co] = off;
+    pushStr(`${co} 0 obj\n<</Length ${content.length}>>\nstream\n${content}endstream\nendobj\n`);
+    offsets[io] = off;
+    pushStr(`${io} 0 obj\n<</Type /XObject /Subtype /Image /Width ${p.outW} /Height ${p.outH} `+
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${buf.length}>>\nstream\n`);
+    push(buf);
+    pushStr(`\nendstream\nendobj\n`);
+  }
+  const xrefOff = off;
+  let xref = `xref\n0 ${total+1}\n0000000000 65535 f \n`;
+  for(let i=1;i<=total;i++) xref += String(offsets[i]).padStart(10,'0') + ' 00000 n \n';
+  xref += `trailer\n<</Size ${total+1} /Root 1 0 R>>\nstartxref\n${xrefOff}\n%%EOF\n`;
+  pushStr(xref);
+  return new Blob(parts, {type:'application/pdf'});
+}
 
-async function toggleTorch(){
-  const track = camStream && camStream.getVideoTracks()[0];
-  if(!track) return;
-  camTorchOn = !camTorchOn;
+/* PDF: önce eksik sayfaları sor; istemezse yine de oluştur */
+async function exportPdf(force){
+  if(!state.pages.length) return;
+  if(proc.pending()){
+    showOverlay('Sayfalar hazırlanıyor…');
+    await proc.drain(n => $('overlayText').textContent = `Sayfalar hazırlanıyor… (${n})`);
+    hideOverlay(); computeDocIssues(); renderGrid();
+  }
+  const bad = badPages();
+  if(bad.length && !force && !state.issuesAccepted){
+    $('issueList').innerHTML = bad.map(p => `<li><b>${state.pages.indexOf(p)+1}. sayfa</b> — ${pageIssueText(p)}</li>`).join('');
+    $('issueDlg').hidden = false;
+    return;
+  }
+  const ready = state.pages.filter(p => p.procBlob);
+  if(!ready.length) return;
+  showOverlay('PDF oluşturuluyor…');
   try{
-    await track.applyConstraints({ advanced: [{ torch: camTorchOn }] });
+    const blob = await buildPdf(ready);
+    const name = ($('fname').value.trim() || 'tarama') + '.pdf';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    window.__lastPdf = blob;
+    log('PDF hazır:', name, (blob.size/1024/1024).toFixed(2)+' MB', ready.length + ' sayfa');
   }catch(e){
-    camTorchOn = false;
-    toast('⚠ Bu cihazda el feneri web üzerinden kontrol edilemiyor.');
+    toast('PDF oluşturulamadı: ' + e.message);
+    console.error(e);
   }
-  updateTorchBtn();
+  hideOverlay();
 }
+$('btnPdf').onclick = () => exportPdf(false);
+$('dlgCancel').onclick = () => { $('issueDlg').hidden = true; };
+$('dlgPdf').onclick = () => { $('issueDlg').hidden = true; state.issuesAccepted = true; exportPdf(true); };
+$('dlgRetake').onclick = () => {
+  $('issueDlg').hidden = true;
+  pendingPdfAfterRetake = true;
+  startRetake(badPages().map(p => p.id));
+};
+$('btnRetakeAll').onclick = () => startRetake(badPages().map(p => p.id));
 
-function startStopRec(){
-  if(camRecorder && camRecorder.state === 'recording'){ camRecorder.stop(); return; }
-  camChunks = [];
-  const mime = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
-    .find(t => MediaRecorder.isTypeSupported(t)) || '';
-  try{
-    camRecorder = new MediaRecorder(camStream, mime ? {mimeType:mime} : undefined);
-  }catch(e){ toast('⚠ Bu tarayıcı video kaydını desteklemiyor.'); return; }
-  camRecorder.ondataavailable = ev => { if(ev.data && ev.data.size) camChunks.push(ev.data); };
-  camRecorder.onstop = () => {
-    const blob = new Blob(camChunks, {type: camRecorder.mimeType || 'video/webm'});
-    closeCamera();
-    if(blob.size > 5000) runPipeline(blob);
-  };
-  camRecorder.start(1000);
-  camT0 = Date.now();
-  $('camRec').classList.add('rec'); $('camRec').textContent = '⏹';
-  $('camTimer').style.display = 'block';
-  camTimerInt = setInterval(() => {
-    const s = ((Date.now()-camT0)/1000)|0;
-    $('camTimer').textContent =
-      `● ${String((s/60)|0).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
-  }, 400);
-}
-
-function closeCamera(){
-  if(camTimerInt){ clearInterval(camTimerInt); camTimerInt = null; }
-  if(camRecorder && camRecorder.state === 'recording'){
-    try{ camRecorder.onstop = null; camRecorder.stop(); }catch(_){}
-  }
-  camRecorder = null;
-  if(camStream){ camStream.getTracks().forEach(t => t.stop()); camStream = null; }
-  $('camModal').hidden = true;
-  $('camRec').classList.remove('rec'); $('camRec').textContent = '⏺';
-  $('camTimer').style.display = 'none';
-}
-
-$('camTorch').onclick = toggleTorch;
-$('camRec').onclick = startStopRec;
-$('camClose').onclick = closeCamera;
-
-/* girişler */
+/* ============================================================
+   girişler & ayarlar
+   ============================================================ */
+$('btnLive').onclick = () => cam.open();
+$('btnMoreLive').onclick = () => cam.open();
 $('btnPick').onclick = () => $('filePick').click();
-$('btnCapture').onclick = openCamera;
-$('filePick').onchange = e => { if(e.target.files[0]) runPipeline(e.target.files[0]); e.target.value=''; };
-$('fileCapture').onchange = e => { if(e.target.files[0]) runPipeline(e.target.files[0]); e.target.value=''; };
+$('btnRecord').onclick = () => $('fileCapture').click();
+$('filePick').onchange = e => { const fs = Array.from(e.target.files); e.target.value=''; runFiles(fs); };
+$('fileCapture').onchange = e => { const fs = Array.from(e.target.files); e.target.value=''; runFiles(fs); };
 $('btnCancel').onclick = () => { state.cancel = true; };
 $('btnMore').onclick = () => $('filePick').click();
 $('btnReset').onclick = () => {
   if(state.pages.length && !confirm('Tüm sayfalar silinsin mi?')) return;
+  state.pages.forEach(p => p.thumbUrl && URL.revokeObjectURL(p.thumbUrl));
   state.pages = []; renderGrid();
 };
-
 const intro = $('introCard');
 intro.addEventListener('dragover', e => { e.preventDefault(); intro.classList.add('over'); });
 intro.addEventListener('dragleave', () => intro.classList.remove('over'));
 intro.addEventListener('drop', e => {
   e.preventDefault(); intro.classList.remove('over');
-  const f = e.dataTransfer.files[0];
-  if(f && f.type.startsWith('video')) runPipeline(f);
+  runFiles(e.dataTransfer.files);
 });
-
-/* ayarlar */
 $('selMode').onchange = e => { settings.mode = e.target.value; reprocessAll(); };
 $('selQuality').onchange = e => { settings.quality = +e.target.value; reprocessAll(); };
 $('chkCrop').onchange = e => { settings.smartCrop = e.target.checked; reprocessAll(); };
-
-/* PDF indirme */
-$('btnPdf').onclick = async () => {
-  if(!state.pages.length) return;
-  showOverlay('PDF oluşturuluyor…');
-  try{
-    const blob = await buildPdf(state.pages);
-    const name = ($('fname').value.trim() || 'tarama') + '.pdf';
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    log('PDF hazır:', name, (blob.size/1024/1024).toFixed(2)+' MB');
-  }catch(e){
-    alert('PDF oluşturulamadı: ' + e.message);
-    console.error(e);
-  }
-  hideOverlay();
-};
+$('selStable').onchange = e => { settings.stableMs = +e.target.value; try{ localStorage.setItem('is.stable', e.target.value); }catch(_){} };
+try{ const v = localStorage.getItem('is.stable'); if(v){ settings.stableMs = +v; $('selStable').value = v; } }catch(_){}
 
 /* PWA */
-if('serviceWorker' in navigator &&
-   (location.protocol === 'https:' || location.hostname === 'localhost')){
+if('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
-window.hs = { state, settings };   // konsoldan hata ayıklama için
+window.hs = { state, settings, proc, cam, FrameScanner };   // konsoldan hata ayıklama için
 log('INSTANT SCANNER hazır');
 </script>
 </body>

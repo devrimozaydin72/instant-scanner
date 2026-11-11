@@ -7,6 +7,8 @@ klasör yalnızca iOS kabuğunu içerir.
 ## Uygulamada web sürümünden farklı olanlar
 
 - PDF, iPhone paylaşım menüsüyle açılır (Dosyalara Kaydet, WhatsApp, Mail, Yazdır…).
+  Oluşturulan PDF'ler ve yarım kalan tarama (web sürümünde de) cihazda saklanır;
+  "Önceki taramalar" listesinden yeniden açılır.
 - Her sayfa çekildiğinde telefon hafifçe titrer (dokunsal geri bildirim).
 - Uygulama açıkken ekran kendiliğinden kararmaz.
 - Service worker kullanılmaz; dosyalar zaten cihazdadır, internet gerekmez.

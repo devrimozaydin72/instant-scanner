@@ -4,3 +4,8 @@
 # üretilen paketler
 *.zip
 *.pdf
+# kök klasördeki kişisel fotoğraflar
+/*.jpg
+/*.jpeg
+/*.heic
+/*.png

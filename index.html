@@ -176,6 +176,15 @@
     max-width:90vw; box-shadow:0 6px 24px #0008;
   }
   h2{font-size:17px; margin:0 0 4px}
+  /* önceki taramalar */
+  #histList{display:flex; flex-direction:column; gap:10px; margin-top:12px}
+  .hist{display:flex; gap:12px; align-items:center; width:100%; text-align:left; cursor:pointer;
+    background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:8px 10px; color:var(--text); font:inherit}
+  .hist img{width:42px; height:59px; object-fit:cover; border-radius:4px; background:#fff; flex:none}
+  .hist .t{font-weight:600; font-size:15px; word-break:break-word}
+  .hist .s{color:var(--dim); font-size:13px; margin-top:2px}
+  .ver{color:var(--dim); font-size:12px; text-align:center; margin:6px 0 0; opacity:.7}
+  #pdfInfo{color:var(--dim); font-size:14px; line-height:1.5; margin:4px 0 14px; word-break:break-word}
   .sub{color:var(--dim); font-size:13px; margin:0}
 </style>
 </head>
@@ -196,7 +205,7 @@
     <div class="bigbtns" style="margin-top:14px">
       <button class="bigbtn" id="btnLive">
         <span class="ic">📷</span>Canlı Tara
-        <small>Otomatik çekim · ¼ sn yeter · 🔦 ışık</small>
+        <small>Otomatik çekim · beklemeden çevir · 🔦 ışık</small>
       </button>
       <button class="bigbtn alt" id="btnPick">
         <span class="ic">📁</span>Video / Foto Seç
@@ -205,7 +214,7 @@
     </div>
     <button class="linkbtn" id="btnRecord">🎥 Telefonun kamerasıyla video kaydet</button>
     <p class="tips">
-      💡 <b>Nasıl çalışır:</b> Sayfanın <b>tamamı</b> görünsün, sayfayı çevir, kısa bir an (<b>¼ sn</b>) sabit kalsın — çekim sesi gelince sonraki sayfaya geç.
+      💡 <b>Nasıl çalışır:</b> Sayfanın <b>tamamı</b> görünsün, sayfaları <b>beklemeden</b> çevir — sayfa göründüğü an en net karesi çekilir, çekim sesini duyunca sonrakine geç.
       Açılı çekimler düzleştirilir, kıvrık satırlar doğrultulur, kenardaki parmaklar ve sayfa dışı alanlar temizlenir.
       Eksik çıkan sayfaları sonra tek dokunuşla yeniden çekebilirsin.
     </p>
@@ -232,9 +241,9 @@
       </label>
       <label class="setting">Otomatik çekim için sabit bekleme
         <select id="selStable">
-          <option value="250" selected>¼ saniye (en hızlı)</option>
-          <option value="500">½ saniye</option>
-          <option value="1000">1 saniye</option>
+          <option value="100" selected>Anında (en hızlı)</option>
+          <option value="250">¼ saniye</option>
+          <option value="500">½ saniye (en net)</option>
         </select>
       </label>
       <label class="setting">Akıllı temizlik
@@ -274,6 +283,14 @@
       <button class="btn gray" id="btnReset">🔁 Baştan</button>
     </div>
   </section>
+
+  <!-- ÖNCEKİ TARAMALAR (cihazda saklanır) -->
+  <section class="card" id="histCard" hidden>
+    <h2>📚 Önceki taramalar</h2>
+    <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
+    <div id="histList"></div>
+  </section>
+  <p class="ver">INSTANT SCANNER · sürüm 9</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -300,6 +317,22 @@
       <button class="btn warn" id="dlgRetake">📷 Evet, yeniden çek</button>
       <button class="btn green" id="dlgPdf">📄 Hayır, PDF'i yine de oluştur</button>
       <button class="btn gray" id="dlgCancel">Vazgeç</button>
+    </div>
+  </div>
+</div>
+
+<!-- PDF HAZIR / ÖNCEKİ TARAMA -->
+<div class="dialog" id="pdfDlg" hidden>
+  <div class="box">
+    <h3 id="pdfTitle">✅ PDF hazır</h3>
+    <div id="pdfInfo"></div>
+    <div class="rowbtns">
+      <button class="btn green" id="pdfShare">📤 Paylaş / Dosyalara Kaydet</button>
+      <button class="btn" id="pdfDown">⬇ PDF İndir</button>
+      <button class="btn gray" id="pdfOpen">👁 Aç</button>
+      <button class="btn gray" id="pdfNew">🆕 Yeni tarama başlat</button>
+      <button class="btn red" id="pdfDel">🗑 Bu PDF'i sil</button>
+      <button class="btn gray" id="pdfClose">Kapat</button>
     </div>
   </div>
 </div>
@@ -362,9 +395,223 @@ const state = {
   nextId: 1,
   issuesAccepted: false,
 };
-const settings = { mode:'color', quality:0.85, smartCrop:true, stableMs:250 };
+const settings = { mode:'color', quality:0.85, smartCrop:true, stableMs:100 };
 const OUT_SIZE = { '0.92':[1654,2339], '0.85':[1240,1754], '0.7':[1000,1414] };
 const SIDE_TR = ['üst','sağ','alt','sol'];
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const esc = t => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtMB = b => (b/1048576).toFixed(1).replace('.', ',') + ' MB';
+const fmtDate = t => { try{ return new Date(t).toLocaleString('tr-TR', {day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'}); }catch(_){ return ''; } };
+
+/* ============================================================
+   KALICI KAYIT (IndexedDB) — yalnızca bu cihazda.
+   pages: yarım kalan taramanın sayfaları · meta: sayfa sırası, dosya adı
+   docs: oluşturulan PDF'lerin bilgisi (liste) · pdfs: PDF'lerin kendisi
+   Bloblar ArrayBuffer olarak saklanır (her tarayıcıda güvenilir).
+   ============================================================ */
+const toAB = async b => b ? {buf: await b.arrayBuffer(), type: b.type || ''} : null;
+const fromAB = (o, type) => o && o.buf ? new Blob([o.buf], {type: o.type || type || ''}) : null;
+const store = {
+  db: null,
+  open(){
+    if(!this.db){
+      this.db = new Promise((res, rej) => {
+        if(!window.indexedDB) return rej(new Error('IndexedDB yok'));
+        const rq = indexedDB.open('instant-scanner', 1);
+        rq.onupgradeneeded = () => {
+          const db = rq.result;
+          for(const [n, k] of [['pages','id'], ['meta','k'], ['docs','id'], ['pdfs','id']])
+            if(!db.objectStoreNames.contains(n)) db.createObjectStore(n, {keyPath:k});
+        };
+        rq.onsuccess = () => res(rq.result);
+        rq.onerror = () => rej(rq.error);
+        rq.onblocked = () => rej(new Error('veritabanı meşgul'));
+      });
+      this.db.catch(e => { log('kayıt açılamadı:', e && e.message); this.db = null; });
+    }
+    return this.db;
+  },
+  async tx(name, mode, fn){
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const t = db.transaction(name, mode), r = fn(t.objectStore(name));
+      let out;
+      if(r) r.onsuccess = () => { out = r.result; };
+      t.oncomplete = () => res(out);
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error || new Error('kayıt iptal edildi'));
+    });
+  },
+  get(n, k){ return this.tx(n, 'readonly', s => s.get(k)); },
+  all(n){ return this.tx(n, 'readonly', s => s.getAll()); },
+  put(n, v){ return this.tx(n, 'readwrite', s => s.put(v)); },
+  del(n, k){ return this.tx(n, 'readwrite', s => s.delete(k)); },
+};
+let persistAsked = false;
+function askPersist(){
+  if(persistAsked) return; persistAsked = true;
+  try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist().then(v => log('kalıcı depolama:', v)).catch(()=>{}); }catch(_){}
+}
+
+/* yarım kalan tarama: sayfa işlendikçe/silindikçe kaydedilir, açılışta geri gelir */
+const session = {
+  saved: new Map(),          // id → kaydedilen sürüm (p.ver)
+  timer: 0, busy: false, again: false,
+  schedule(){ clearTimeout(this.timer); this.timer = setTimeout(() => this.sync(), 500); },
+  async sync(){
+    if(this.busy){ this.again = true; return; }
+    this.busy = true;
+    try{
+      const ids = state.pages.map(p => p.id);
+      for(const p of state.pages.slice()){
+        if(p.status !== 'done' || !p.procBlob || this.saved.get(p.id) === p.ver) continue;
+        const ver = p.ver;
+        await store.put('pages', {id:p.id, ver, orig: await toAB(p.origBlob), proc: await toAB(p.procBlob),
+          thumb: await toAB(p.thumbBlob), outW:p.outW, outH:p.outH, rot:p.rot||0, time:p.time||0,
+          maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}});
+        this.saved.set(p.id, ver);
+        askPersist();
+      }
+      for(const id of [...this.saved.keys()]) if(!ids.includes(id)){ await store.del('pages', id); this.saved.delete(id); }
+      await store.put('meta', {k:'order', ids: ids.filter(id => this.saved.has(id)), name: $('fname').value});
+    }catch(e){ log('tarama kaydedilemedi:', e && e.message); }
+    this.busy = false;
+    if(this.again){ this.again = false; this.schedule(); }
+  },
+  async restore(){
+    try{
+      const meta = await store.get('meta', 'order');
+      const recs = await store.all('pages');
+      const by = new Map(recs.map(r => [r.id, r]));
+      const pages = [];
+      for(const id of (meta && meta.ids) || []){
+        const r = by.get(id); if(!r || !r.proc) continue;
+        const procBlob = fromAB(r.proc, 'image/jpeg'), thumbBlob = fromAB(r.thumb, 'image/jpeg') || procBlob;
+        pages.push({id:r.id, ver:r.ver, status:'done', origBlob: fromAB(r.orig, 'image/jpeg'), procBlob, thumbBlob,
+          thumbUrl: URL.createObjectURL(thumbBlob), outW:r.outW, outH:r.outH, rot:r.rot, time:r.time,
+          maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}});
+        this.saved.set(r.id, r.ver);
+      }
+      for(const r of recs) if(!this.saved.has(r.id)) store.del('pages', r.id).catch(()=>{});
+      if(meta && meta.name) $('fname').value = meta.name;
+      if(!pages.length || state.pages.length) return 0;
+      state.pages = pages;
+      state.nextId = Math.max(state.nextId, ...pages.map(p => p.id + 1));
+      state.issuesAccepted = false;
+      showResults();
+      return pages.length;
+    }catch(e){ log('tarama geri yüklenemedi:', e && e.message); return 0; }
+  },
+};
+
+/* oluşturulan PDF'ler: "Önceki taramalar" listesi */
+const archive = {
+  urls: [],
+  async add(blob, name, pages, thumb){
+    const id = Date.now();
+    await store.put('pdfs', {id, pdf: await toAB(blob)});
+    await store.put('docs', {id, name, created:id, pages, size:blob.size, thumb: await toAB(thumb)});
+    askPersist();
+    return id;
+  },
+  async remove(id){ await store.del('docs', id); await store.del('pdfs', id); },
+  async open(id){
+    try{
+      const meta = await store.get('docs', id), rec = await store.get('pdfs', id);
+      if(!meta || !rec){ toast('Bu PDF bulunamadı.'); return; }
+      pdfDlg.show({blob: fromAB(rec.pdf, 'application/pdf'), name: meta.name, pages: meta.pages, size: meta.size,
+        created: meta.created, docId: id, fresh: false});
+    }catch(e){ toast('PDF açılamadı: ' + (e && e.message)); }
+  },
+  async render(){
+    let docs = [];
+    try{ docs = (await store.all('docs')).sort((a, b) => b.created - a.created); }
+    catch(e){ log('önceki taramalar okunamadı:', e && e.message); }
+    this.urls.forEach(u => URL.revokeObjectURL(u)); this.urls = [];
+    $('histCard').hidden = !docs.length;
+    const list = $('histList'); list.innerHTML = '';
+    for(const d of docs){
+      const b = document.createElement('button'); b.className = 'hist';
+      const tb = fromAB(d.thumb, 'image/jpeg');
+      let src = ''; if(tb){ src = URL.createObjectURL(tb); this.urls.push(src); }
+      b.innerHTML = `<img ${src ? `src="${src}"` : ''} alt=""><div><div class="t">${esc(d.name)}</div>` +
+        `<div class="s">${d.pages} sayfa · ${fmtMB(d.size)} · ${fmtDate(d.created)}</div></div>`;
+      b.onclick = () => this.open(d.id);
+      list.appendChild(b);
+    }
+    // iOS'ta Safari sekmesindeki site verisi uzun süre kullanılmazsa silinebilir; ana ekran uygulamasında kalıcıdır
+    const tip = isIOS && !native.on && !navigator.standalone;
+    $('histSub').innerHTML = 'Oluşturduğun PDF\'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.' +
+      (tip ? '<br>💡 Kalıcı olması için Safari\'de <b>Paylaş → Ana Ekrana Ekle</b> ile uygulama olarak kullan.' : '');
+  },
+};
+
+/* PDF penceresi: yeni oluşturulan ya da önceki taramalardan açılan PDF */
+const pdfDlg = {
+  cur: null, url: null,
+  show(d){
+    this.cur = d;
+    if(this.url){ URL.revokeObjectURL(this.url); this.url = null; }
+    $('pdfTitle').textContent = d.fresh ? '✅ PDF hazır' : '📄 Önceki tarama';
+    $('pdfInfo').innerHTML = `<b>${esc(d.name)}</b><br>${d.pages} sayfa · ${fmtMB(d.size)}` +
+      (d.created ? ' · ' + fmtDate(d.created) : '') +
+      (d.fresh ? (d.docId ? '<br>"Önceki taramalar" listesine kaydedildi.' : '<br>⚠ Bu cihaza kaydedilemedi; şimdi indir ya da paylaş.') : '');
+    const share = native.on || canShareFile(d);
+    const preferShare = share && (isIOS || native.on);
+    $('pdfShare').hidden = !share;
+    $('pdfShare').className = 'btn ' + (preferShare ? 'green' : 'gray');
+    $('pdfDown').hidden = native.on;
+    $('pdfDown').className = 'btn ' + (preferShare ? 'gray' : 'green');
+    $('pdfOpen').hidden = native.on || isIOS;     // iOS'ta indirme zaten görüntüleme seçeneği sunar
+    $('pdfNew').hidden = !d.fresh;
+    $('pdfDel').hidden = d.fresh || !d.docId;
+    $('pdfDlg').hidden = false;
+  },
+  hide(){ $('pdfDlg').hidden = true; },
+};
+function pdfFile(d){ return new File([d.blob], d.name, {type:'application/pdf'}); }
+function canShareFile(d){
+  try{ return !!(navigator.share && navigator.canShare && navigator.canShare({files:[pdfFile(d)]})); }catch(_){ return false; }
+}
+let dlUrl = null;
+function downloadBlob(blob, name){
+  // iOS "İndir / Görüntüle" sorusunu beklerken link geçersiz olmasın: bir sonraki indirmeye kadar tutulur
+  if(dlUrl) URL.revokeObjectURL(dlUrl);
+  dlUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = dlUrl; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+$('pdfShare').onclick = async () => {
+  const d = pdfDlg.cur; if(!d) return;
+  if(native.on){ await sharePdfNative(d.blob, d.name); return; }
+  try{ await navigator.share({files:[pdfFile(d)], title:d.name}); }
+  catch(e){
+    if(e && e.name === 'AbortError') return;        // kullanıcı vazgeçti
+    log('paylaşım açılamadı:', e && e.name, e && e.message);
+    toast('Paylaşım açılamadı, PDF indiriliyor.'); downloadBlob(d.blob, d.name);
+  }
+};
+$('pdfDown').onclick = () => { const d = pdfDlg.cur; if(d) downloadBlob(d.blob, d.name); };
+$('pdfOpen').onclick = () => {
+  const d = pdfDlg.cur; if(!d) return;
+  if(!pdfDlg.url) pdfDlg.url = URL.createObjectURL(d.blob);
+  window.open(pdfDlg.url, '_blank');
+};
+$('pdfNew').onclick = () => { pdfDlg.hide(); clearPages(); };
+$('pdfDel').onclick = async () => {
+  const d = pdfDlg.cur; if(!d || !d.docId) return;
+  if(!confirm(`"${d.name}" silinsin mi?`)) return;
+  try{ await archive.remove(d.docId); }catch(e){ toast('Silinemedi: ' + (e && e.message)); }
+  pdfDlg.hide(); archive.render();
+};
+$('pdfClose').onclick = () => pdfDlg.hide();
+function clearPages(){
+  state.pages.forEach(p => p.thumbUrl && URL.revokeObjectURL(p.thumbUrl));
+  state.pages = []; state.issuesAccepted = false;
+  $('fname').value = 'tarama';
+  renderGrid();
+}
 
 function toast(msg, ms){
   const t = document.createElement('div');
@@ -476,7 +723,7 @@ function processPage(p){
   return proc.submit({blob:p.origBlob, opts:procOpts(p)}).then(r => {
     if(p.ver !== ver) return;
     if(p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
-    p.procBlob = r.blob; p.thumbUrl = URL.createObjectURL(r.thumb);
+    p.procBlob = r.blob; p.thumbBlob = r.thumb; p.thumbUrl = URL.createObjectURL(r.thumb);
     p.outW = r.w; p.outH = r.h; p.issues = r.issues || []; p.metrics = r.metrics || {};
     p.status = 'done';
     log(`sayfa ${p.id}:`, r.dbg);
@@ -489,6 +736,7 @@ function processPage(p){
 }
 let renderTimer = null;
 function onPageProcessed(p){
+  session.schedule();
   if(cam.active) cam.onPageDone(p);
   if(!$('resultCard').hidden){
     clearTimeout(renderTimer);
@@ -586,10 +834,10 @@ class FrameScanner {
     const still = motion <= thr;
     if(!still){
       if(motion < 99) this.moveSum += motion;
-      if(this.run) this.endRun();
+      const captured = this.run ? this.endRun() : null;   // duruş bitti: canlıda gerekirse o anın karesi alınır
       this.cost = this.cost*0.9 + (performance.now()-c0)*0.1;
       if(this.o.debug) this.debug.push([+t.toFixed(3), +motion.toFixed(2), +thr.toFixed(2), 0]);
-      return {state:'moving', motion, thr};
+      return {state:'moving', motion, thr, captured};
     }
     // 3) netlik: merkezde doğal çözünürlükte Laplace varyansı
     const cs = Math.min(CROP, vw, vh);
@@ -598,8 +846,8 @@ class FrameScanner {
     const sharp = C.lapVar(C.grayOf(cx.getImageData(0, 0, cs, cs).data, cs*cs), cs, cs);
     this.shist.push(sharp); if(this.shist.length > 300) this.shist.shift();
     if(this.o.debug) this.debug.push([+t.toFixed(3), +motion.toFixed(2), +thr.toFixed(2), sharp|0]);
-    if(!this.run) this.run = {t0:t, t1:t, best:null, emitted:false, emitId:null, emitScore:0, lastDet:null, lastDetT:-9};
-    const run = this.run; run.t1 = t;
+    if(!this.run) this.run = {t0:t, t1:t, n:0, best:null, emitted:false, emitId:null, emitScore:0, lastDet:null, lastDetT:-9};
+    const run = this.run; run.t1 = t; run.n++;
     const dur = run.t1 - run.t0 + this.dtAvg;
     // 4) sayfa tespiti (yalnızca en iyi olmaya aday karelerde)
     let det = run.lastDet;
@@ -654,8 +902,17 @@ class FrameScanner {
   }
   endRun(){
     const run = this.run; this.run = null;
-    if(!run || this.o.live || !run.best) return;
+    if(!run || !run.best) return null;
     const dur = run.t1 - run.t0 + this.dtAvg;
+    if(this.o.live){
+      // hızlı çevirme: sayfa kısa bir an göründü ama tam-kadraj/parmaksız koşulu oluşmadı.
+      // Sonraki sayfaya geçilirken o duruşun en iyi karesi yine de alınır; eksik varsa sayfa işaretlenir.
+      if(!run.emitted && run.n >= 2 && run.best.det.ok && dur*1000 >= Math.min(this.o.stableMs, 100)){
+        if(this.o.debug) this.debug.push(['duruş-sonu', +run.t1.toFixed(2), run.n]);
+        return this.emit(run.best, null);
+      }
+      return null;
+    }
     if(dur*1000 < this.o.stableMs*0.98) return;
     // çevirme anındaki bulanık ara kareler: videonun tipik netliğinin çok altında
     const med = this.sharpMedian();
@@ -739,7 +996,8 @@ async function scanVideo(file){
     const dur = video.duration;
     log('video', video.videoWidth+'x'+video.videoHeight, dur.toFixed(1)+'s');
     const before = state.pages.length;
-    const sc = new FrameScanner({live:false, stableMs:settings.stableMs, debug:!!window.__scanDebug,
+    // hazır videoda acele yok: kısa duruşlar sayfa sayılmasın (tekrar), en az ¼ sn
+    const sc = new FrameScanner({live:false, stableMs:Math.max(250, settings.stableMs), debug:!!window.__scanDebug,
       onCapture: c => { addCapture(c); }});
     const t0 = performance.now();
     proc.setHold(true);             // analiz bitene dek işleyiciler beklesin (yoğun kare örnekleme)
@@ -918,6 +1176,7 @@ function renderGrid(){
       (bad.length > 6 ? ' …' : '');
   }
   if(!state.pages.length){ $('resultCard').hidden = true; $('introCard').hidden = false; }
+  session.schedule();
 }
 
 async function rotatePage(idx){
@@ -1028,7 +1287,8 @@ const cam = {
     this.loop();
   },
   newScanner(){
-    this.scanner = new FrameScanner({live:true, stableMs:settings.stableMs, onCapture: c => this.onCapture(c)});
+    this.scanner = new FrameScanner({live:true, stableMs:settings.stableMs, debug:!!window.__scanDebug, onCapture: c => this.onCapture(c)});
+    if(window.__scanDebug) window.__camDebugLog = this.scanner.debug;
   },
   loop(){
     const v = $('camView');
@@ -1228,6 +1488,42 @@ function startRetake(ids){
 /* ============================================================
    PDF üretimi (harici kütüphane yok)
    ============================================================ */
+/* JPEG başlığından gerçek boyut ve kanal sayısı (SOF). JPEG değilse null. */
+function jpegInfo(u){
+  if(u.length < 4 || u[0] !== 0xFF || u[1] !== 0xD8) return null;
+  let i = 2;
+  while(i + 9 < u.length){
+    if(u[i] !== 0xFF){ i++; continue; }
+    const mk = u[i+1];
+    if(mk === 0xFF){ i++; continue; }
+    if(mk === 0x01 || (mk >= 0xD0 && mk <= 0xD8)){ i += 2; continue; }
+    const len = (u[i+2] << 8) | u[i+3];
+    if(mk >= 0xC0 && mk <= 0xCF && mk !== 0xC4 && mk !== 0xC8 && mk !== 0xCC)
+      return {h:(u[i+5] << 8) | u[i+6], w:(u[i+7] << 8) | u[i+8], comps:u[i+9]};
+    i += 2 + len;
+  }
+  return null;
+}
+/* tarayıcıda yeniden JPEG'e çevir (ana iş parçacığı tuvali her yerde güvenilir) */
+async function reencodeJpeg(blob){
+  const bmp = await createImageBitmap(blob);
+  const c = mk(bmp.width, bmp.height); c.getContext('2d').drawImage(bmp, 0, 0);
+  if(bmp.close) bmp.close();
+  const out = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
+  c.width = c.height = 1;
+  return new Uint8Array(await out.arrayBuffer());
+}
+/* PDF'e girecek sayfa resmi: JPEG değilse ya da okunamıyorsa yeniden kodlanır */
+async function pdfImage(p){
+  let buf = new Uint8Array(await p.procBlob.arrayBuffer());
+  let info = jpegInfo(buf);
+  if(!info || !info.w || !info.h || (info.comps !== 1 && info.comps !== 3)){
+    log('sayfa resmi JPEG değil, yeniden kodlanıyor:', p.id, p.procBlob.type);
+    buf = await reencodeJpeg(p.procBlob); info = jpegInfo(buf);
+    if(!info) throw new Error('sayfa resmi okunamadı');
+  }
+  return {buf, info};
+}
 async function buildPdf(pages){
   const enc = new TextEncoder();
   const parts = []; let off = 0;
@@ -1245,9 +1541,9 @@ async function buildPdf(pages){
   pushStr(`2 0 obj\n<</Type /Pages /Kids [${kids}] /Count ${n}>>\nendobj\n`);
   for(let i=0;i<n;i++){
     const p = pages[i];
-    const buf = new Uint8Array(await p.procBlob.arrayBuffer());
+    const {buf, info} = await pdfImage(p);
     const pw = 595.28;
-    const ph = +(pw * p.outH / p.outW).toFixed(2);
+    const ph = +(pw * info.h / info.w).toFixed(2);
     const po = 3+i*3, co = po+1, io = po+2;
     offsets[po] = off;
     pushStr(`${po} 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] `+
@@ -1257,8 +1553,8 @@ async function buildPdf(pages){
     offsets[co] = off;
     pushStr(`${co} 0 obj\n<</Length ${content.length}>>\nstream\n${content}endstream\nendobj\n`);
     offsets[io] = off;
-    pushStr(`${io} 0 obj\n<</Type /XObject /Subtype /Image /Width ${p.outW} /Height ${p.outH} `+
-      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${buf.length}>>\nstream\n`);
+    pushStr(`${io} 0 obj\n<</Type /XObject /Subtype /Image /Width ${info.w} /Height ${info.h} `+
+      `/ColorSpace /${info.comps === 1 ? 'DeviceGray' : 'DeviceRGB'} /BitsPerComponent 8 /Filter /DCTDecode /Length ${buf.length}>>\nstream\n`);
     push(buf);
     pushStr(`\nendstream\nendobj\n`);
   }
@@ -1314,17 +1610,18 @@ async function exportPdf(force){
     const name = ($('fname').value.trim() || 'tarama').replace(/[\\/:*?"<>|]+/g, '-') + '.pdf';
     window.__lastPdf = blob;
     log('PDF hazır:', name, (blob.size/1024/1024).toFixed(2)+' MB', ready.length + ' sayfa');
-    if(native.on){ await sharePdfNative(blob, name); return; }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    $('overlayText').textContent = 'PDF kaydediliyor…';
+    let docId = null;
+    try{ docId = await archive.add(blob, name, ready.length, ready[0].thumbBlob || null); }
+    catch(e){ log('PDF cihaza kaydedilemedi:', e && e.message); }
+    hideOverlay();
+    pdfDlg.show({blob, name, pages: ready.length, size: blob.size, docId, created: docId, fresh: true});
+    archive.render();
   }catch(e){
+    hideOverlay();
     toast('PDF oluşturulamadı: ' + e.message);
     console.error(e);
   }
-  hideOverlay();
 }
 $('btnPdf').onclick = () => exportPdf(false);
 $('dlgCancel').onclick = () => { $('issueDlg').hidden = true; };
@@ -1348,9 +1645,8 @@ $('fileCapture').onchange = e => { const fs = Array.from(e.target.files); e.targ
 $('btnCancel').onclick = () => { state.cancel = true; };
 $('btnMore').onclick = () => $('filePick').click();
 $('btnReset').onclick = () => {
-  if(state.pages.length && !confirm('Tüm sayfalar silinsin mi?')) return;
-  state.pages.forEach(p => p.thumbUrl && URL.revokeObjectURL(p.thumbUrl));
-  state.pages = []; renderGrid();
+  if(state.pages.length && !confirm('Tüm sayfalar silinsin mi? (Oluşturduğun PDF\'ler "Önceki taramalar"da kalır.)')) return;
+  clearPages();
 };
 const intro = $('introCard');
 intro.addEventListener('dragover', e => { e.preventDefault(); intro.classList.add('over'); });
@@ -1362,8 +1658,8 @@ intro.addEventListener('drop', e => {
 $('selMode').onchange = e => { settings.mode = e.target.value; reprocessAll(); };
 $('selQuality').onchange = e => { settings.quality = +e.target.value; reprocessAll(); };
 $('chkCrop').onchange = e => { settings.smartCrop = e.target.checked; reprocessAll(); };
-$('selStable').onchange = e => { settings.stableMs = +e.target.value; try{ localStorage.setItem('is.stable', e.target.value); }catch(_){} };
-try{ const v = localStorage.getItem('is.stable'); if(v){ settings.stableMs = +v; $('selStable').value = v; } }catch(_){}
+$('selStable').onchange = e => { settings.stableMs = +e.target.value; try{ localStorage.setItem('is.stable2', e.target.value); }catch(_){} };
+try{ const v = localStorage.getItem('is.stable2'); if(v && $('selStable').querySelector(`option[value="${v}"]`)){ settings.stableMs = +v; $('selStable').value = v; } }catch(_){}
 
 // sekmeye/uygulamaya geri dönülünce ekran kilidi bırakılmış olur; kamera açıksa yeniden iste
 document.addEventListener('visibilitychange', () => {
@@ -1374,7 +1670,13 @@ document.addEventListener('visibilitychange', () => {
 if(!native.on && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
-window.hs = { state, settings, proc, cam, FrameScanner };   // konsoldan hata ayıklama için
+window.hs = { state, settings, proc, cam, FrameScanner, store, session, archive, pdfDlg };   // konsoldan hata ayıklama için
+$('fname').addEventListener('input', () => session.schedule());
+window.__ready = (async () => {
+  const n = await session.restore();
+  if(n) toast(`Yarım kalan taraman geri yüklendi (${n} sayfa).`, 4000);
+  await archive.render();
+})();
 log('INSTANT SCANNER hazır');
 </script>
 </body>

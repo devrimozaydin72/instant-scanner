@@ -1244,21 +1244,34 @@ function processCanvas(src, opts){
     const okQ = tq.every(p => isFinite(p[0]) && isFinite(p[1])) && isConvex(tq);
     if(okQ){
       const arT = estimateAspect(tq, W, H);
-      // yazı bloğu düzleminde genişletilmiş bölge: başlık, sayfa no, üstteki fotoğraf için pay
-      const ex = 0.16, eyT = 0.85, eyB = 0.3;      // üstte tam sayfa fotoğrafı/başlık sığsın
+      // yazı bloğu düzleminde genişletilmiş bölge. Pay, A'da bulunan sayfanın bloğa göre
+      // gerçek uzantısından gelir: blok sayfanın yalnız bir kısmını kapsasa da (ör. arada
+      // girintili alıntı) bloğun altındaki/üstündeki satırlar düzlemin dışında kalmaz.
+      const yMidA = (A.tb.yTop + A.tb.yBot)/2;
+      const bwA = Math.max(1, A.tb.Rf(yMidA) - A.tb.Lf(yMidA)), bhA = Math.max(1, A.tb.yBot - A.tb.yTop);
+      const clampE = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      const exL = clampE(A.tb.Lf(yMidA)/bwA + 0.04, 0.16, 0.7);
+      const exR = clampE((A.bw - A.tb.Rf(yMidA))/bwA + 0.04, 0.16, 0.7);
+      const eyT = clampE(A.tb.yTop/bhA + 0.05, 0.35, 1.6);
+      const eyB = clampE((A.bh - A.tb.yBot)/bhA + 0.05, 0.3, 1.6);
       const HT = homography([[0,0],[1,0],[1,1],[0,1]], tq);
       if(HT){
-        const qB = [[-ex,-eyT],[1+ex,-eyT],[1+ex,1+eyB],[-ex,1+eyB]].map(([u,v]) => applyH(HT, u, v));
+        const qB = [[-exL,-eyT],[1+exR,-eyT],[1+exR,1+eyB],[-exL,1+eyB]].map(([u,v]) => applyH(HT, u, v));
         const blockSrcH = (dist(tq[0],tq[3]) + dist(tq[1],tq[2]))/2;
-        const HtB = Math.round(Math.max(700, Math.min(1000, blockSrcH*1.1)));
-        const HbB = Math.round(HtB*(1+eyT+eyB));
-        const arB = arT*(1+2*ex)/(1+eyT+eyB);
+        const tot = 1+eyT+eyB, totX = 1+exL+exR;
+        const HtB = Math.round(Math.min(Math.max(700, Math.min(1000, blockSrcH*1.1)), 2200/tot));
+        const HbB = Math.round(HtB*tot);
+        const arB = arT*totX/tot;
         if(qB.every(p => isFinite(p[0]) && isFinite(p[1])) && isConvex(qB)){
           const sl = 0.06;                       // beklenen yazı sütunu (± pay)
-          const tot = 1+eyT+eyB;
+          dbg.push(`B pay L${exL.toFixed(2)} R${exR.toFixed(2)} Ü${eyT.toFixed(2)} A${eyB.toFixed(2)}`);
           B = analyzePlane(sd, W, H, qB, arB, HbB, false, true, dbg, 'B',
-                           {x0:(ex-sl)/(1+2*ex), x1:(1+ex+sl)/(1+2*ex), y0:Math.max(0,(eyT-0.05)/tot), y1:Math.min(1,(1+eyT+0.05)/tot)});
-          const okB = B.tb && B.tb.n >= Math.max(5, A.tb.n*0.6);
+                           {x0:Math.max(0,(exL-sl)/totX), x1:Math.min(1,(exL+1+sl)/totX), y0:Math.max(0,(eyT-0.05)/tot), y1:Math.min(1,(1+eyT+0.05)/tot)});
+          // A düzlemi yazıyı üstten/alttan kesiyorsa (sayfa dörtgeni kısa) B daha az satır bulsa da
+          // tercih edilir: B'nin perspektifi zaten A'nın bloğundan, kendi bloğu yalnız içerik kutusu için
+          const aCuts = (A.bh - A.tb.yBot) < 1.5*(A.pitch || 20) || A.tb.yTop < 1.5*(A.pitch || 20);
+          const okB = B.tb && B.tb.n >= 5 && (B.tb.n >= A.tb.n*0.6 || aCuts);
+          if(okB && aCuts && B.tb.n < A.tb.n*0.6) dbg.push('A yazıyı kesiyor → B');
           if(okB) content = contentBox(B, dbg);
           else { dbg.push('B geçersiz → A'); B = null; }
         }
@@ -1493,7 +1506,9 @@ function analyzePlane(sd, W, H, quad, ar, Ha, trim, dewarp, dbg, tag, focus){
     let r = runFields(g0, ink0);
     if(r.fl.length){
       pitch = r.fl[r.fl.length-1].pitch;
-      const nc = focus ? {x0:0, x1:bw} : findNeighborCut(r.ink, r.g, bw, bh, pitch);
+      // kapak/başlık sayfası gibi az satırlı sayfalarda (iri harf, süs) hizasızlık yan sayfa sanılmasın
+      const nMeas = r.fl[r.fl.length-1].nMeas || 0;
+      const nc = (focus || nMeas < 200) ? {x0:0, x1:bw} : findNeighborCut(r.ink, r.g, bw, bh, pitch);
       if(nc.x0 > 0 || nc.x1 < bw){
         dbg.push(`${tag} yan sayfa ${nc.x0|0}-${nc.x1|0}/${bw}`);
         if(nc.x0 > 0) neighborSide[3] = true;
@@ -1591,7 +1606,27 @@ function contentBox(P, dbg){
   const up = extend(Math.round(tb.yTop), -1), dn = extend(Math.round(tb.yBot), 1);
   const pad = Math.round(pitch*0.6), padX = Math.round(pitch*0.4);
   const y0 = Math.max(0, up.edge - pad), y1 = Math.min(h, dn.edge + pad);
-  const x0 = Math.max(0, xL - padX), x1 = Math.min(w, xR + padX);
+  // satır sonları blok hizasının dışına taşabilir (içindekiler, sağa yaslanmamış satır,
+  // kıvrımda dışa kayan uçlar): kağıt üzerinde ve gerçek bir boşluğa gelene dek genişlet.
+  // Yan sayfa ya da zemin: kağıt olmayan sütun veya ~1 satır aralığından geniş boşluk.
+  const colInk = x => { let sI = 0; for(let y=y0; y<y1; y+=2) sI += ink[y*w+x]; return sI; };
+  const colPaper = x => { if(!gr) return true; let sg = 0, n = 0; for(let y=y0; y<y1; y+=4){ sg += gr[y*w+x]; n++; } return n && sg/n > paperG*0.9; };
+  const inkCol = Math.max(0.6, (y1-y0)/2*0.002);
+  const extX = (from, step) => {
+    let edge = from, gap = 0;
+    for(let x = from + step; x >= 0 && x < w; x += step){
+      if(!colPaper(x)) break;
+      if(colInk(x) > inkCol){ edge = x; gap = 0; }
+      else if(++gap > pitch*1.1) break;
+    }
+    return edge;
+  };
+  // ~3 satır aralığından uzun "taşma" yazı değil, gölge/kenar demektir → yok say
+  const capX = e => Math.abs(e) > pitch*3 ? 0 : e;
+  const eR = Math.round(xR) + capX(extX(Math.round(xR), 1) - Math.round(xR));
+  const eL = Math.round(xL) + capX(extX(Math.round(xL), -1) - Math.round(xL));
+  const x0 = Math.max(0, Math.min(xL, eL) - padX), x1 = Math.min(w, Math.max(xR, eR) + padX);
+  if(eR > xR + 2 || eL < xL - 2) dbg.push(`taşan satır: sol ${Math.round(xL - eL)} sağ ${Math.round(eR - xR)} px`);
   dbg.push(`içerik ${x0|0}-${x1|0} × ${y0}-${y1} (blok ${tb.yTop|0}-${tb.yBot|0})${up.hitBg?' üst:zemin':''}${dn.hitBg?' alt:zemin':''}`);
   return {x0, y0, w: x1-x0, h: y1-y0, pitch, cutTop: up.edge <= 2, cutBot: dn.edge >= h-3};
 }
@@ -1835,14 +1870,59 @@ function toFinalPage(canvas, box, W, H){
 }
 
 /* ---------- Worker ---------- */
+/* ---------- boş çıktı koruması ----------
+   Ayrıntı ölçüsü: küçültülmüş gri görüntüde |piksel − 3×3 ortalaması| ortalaması.
+   Yazı → yüksek, düz kağıt → ~0. Bölge oransal kutu (kaynakta merkez: kenardaki zemin sayılmasın). */
+function detailStat(c, rx0, ry0, rx1, ry1){
+  const sc = 240/Math.max(c.width, c.height);
+  const w = Math.max(8, Math.round(c.width*sc)), h = Math.max(8, Math.round(c.height*sc));
+  const d = imgData(downscale(c, w, h)).data;
+  const g = new Float32Array(w*h); let a = 0;
+  for(let i=0;i<w*h;i++){ g[i] = 0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2]; a += d[i*4+3]; }
+  const x0 = Math.max(1, Math.floor(w*rx0)), x1 = Math.min(w-1, Math.ceil(w*rx1));
+  const y0 = Math.max(1, Math.floor(h*ry0)), y1 = Math.min(h-1, Math.ceil(h*ry1));
+  let s = 0, n = 0;
+  for(let y=y0;y<y1;y++) for(let x=x0;x<x1;x++){
+    const i = y*w + x;
+    const m = (g[i-w-1]+g[i-w]+g[i-w+1]+g[i-1]+g[i]+g[i+1]+g[i+w-1]+g[i+w]+g[i+w+1])/9;
+    s += Math.abs(g[i] - m); n++;
+  }
+  return {detail: n ? s/n : 0, alpha: a/(w*h)};
+}
+/* son çare: kaynağı olduğu gibi A4'e sığdır (boş sayfa vermektense ham görüntü) */
+function plainPage(src, W, H){
+  const c = mkCanvas(W, H), x = ctx2d(c);
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, W, H);
+  const s = Math.min(W/src.width, H/src.height);
+  const dw = Math.round(src.width*s), dh = Math.round(src.height*s);
+  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+  x.drawImage(downscale(src, dw, dh), (W-dw)>>1, (H-dh)>>1);
+  return c;
+}
+const BLANK_SRC = 2.0, BLANK_OUT = 0.35;
 async function handleProcess(m){
   const bmp = await createImageBitmap(m.blob);
   const c = mkCanvas(bmp.width, bmp.height);
   ctx2d(c).drawImage(bmp, 0, 0);
   if(bmp.close) bmp.close();
-  const r = processCanvas(c, m.opts);
+  const src = detailStat(c, 0.2, 0.2, 0.8, 0.8);
+  // bazı tarayıcılarda (iOS işçisi) tuval okunamayıp boş veri dönebiliyor → çağıran ana iş parçacığına düşer
+  if(src.alpha < 8) throw new Error('kaynak görüntü okunamadı (boş tuval verisi)');
+  let r = processCanvas(c, m.opts), guard = '';
+  let o = detailStat(r.canvas, 0, 0, 1, 1);
+  const o0 = o.detail;
+  if(src.detail > BLANK_SRC && (o.detail < BLANK_OUT || o.alpha < 8)){
+    // kaynakta yazı var ama çıktı boş: önce temizliksiz, o da boşsa ham sayfa
+    const r2 = processCanvas(c, Object.assign({}, m.opts, {smartCrop:false}));
+    o = detailStat(r2.canvas, 0, 0, 1, 1);
+    if(o.detail >= BLANK_OUT && o.alpha >= 8){ r = r2; guard = 'boş çıktı → temizliksiz'; }
+    else { r = {canvas: plainPage(c, m.opts.outW || 1240, m.opts.outH || 1754), issues: r.issues, metrics: r.metrics, dbg: r.dbg}; guard = 'boş çıktı → ham sayfa'; }
+  }
+  r.dbg = (r.dbg || '') + ` | ayrıntı kaynak:${src.detail.toFixed(2)} çıktı:${o0.toFixed(2)}` + (guard ? ' | ⚠ ' + guard : '');
   const out = rotateCanvas(r.canvas, m.opts.rot||0);
   const blob = await canvasToBlob(out, 'image/jpeg', m.opts.quality || 0.85);
+  // PDF yalnız JPEG gömer; tarayıcı başka biçim verdiyse (ör. PNG) çağıran ana iş parçacığında yeniden dener
+  if(!blob || (blob.type && blob.type !== 'image/jpeg')) throw new Error('JPEG üretilemedi: ' + (blob && blob.type));
   const tw = 240, th = Math.round(out.height*tw/out.width);
   const t = mkCanvas(tw, th), tx = t.getContext('2d');
   tx.imageSmoothingEnabled = true; tx.imageSmoothingQuality = 'high';

@@ -18,10 +18,10 @@
   body{
     background:var(--bg); color:var(--text);
     font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-    min-height:100vh; padding-bottom:40px;
+    min-height:100vh; padding-bottom:calc(40px + env(safe-area-inset-bottom));
   }
   header{
-    padding:22px 18px 6px; max-width:960px; margin:0 auto;
+    padding:max(22px, calc(env(safe-area-inset-top) + 8px)) 18px 6px; max-width:960px; margin:0 auto;
     display:flex; align-items:center; gap:12px;
   }
   header .logo{font-size:30px}
@@ -170,7 +170,7 @@
   #camDone{height:56px; padding:0 22px; border-radius:99px; border:0; background:var(--accent2); color:#08301c; font-size:17px; font-weight:800; cursor:pointer}
   #camPause{width:56px; height:56px}
   .toast{
-    position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    position:fixed; bottom:calc(24px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%);
     background:#3a2c10; color:#ffd88a; border:1px solid #6b5220;
     padding:12px 18px; border-radius:12px; font-size:14px; z-index:99;
     max-width:90vw; box-shadow:0 6px 24px #0008;
@@ -344,6 +344,15 @@
 const $ = id => document.getElementById(id);
 const log = (...a) => console.log('[scan]', ...a);
 const C = window.ScanCore;
+/* iPhone uygulaması (Capacitor) köprüsü — tarayıcıda hepsi etkisiz kalır.
+   Paketleyici kullanılmadığı için eklentiler doğrudan nativePromise ile çağrılır. */
+const native = (() => {
+  const cap = window.Capacitor;
+  const on = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
+  const has = name => on && !!(cap.PluginHeaders || []).find(h => h.name === name);
+  const call = (plugin, method, opts) => cap.nativePromise(plugin, method, opts || {});
+  return { on, has, call };
+})();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const state = {
@@ -391,7 +400,13 @@ const proc = {
       for(let i=0;i<n;i++){
         const w = new Worker('core.js');
         w.onmessage = e => this.finish(w, e.data);
-        w.onerror = e => { log('worker hatası', e.message); this.fallback = true; };
+        w.onerror = e => {
+          log('worker hatası', e.message); this.fallback = true;
+          // bu işçiye verilmiş iş kaybolmasın: ana iş parçacığında yeniden çalıştır
+          const id = w._job;
+          if(id != null){ w._job = null; this.running--; if(this.jobs.has(id)) this.queue.unshift(id); }
+          this.pump();
+        };
         this.workers.push(w); this.idle.push(w);
       }
       log('işleyici sayısı:', n);
@@ -426,6 +441,7 @@ const proc = {
     }
   },
   finish(w, data){
+    if(w._job == null) return;              // iş zaten ana iş parçacığına devredildi
     const id = w._job, job = this.jobs.get(id);
     this.running--; this.idle.push(w); w._job = null;
     if(job){
@@ -795,7 +811,7 @@ async function runFiles(files){
     for(const f of files){
       if((f.type||'').startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name||'')){
         $('progTitle').textContent = 'Fotoğraflar ekleniyor…';
-        addCapture({id:state.nextId++, blob:Promise.resolve(f), t:0});
+        await addCapture({id:state.nextId++, blob:Promise.resolve(f), t:0});   // sayfa listeye girmeden "bulunamadı" denmesin
       } else {
         $('progTitle').textContent = 'Video analiz ediliyor…';
         await scanVideo(f);
@@ -962,10 +978,21 @@ document.addEventListener('keydown', e => {
 const cam = {
   active:false, stream:null, scanner:null, torch:false, paused:false, count:0,
   retake:null,          // {ids:[...], i}
-  audio:null, lastHintT:0, flashT:0, raf:0, lastFeed:0, lastStatus:null,
+  audio:null, lastHintT:0, flashT:0, raf:0, lastFeed:0, lastStatus:null, wake:null,
+  // tarama sırasında ekrana dokunulmaz; ekran kararmasın (uygulamada iOS bunu zaten kapatır)
+  async keepAwake(on){
+    try{
+      if(on){
+        if(this.wake || !navigator.wakeLock || native.on) return;
+        this.wake = await navigator.wakeLock.request('screen');
+        this.wake.addEventListener('release', () => { this.wake = null; });
+      }else if(this.wake){ const w = this.wake; this.wake = null; await w.release(); }
+    }catch(_){ this.wake = null; }
+  },
   async open(opts){
     opts = opts || {};
-    if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || !window.isSecureContext){
+    // uygulama içinde (capacitor://) güvenli bağlam bayrağına bakılmaz; kamera iznini iOS verir
+    if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || (!window.isSecureContext && !native.on)){
       if(opts.retake){ this.photoFallback(opts.retake); return; }
       toast('Canlı kamera bu bağlantıda açılamıyor (https gerekli). Telefonun kamerasıyla video kaydı açılıyor.');
       $('fileCapture').click(); return;
@@ -986,6 +1013,7 @@ const cam = {
     v.srcObject = this.stream;
     $('camModal').hidden = false;
     this.active = true; this.paused = false; this.count = 0; this.torch = false;
+    this.keepAwake(true);
     this.retake = opts.retake ? {ids:opts.retake.slice(), i:0} : null;
     $('camPause').textContent = '⏸';
     this.updateTorchBtn(); $('camTorch').style.display = 'none';
@@ -1112,6 +1140,7 @@ const cam = {
     const f = $('camFlash'); f.style.transition = 'none'; f.style.opacity = '0.55';
     requestAnimationFrame(() => { f.style.transition = 'opacity .3s'; f.style.opacity = '0'; });
     try{ navigator.vibrate && navigator.vibrate(35); }catch(_){}
+    if(native.has('Haptics')) native.call('Haptics', 'impact', {style:'MEDIUM'}).catch(()=>{});
     try{
       const a = this.audio; if(!a) return;
       if(a.state === 'suspended') a.resume();
@@ -1134,6 +1163,7 @@ const cam = {
   },
   close(){
     this.active = false;
+    this.keepAwake(false);
     cancelAnimationFrame(this.raf);
     if(this.stream){ this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
     $('camView').srcObject = null;
@@ -1240,6 +1270,28 @@ async function buildPdf(pages){
   return new Blob(parts, {type:'application/pdf'});
 }
 
+/* iPhone uygulamasında indirme yoktur: PDF önbelleğe yazılır, iOS paylaşım menüsü açılır
+   (Dosyalara Kaydet, WhatsApp, Mail, Yazdır…) */
+const blobToBase64 = blob => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(',')[1]);
+  r.onerror = () => rej(r.error);
+  r.readAsDataURL(blob);
+});
+async function sharePdfNative(blob, name){
+  $('overlayText').textContent = 'PDF kaydediliyor…';
+  let uri;
+  try{
+    const data = await blobToBase64(blob);
+    uri = (await native.call('Filesystem', 'writeFile', {path:name, data, directory:'CACHE'})).uri;
+  }finally{ hideOverlay(); }
+  try{
+    await native.call('Share', 'share', {title:name, files:[uri]});
+  }catch(e){
+    if(!/cancel/i.test(e && e.message || '')) toast('PDF paylaşılamadı: ' + (e && e.message || e));
+  }
+}
+
 /* PDF: önce eksik sayfaları sor; istemezse yine de oluştur */
 async function exportPdf(force){
   if(!state.pages.length) return;
@@ -1259,14 +1311,15 @@ async function exportPdf(force){
   showOverlay('PDF oluşturuluyor…');
   try{
     const blob = await buildPdf(ready);
-    const name = ($('fname').value.trim() || 'tarama') + '.pdf';
+    const name = ($('fname').value.trim() || 'tarama').replace(/[\\/:*?"<>|]+/g, '-') + '.pdf';
+    window.__lastPdf = blob;
+    log('PDF hazır:', name, (blob.size/1024/1024).toFixed(2)+' MB', ready.length + ' sayfa');
+    if(native.on){ await sharePdfNative(blob, name); return; }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    window.__lastPdf = blob;
-    log('PDF hazır:', name, (blob.size/1024/1024).toFixed(2)+' MB', ready.length + ' sayfa');
   }catch(e){
     toast('PDF oluşturulamadı: ' + e.message);
     console.error(e);
@@ -1312,8 +1365,13 @@ $('chkCrop').onchange = e => { settings.smartCrop = e.target.checked; reprocessA
 $('selStable').onchange = e => { settings.stableMs = +e.target.value; try{ localStorage.setItem('is.stable', e.target.value); }catch(_){} };
 try{ const v = localStorage.getItem('is.stable'); if(v){ settings.stableMs = +v; $('selStable').value = v; } }catch(_){}
 
-/* PWA */
-if('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')){
+// sekmeye/uygulamaya geri dönülünce ekran kilidi bırakılmış olur; kamera açıksa yeniden iste
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible' && cam.active) cam.keepAwake(true);
+});
+
+/* PWA (uygulamada gerekmez: dosyalar zaten cihazda) */
+if(!native.on && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
 }
 window.hs = { state, settings, proc, cam, FrameScanner };   // konsoldan hata ayıklama için

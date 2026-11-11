@@ -1,0 +1,72 @@
+# INSTANT SCANNER iPhone uygulamasını bulutta (macOS) derler.
+# Apple Developer hesabı gerekmez: imzasız .ipa üretilir ve "Artifacts" altında indirilir.
+# Hesap alınınca imzalı derleme + TestFlight adımı buraya eklenecek.
+name: iOS derleme
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - index.html
+      - core.js
+      - manifest.webmanifest
+      - icon.svg
+      - mobil/**
+      - .github/workflows/ios.yml
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  derle:
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mobil
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Araç sürümleri
+        run: |
+          node --version
+          xcodebuild -version
+
+      - name: Paketleri kur
+        run: npm ci
+
+      - name: Web dosyalarını iOS projesine aktar
+        run: npm run sync
+
+      - name: Derle (imzasız)
+        working-directory: mobil/ios/App
+        run: |
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || {
+              echo "::error::Xcode derlemesi başarısız"
+              grep -n "error:" build.log | head -n 50
+              tail -n 80 build.log
+              exit 1
+            }
+          tail -n 15 build.log
+
+      - name: .ipa paketle
+        working-directory: mobil/ios/App
+        run: |
+          APP=build/Build/Products/Release-iphoneos/App.app
+          test -d "$APP"
+          test -f "$APP/public/index.html"
+          test -f "$APP/public/core.js"
+          rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
+          zip -qry InstantScanner-imzasiz.ipa Payload
+          ls -lh InstantScanner-imzasiz.ipa
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: InstantScanner-imzasiz-ipa
+          path: mobil/ios/App/InstantScanner-imzasiz.ipa
+          retention-days: 30

@@ -1,0 +1,10 @@
+{
+  "appId": "io.github.devrimozaydin72.instantscanner",
+  "appName": "INSTANT SCANNER",
+  "webDir": "www",
+  "backgroundColor": "#0f1420",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0f1420"
+  }
+}

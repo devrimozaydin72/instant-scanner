@@ -104,6 +104,7 @@
     padding:8px 0; cursor:pointer;
   }
   .page .acts button:hover{color:#fff}
+  .page .acts button:disabled{opacity:.25; cursor:default}
   .exportbar{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:18px;
     padding-top:16px; border-top:1px solid var(--line)}
   #fname{flex:1; min-width:160px}
@@ -139,7 +140,12 @@
   #camStage{position:relative; flex:1; min-height:0}
   #camView{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000}
   #camOverlay{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
-  #camFlash{position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; transition:opacity .25s}
+  #camOk{position:absolute; inset:0; pointer-events:none; opacity:0; display:flex; align-items:center; justify-content:center;
+    box-shadow:inset 0 0 0 10px #39d98a; z-index:3}
+  #camOk span{width:110px; height:110px; border-radius:50%; background:#1d9e63e6; color:#fff; font-size:70px; font-weight:900;
+    display:flex; align-items:center; justify-content:center; box-shadow:0 6px 30px #0008}
+  #camOk.on{animation:okfl .75s ease-out}
+  @keyframes okfl{0%{opacity:0; transform:scale(.85)} 12%{opacity:1; transform:scale(1.04)} 60%{opacity:1; transform:scale(1)} 100%{opacity:0}}
   .camhint{
     position:absolute; top:max(14px, env(safe-area-inset-top)); left:50%; transform:translateX(-50%);
     background:#000b; color:#fff; padding:9px 16px; border-radius:99px;
@@ -201,11 +207,11 @@
   <!-- GİRİŞ -->
   <section class="card drop" id="introCard">
     <h2>1 · Tara</h2>
-    <p class="sub">Kamerayı sayfaya tut, sayfaları çevir — her sayfa göründüğü an otomatik çekilir.</p>
+    <p class="sub">Kamerayı sayfaya tut — sayfa düzgün görününce <b>bip</b> sesi gelir, sayfayı çevir.</p>
     <div class="bigbtns" style="margin-top:14px">
       <button class="bigbtn" id="btnLive">
         <span class="ic">📷</span>Canlı Tara
-        <small>Otomatik çekim · beklemeden çevir · 🔦 ışık</small>
+        <small>Otomatik çekim · bip sesinde çevir · 🔦 ışık</small>
       </button>
       <button class="bigbtn alt" id="btnPick">
         <span class="ic">📁</span>Video / Foto Seç
@@ -214,7 +220,7 @@
     </div>
     <button class="linkbtn" id="btnRecord">🎥 Telefonun kamerasıyla video kaydet</button>
     <p class="tips">
-      💡 <b>Nasıl çalışır:</b> Sayfanın <b>tamamı</b> görünsün, sayfaları <b>beklemeden</b> çevir — sayfa göründüğü an en net karesi çekilir, çekim sesini duyunca sonrakine geç.
+      💡 <b>Nasıl çalışır:</b> Sayfanın <b>tamamı</b> (sayfa numarası dahil) görünsün. Sayfa tam, net ve yeni ise <b>bip</b> sesi gelir ve yeşil ✓ çıkar — o an sayfayı çevir. Kitapta önce sol, sonra sağ sayfayı göster; sıra korunur, aynı sayfa iki kez alınmaz, yarım/bulanık kare alınmaz.
       Açılı çekimler düzleştirilir, kıvrık satırlar doğrultulur, kenardaki parmaklar ve sayfa dışı alanlar temizlenir.
       Eksik çıkan sayfaları sonra tek dokunuşla yeniden çekebilirsin.
     </p>
@@ -290,7 +296,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 9</p>
+  <p class="ver">INSTANT SCANNER · sürüm 10</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -342,7 +348,7 @@
   <div id="camStage">
     <video id="camView" autoplay playsinline muted></video>
     <canvas id="camOverlay"></canvas>
-    <div id="camFlash"></div>
+    <div id="camOk"><span>✓</span></div>
     <div class="camhint" id="camHint">Sayfayı kadraja al</div>
     <div id="camCounter">0 sayfa</div>
     <div id="camRetake" hidden><img id="camRetakeImg" alt=""><span id="camRetakeTxt"></span></div>
@@ -468,7 +474,7 @@ const session = {
         const ver = p.ver;
         await store.put('pages', {id:p.id, ver, orig: await toAB(p.origBlob), proc: await toAB(p.procBlob),
           thumb: await toAB(p.thumbBlob), outW:p.outW, outH:p.outH, rot:p.rot||0, time:p.time||0,
-          maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}});
+          maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}, side:p.side||'', lineSig:p.lineSig||null, soft:p.soft||null});
         this.saved.set(p.id, ver);
         askPersist();
       }
@@ -489,7 +495,7 @@ const session = {
         const procBlob = fromAB(r.proc, 'image/jpeg'), thumbBlob = fromAB(r.thumb, 'image/jpeg') || procBlob;
         pages.push({id:r.id, ver:r.ver, status:'done', origBlob: fromAB(r.orig, 'image/jpeg'), procBlob, thumbBlob,
           thumbUrl: URL.createObjectURL(thumbBlob), outW:r.outW, outH:r.outH, rot:r.rot, time:r.time,
-          maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}});
+          maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}, side:r.side||'', lineSig:r.lineSig||null, soft:r.soft||null});
         this.saved.set(r.id, r.ver);
       }
       for(const r of recs) if(!this.saved.has(r.id)) store.del('pages', r.id).catch(()=>{});
@@ -725,6 +731,9 @@ function processPage(p){
     if(p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
     p.procBlob = r.blob; p.thumbBlob = r.thumb; p.thumbUrl = URL.createObjectURL(r.thumb);
     p.outW = r.w; p.outH = r.h; p.issues = r.issues || []; p.metrics = r.metrics || {};
+    if(p.soft && !p.issues.some(i => i.code === p.soft)) p.issues.push({code:p.soft, side:-1});
+    if(r.lineSig && !p.lineSig) p.lineSig = r.lineSig;
+    if(r.metrics && r.metrics.side && !p.side) p.side = r.metrics.side;
     p.status = 'done';
     log(`sayfa ${p.id}:`, r.dbg);
     onPageProcessed(p);
@@ -863,21 +872,33 @@ class FrameScanner {
       }
     }
     const res = {state:'still', motion, thr, det, dur, stableMs:this.o.stableMs};
-    // 5) canlı: süre dolunca hemen çek; sonra daha iyisi gelirse yerine koy
-    if(this.o.live && run.best){
-      const b = run.best, gateOk = this.gateOk(b.det);
-      res.gate = gateOk;
-      if(!run.emitted && dur*1000 >= this.o.stableMs && (gateOk || dur*1000 >= this.o.stableMs + 400)){
-        res.captured = this.emit(b, null);
-        run.emitted = true; run.emitScore = b.score; run.emitId = res.captured && res.captured.id;
-        run.fresh = false;
-      } else if(run.emitted && run.fresh && run.emitId && b.score > run.emitScore*1.2 && dur < 4){
-        res.captured = this.emit(b, run.emitId);     // aynı sayfanın daha iyi karesi
-        run.emitScore = b.score; run.fresh = false;
-      }
-    }
+    // canlıda çekim kararını kamera denetleyicisi verir (hızlı kontrol → bip); burada yalnız kare tutulur
+    if(this.o.live){ this.lastV = v; this.lastPx = px; run.cur = {t, sharp, det}; }
     this.cost = this.cost*0.9 + (performance.now()-c0)*0.1;
     return res;
+  }
+  /* canlı: o anki kareyi en iyi kare yap (aynı kare yeniden denenmesin; kullanıcı küçük bir düzeltme yapmış olabilir) */
+  refreshBest(){
+    const run = this.run;
+    if(!run || !run.cur || !this.lastV) return false;
+    const c = run.cur;
+    this.full.getContext('2d').drawImage(this.lastV, 0, 0, this.fw, this.fh);
+    run.best = {t:c.t, sharp:c.sharp, score:this.score(c.sharp, c.det), det:c.det,
+                sig: C.pageSignature(this.lastPx, this.sw, this.sh, c.det.ok ? c.det.quadS : null)};
+    return true;
+  }
+  /* canlı: en iyi karenin tam çözünürlüklü JPEG'i (söz) + hızlı kontrol için ≤1280 px kopyası */
+  snapshot(){
+    const b = this.run && this.run.best;
+    if(!b) return null;
+    const blobP = new Promise(res => this.full.toBlob(res, 'image/jpeg', 0.92));
+    const qs = Math.min(1, 1280/Math.max(this.fw, this.fh));
+    const qw = Math.round(this.fw*qs), qh = Math.round(this.fh*qs);
+    if(!this.qc || this.qc.width !== qw || this.qc.height !== qh) this.qc = mk(qw, qh, true);
+    const qx = this.qc.getContext('2d', {willReadFrequently:true});
+    qx.imageSmoothingEnabled = true; qx.imageSmoothingQuality = 'high';
+    qx.drawImage(this.full, 0, 0, qw, qh);
+    return {t:b.t, det:b.det, sharp:b.sharp, sig:b.sig, blobP, qc:this.qc, moveSum:this.moveSum};
   }
   /* canlıda çekimden önce: sayfa tam görünüyor mu, parmak yazı üstünde mi */
   gateOk(det){
@@ -904,15 +925,7 @@ class FrameScanner {
     const run = this.run; this.run = null;
     if(!run || !run.best) return null;
     const dur = run.t1 - run.t0 + this.dtAvg;
-    if(this.o.live){
-      // hızlı çevirme: sayfa kısa bir an göründü ama tam-kadraj/parmaksız koşulu oluşmadı.
-      // Sonraki sayfaya geçilirken o duruşun en iyi karesi yine de alınır; eksik varsa sayfa işaretlenir.
-      if(!run.emitted && run.n >= 2 && run.best.det.ok && dur*1000 >= Math.min(this.o.stableMs, 100)){
-        if(this.o.debug) this.debug.push(['duruş-sonu', +run.t1.toFixed(2), run.n]);
-        return this.emit(run.best, null);
-      }
-      return null;
-    }
+    if(this.o.live) return null;          // canlıda yarım/hareketli kare asla çekilmez
     if(dur*1000 < this.o.stableMs*0.98) return;
     // çevirme anındaki bulanık ara kareler: videonun tipik netliğinin çok altında
     const med = this.sharpMedian();
@@ -1125,6 +1138,10 @@ function issueText(i){
     case 'finger': return 'parmak yazının üstünde';
     case 'nopage': return 'sayfa kenarları bulunamadı';
     case 'blur': return 'bulanık';
+    case 'soft-blur': return 'bulanık olabilir';
+    case 'room': return 'sayfa kenarı / sayfa no kadraj dışında olabilir';
+    case 'tilt': return 'çok eğik çekilmiş';
+    case 'far': return 'yazı çok küçük çekilmiş';
     case 'error': return 'işlenemedi';
     default: return i.code;
   }
@@ -1156,12 +1173,17 @@ function renderGrid(){
       ${p.thumbUrl ? `<img src="${p.thumbUrl}" alt="sayfa ${idx+1}" loading="lazy">` : '<div class="ph"><div class="spin sm"></div></div>'}
       ${why}
       <div class="acts">
+        <button title="Öne al"${idx ? '' : ' disabled'}>◀</button>
         <button title="Yeniden çek">📷</button>
         <button title="Döndür">🔄</button>
         <button title="Sil">🗑</button>
+        <button title="Arkaya al"${idx < state.pages.length-1 ? '' : ' disabled'}>▶</button>
       </div>`;
     const img = el.querySelector('img'); if(img) img.onclick = () => openModal(idx);
-    const [retBtn, rotBtn, delBtn] = el.querySelectorAll('.acts button');
+    const [prevBtn, retBtn, rotBtn, delBtn, nextBtn] = el.querySelectorAll('.acts button');
+    const move = d => { const j = idx + d; if(j < 0 || j >= state.pages.length) return; state.pages.splice(idx, 1); state.pages.splice(j, 0, p); renderGrid(); };
+    prevBtn.onclick = () => move(-1);
+    nextBtn.onclick = () => move(1);
     retBtn.onclick = () => startRetake([p.id]);
     rotBtn.onclick = () => rotatePage(idx);
     delBtn.onclick = () => { state.pages.splice(idx,1); renderGrid(); };
@@ -1231,13 +1253,50 @@ document.addEventListener('keydown', e => {
   if(e.key==='ArrowRight') showModalPage(Math.min(state.pages.length-1, modalIdx+1));
 });
 
+/* hızlı kontrol (canlı çekimde "bip" kararı): ayrı bir işçide, işleme kuyruğunu beklemeden.
+   İşçi yoksa ya da tuvali okuyamıyorsa ana iş parçacığında. */
+const quick = {
+  w: null, seq: 0, jobs: new Map(), dead: false,
+  init(){
+    if(proc.fallback){ this.dead = true; return; }
+    try{
+      this.w = new Worker('core.js');
+      this.w.onmessage = e => {
+        const j = this.jobs.get(e.data.id); if(!j) return;
+        this.jobs.delete(e.data.id);
+        if(e.data.ok) j.res(e.data);
+        else { log('hızlı kontrol işçide yapılamadı → ana iş parçacığı:', e.data.error); this.dead = true; j.retry(); }
+      };
+      this.w.onerror = e => { log('hızlı kontrol işçisi hatası', e.message); this.dead = true; for(const [, j] of this.jobs) j.retry(); this.jobs.clear(); };
+    }catch(_){ this.dead = true; }
+  },
+  run(canvas, opts){
+    const local = () => C.handleQuick({canvas, opts});
+    if(this.dead || !this.w) return local();
+    const id = ++this.seq;
+    const im = canvas.getContext('2d', {willReadFrequently:true}).getImageData(0, 0, canvas.width, canvas.height);
+    return new Promise((res, rej) => {
+      this.jobs.set(id, {res, retry: () => local().then(res, rej)});
+      this.w.postMessage({id, kind:'quick', w:canvas.width, h:canvas.height, buf:im.data.buffer, opts}, [im.data.buffer]);
+    });
+  },
+};
+quick.init();
+
+const median = a => { if(!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; };
+const otherSide = s => s === 'L' ? 'R' : s === 'R' ? 'L' : null;
+
 /* ============================================================
-   CANLI TARAMA — kamera açık kalır, sayfa her göründüğünde çekilir
+   CANLI TARAMA — kamera açık kalır. Sayfa sabitlenince hızlı kontrol yapılır:
+   sayfa tam görünüyor, net, yeni ve sırası doğruysa çekilir ve "bip" çalar →
+   kullanıcı sayfayı çevirir. Yarım, bulanık, parmaklı ya da aynı sayfa çekilmez.
    ============================================================ */
 const cam = {
   active:false, stream:null, scanner:null, torch:false, paused:false, count:0,
   retake:null,          // {ids:[...], i}
-  audio:null, lastHintT:0, flashT:0, raf:0, lastFeed:0, lastStatus:null, wake:null,
+  audio:null, raf:0, lastFeed:0, wake:null, stickyUntil:0, doneHint:'',
+  live:null,            // bu sayfa için durum
+  sess:null,            // oturum: son sayfalar, beklenen yan, netlik referansları
   // tarama sırasında ekrana dokunulmaz; ekran kararmasın (uygulamada iOS bunu zaten kapatır)
   async keepAwake(on){
     try{
@@ -1248,8 +1307,19 @@ const cam = {
       }else if(this.wake){ const w = this.wake; this.wake = null; await w.release(); }
     }catch(_){ this.wake = null; }
   },
+  /* iOS: ses yalnız dokunuşun içinde açılabilir → düğmeye basıldığı anda çağrılır */
+  unlockAudio(){
+    try{
+      if(navigator.audioSession) navigator.audioSession.type = 'playback';   // sessiz modda da bip duyulsun
+      this.audio = this.audio || new (window.AudioContext || window.webkitAudioContext)();
+      if(this.audio.state === 'suspended') this.audio.resume();
+      const b = this.audio.createBuffer(1, 1, 22050), src = this.audio.createBufferSource();
+      src.buffer = b; src.connect(this.audio.destination); src.start(0);
+    }catch(_){}
+  },
   async open(opts){
     opts = opts || {};
+    this.unlockAudio();
     // uygulama içinde (capacitor://) güvenli bağlam bayrağına bakılmaz; kamera iznini iOS verir
     if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || (!window.isSecureContext && !native.on)){
       if(opts.retake){ this.photoFallback(opts.retake); return; }
@@ -1274,12 +1344,15 @@ const cam = {
     this.active = true; this.paused = false; this.count = 0; this.torch = false;
     this.keepAwake(true);
     this.retake = opts.retake ? {ids:opts.retake.slice(), i:0} : null;
+    // oturum: yeniden çekimde sıra/tekrar kuralları uygulanmaz
+    const last = state.pages[state.pages.length - 1];
+    this.sess = {recent:[], expect: (!this.retake && last && last.side) ? otherSide(last.side) : null, refS:[], refC:[], refL:[]};
+    for(const p of state.pages.slice(-12).reverse()) if(p.lineSig) this.sess.recent.push({id:p.id, lineSig:p.lineSig, side:p.side});
     $('camPause').textContent = '⏸';
     this.updateTorchBtn(); $('camTorch').style.display = 'none';
     const track = this.stream.getVideoTracks()[0];
     const showTorch = () => { const caps = track.getCapabilities ? track.getCapabilities() : {}; if(caps.torch) $('camTorch').style.display = ''; };
     showTorch(); setTimeout(showTorch, 1200);
-    try{ this.audio = this.audio || new (window.AudioContext || window.webkitAudioContext)(); }catch(_){}
     this.newScanner();
     this.updateRetakeUi();
     this.updateCounter();
@@ -1287,9 +1360,12 @@ const cam = {
     this.loop();
   },
   newScanner(){
-    this.scanner = new FrameScanner({live:true, stableMs:settings.stableMs, debug:!!window.__scanDebug, onCapture: c => this.onCapture(c)});
-    if(window.__scanDebug) window.__camDebugLog = this.scanner.debug;
+    this.scanner = new FrameScanner({live:true, stableMs:settings.stableMs, debug:!!window.__scanDebug});
+    if(window.__scanDebug){ window.__camDebugLog = this.scanner.debug; window.__camEvents = window.__camEvents || []; }
+    this.live = {phase:'hunt', inflight:false, lastTryT:-1, lastTryWall:0, tries:0, firstTryT:0, firstSig:null,
+                 bestFail:null, hold:null, verdict:null, moveAt:0, doneSig:null};
   },
+  ev(...a){ if(window.__camEvents) window.__camEvents.push([+(performance.now()/1000).toFixed(2), ...a]); },
   loop(){
     const v = $('camView');
     const step = (now) => {
@@ -1297,7 +1373,7 @@ const cam = {
       if(!this.paused && v.readyState >= 2 && now - this.lastFeed >= 55){   // ≤ ~18 analiz/sn
         this.lastFeed = now;
         const r = this.scanner.feed(v, now/1000);
-        if(r) this.status(r);
+        if(r) this.step(r);
       }
       if('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(step);
       else this.raf = requestAnimationFrame(step);
@@ -1305,22 +1381,189 @@ const cam = {
     if('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(step);
     else this.raf = requestAnimationFrame(step);
   },
-  /* ipucu + sayfa çerçevesi */
-  status(r){
-    const hint = $('camHint');
-    let txt, cls = '';
-    if(r.captured && !r.captured.replaced){ txt = '✓ Çekildi — sonraki sayfa'; cls = 'ok'; this.lastHintT = performance.now(); }
-    else if(performance.now() - this.lastHintT < 700){ txt = null; }
-    else if(r.state === 'moving') txt = this.retake ? 'Sayfayı göster…' : 'Sayfayı çevir…';
-    else if(!r.det || !r.det.ok) txt = 'Sayfayı kadraja al';
-    else if(meaningfulQuad(r.det) && r.det.clipped.some(Boolean)){ txt = 'Sayfanın tamamı görünsün — biraz uzaklaş'; cls = 'warn'; }
-    else if(r.det.skinInner > 0.012){ txt = 'Parmağını yazının üstünden çek'; cls = 'warn'; }
-    else if(this.scanner.run && this.scanner.run.emitted) { txt = '✓ Çekildi — sonraki sayfa'; cls = 'ok'; }
-    else txt = 'Sabit…';
-    if(txt != null){ hint.textContent = txt; hint.className = 'camhint ' + cls; }
-    this.draw(r);
+  /* her analiz edilen kare */
+  step(r){
+    const L = this.live, sc = this.scanner, now = performance.now();
+    const run = sc.run, b = run && run.best;
+    if(L.phase === 'done'){
+      // çekildi: sayfa değişene (çevrilene) dek bekle
+      const moved = sc.moveSum - L.moveAt;
+      let rearm = false;
+      if(r.state === 'still' && b && L.doneSig){
+        const dd = C.sigDiff(b.sig, L.doneSig, 2);
+        rearm = (moved >= 25 && (dd >= DUP_T || moved >= TURN_SUM)) || dd >= NEW_T;
+      }
+      if(rearm){ this.ev('yeni-sayfa', +moved.toFixed(0)); L.phase = 'hunt'; L.tries = 0; L.bestFail = null; L.firstSig = null; L.verdict = null; L.hold = null; }
+      else return this.show(r, 'done');
+    }
+    if(r.state !== 'still' || !b) return this.show(r, 'moving');
+    if(!b.det.ok) return this.show(r, 'nopage');
+    if(b.det.skinInner > 0.012) return this.show(r, 'finger');
+    if(L.inflight) return this.show(r, 'check');
+    if(r.dur*1000 < settings.stableMs) return this.show(r, 'steady');
+    // başka bir sayfaya geçildiyse bu sayfanın deneme sayacı sıfırlanır
+    if(L.firstSig && C.sigDiff(b.sig, L.firstSig, 2) >= NEW_T){ L.tries = 0; L.bestFail = null; L.firstSig = null; L.verdict = null; L.hold = null; }
+    if(b.t === L.lastTryT){
+      // aynı kare zaten denendi: biraz sonra o anki kareyle yeniden dene
+      if(now - L.lastTryWall < 450 || !sc.refreshBest()) return this.show(r, 'wait');
+    }
+    // netlik: oturumdaki tipik netliğin çok altındaysa kısa süre daha net kare bekle
+    const refL = median(this.sess.refL);
+    if(refL && sc.run.best.sharp < refL*0.55 && r.dur < 0.45) return this.show(r, 'steady');
+    const snap = sc.snapshot();
+    if(snap) this.check(snap);
+    this.show(r, 'check');
   },
-  draw(r){
+  check(snap){
+    const L = this.live;
+    L.inflight = true; L.lastTryT = snap.t; L.lastTryWall = performance.now();
+    if(!L.tries){ L.firstTryT = performance.now(); L.firstSig = snap.sig; }
+    const t0 = performance.now();
+    quick.run(snap.qc, Object.assign(procOpts({rot:0}), {rot:0})).then(res => {
+      L.inflight = false;
+      if(this.live !== L || !this.active) return;
+      res.ms = performance.now() - t0;
+      this.verdict(res, snap);
+    }).catch(err => {
+      L.inflight = false;
+      log('hızlı kontrol hatası:', err && err.message);
+      if(this.live === L && this.active) this.accept({issues:[], metrics:{}, lineSig:null}, snap, null);   // kontrol yapılamıyorsa çekimi engelleme
+    });
+  },
+  /* hızlı kontrol sonucu → kabul / ret (ipucuyla) */
+  judge(res){
+    const m = res.metrics || {}, iss = res.issues || [], S = this.sess;
+    const has = c => iss.some(i => i.code === c);
+    if(has('finger')) return {ok:false, hard:true, code:'finger', hint:'Parmağını yazının üstünden çek'};
+    const cut = iss.find(i => i.code === 'cut');
+    if(cut) return {ok:false, hard:true, code:'cut',
+      hint: cut.side === 2 ? 'Sayfanın altı görünmüyor — telefonu biraz uzaklaştır' :
+            cut.side === 0 ? 'Sayfanın üstü görünmüyor — telefonu biraz uzaklaştır' : 'Sayfanın tamamı görünsün — biraz uzaklaştır'};
+    if(has('nopage')) return {ok:false, hard:true, code:'nopage', hint:'Sayfayı kadraja al'};
+    if(m.mode === 'yazı'){
+      // silik/bulanık yazı: kesin bulanık her zaman reddedilir, hafif bulanık oturumun tipik netliğine göre
+      // (çok bulanık yazıda hiç koyu piksel kalmaz → crisp ölçülemez (-1): bu da bulanıktır)
+      if(m.sharp < 95 || (m.crisp >= 0 ? m.crisp < 0.14 : m.lines >= 5)) return {ok:false, hard:true, code:'blur', hint:'Bulanık — telefonu sabit tut'};
+      const rc = median(S.refC), rs = median(S.refS);
+      if(S.refC.length >= 2 && m.crisp >= 0 && m.crisp < rc*0.55 && m.sharp < rs*0.8) return {ok:false, soft:true, code:'soft-blur', hint:'Bulanık — telefonu sabit tut'};
+      const r = m.room;
+      if(r){
+        // sayfa numarası / üst başlık için yazının altında ve üstünde de pay olmalı
+        const needB = m.extraBot >= 1 ? 0.5 : 2.5, needT = m.extraTop >= 1 ? 0.5 : 1.5;
+        if(r[2] < needB) return {ok:false, soft:true, code:'room', hint:'Sayfanın altı (sayfa no) da görünsün — biraz uzaklaştır'};
+        if(r[0] < needT) return {ok:false, soft:true, code:'room', hint:'Sayfanın üstü de görünsün — biraz uzaklaştır'};
+        if(r[1] < 0.5 || r[3] < 0.5) return {ok:false, soft:true, code:'room', hint:'Sayfanın kenarları da görünsün'};
+      }
+      if(m.tilt > 1.5) return {ok:false, soft:true, code:'tilt', hint:'Telefonu sayfaya paralel tut'};
+      if(m.srcPitch && m.srcPitch < 11) return {ok:false, soft:true, code:'far', hint:'Biraz yaklaş — yazı çok küçük'};
+    }
+    return {ok:true};
+  },
+  verdict(res, snap){
+    const L = this.live, S = this.sess, now = performance.now();
+    L.tries++;
+    const v = this.judge(res);
+    this.ev('kontrol', L.tries, v.ok ? 'tamam' : v.code, (res.metrics && res.metrics.side) || '', Math.round(res.ms || 0),
+            res.metrics ? [res.metrics.room, +(res.metrics.crisp||0).toFixed(2), Math.round(res.metrics.sharp||0)] : null);
+    if(!v.ok){
+      L.verdict = v;
+      // bekletilen sayfa yerine başka bir sayfa görüldü: bekletme süresi baştan sayılır
+      if(L.hold && !(res.lineSig && C.lineMatch(L.hold.res.lineSig, res.lineSig) >= 0.5)) L.hold = null;
+      if(v.soft && !L.bestFail) L.bestFail = {res, snap, v};
+      // "mükemmeli bekleme": sayfa ~2.5 sn tutulduysa ve sorun yalnız küçük bir kusursa en iyisi alınır
+      if(L.bestFail && now - L.firstTryT >= 2500 && L.tries >= 3){ this.accept(L.bestFail.res, L.bestFail.snap, L.bestFail.v); }
+      return;
+    }
+    L.verdict = null;
+    // aynı sayfa yeniden mi gösterildi? (son sayfalarla satır imzası)
+    if(!this.retake && res.lineSig){
+      for(let k=0; k<S.recent.length; k++){
+        const q = S.recent[k];
+        if(q.lineSig && C.lineMatch(res.lineSig, q.lineSig) >= 0.5){
+          this.ev('tekrar', k, q.id);
+          this.markDone(snap);
+          if(k > 0){ this.chime(); this.flash(); this.sticky('✓ Bu sayfa zaten çekildi — sonrakine geç', 'ok', 1200); }
+          return;
+        }
+      }
+    }
+    // sayfa sırası: kitapta önce sol, sonra sağ sayfa. Çevirince kamera sağ sayfada kalır →
+    // sol sayfa çekilmeden sağ sayfa alınmaz (bilerek sağda bekletilirse ~1.5 sn sonra alınır)
+    const side = res.metrics && res.metrics.side;
+    // yanı anlaşılamayan sayfa sağ sayfadan hemen sonra gelirse (çevirince kamera sağda kalmış olabilir) kısa bekletilir
+    const wrong = S.expect && side && side !== S.expect, unsure = S.expect === 'L' && !side;
+    if(!this.retake && (wrong || unsure)){
+      if(!L.hold || C.lineMatch(L.hold.res.lineSig, res.lineSig) < 0.5) L.hold = {t0:now, res, snap};
+      else { L.hold.res = res; L.hold.snap = snap; }
+      if(now - L.hold.t0 < (wrong ? 1500 : 700)){
+        L.verdict = {ok:false, code:'order', hint: S.expect === 'L' ? '◀ Önce SOL sayfayı göster' : 'Önce SAĞ sayfayı göster ▶'};
+        return;
+      }
+    }
+    this.accept(res, snap, null);
+  },
+  markDone(snap){
+    const L = this.live;
+    // hareket, kontrol edilen karenin anından itibaren sayılır (kontrol sürerken sonraki sayfaya geçilmiş olabilir)
+    L.phase = 'done'; L.doneSig = snap.sig; L.moveAt = snap.moveSum != null ? snap.moveSum : this.scanner.moveSum;
+    L.hold = null; L.bestFail = null; L.tries = 0; L.verdict = null;
+  },
+  async accept(res, snap, softV){
+    const S = this.sess, m = res.metrics || {};
+    this.markDone(snap);
+    const side = m.side || '';
+    this.ev('çekildi', side, softV ? softV.code : '');
+    if(!this.retake) S.expect = side ? otherSide(side) : null;
+    if(m.mode === 'yazı' && !softV && m.crisp >= 0){ S.refC.push(m.crisp); S.refS.push(m.sharp); if(S.refC.length > 7){ S.refC.shift(); S.refS.shift(); } }
+    S.refL.push(snap.sharp); if(S.refL.length > 7) S.refL.shift();
+    this.chime(); this.flash();
+    this.doneHint = side === 'L' ? '✓ Tamam — şimdi sağ sayfa ▶' : side === 'R' ? '✓ Tamam — sayfayı çevir' : '✓ Tamam — sonraki sayfa';
+    this.sticky(softV ? '✓ Çekildi (kontrol et) — sonraki sayfa' : this.doneHint, 'ok', 1000);
+    // yeniden çekim: yeni sayfa yerine hedef sayfanın yerine geç
+    if(this.retake){
+      const target = state.pages.find(p => p.id === this.retake.ids[this.retake.i]);
+      const blob = await snap.blobP;
+      if(target && blob){
+        target.origBlob = blob; target.issues = []; target.maybeDup = false; target.soft = softV ? softV.code : null;
+        if(res.lineSig){ target.lineSig = res.lineSig; target.side = side; }
+        processPage(target);
+      }
+      this.retake.i++;
+      if(this.retake.i >= this.retake.ids.length){ setTimeout(() => this.finish(), 450); }
+      else { this.newScanner(); this.updateRetakeUi(); }
+      return;
+    }
+    const p = {id:state.nextId++, origBlob:null, rot:0, time:snap.t, maybeDup:false, issues:[], status:'busy',
+               lineSig:res.lineSig || null, side, soft: softV ? softV.code : null};
+    state.pages.push(p);
+    S.recent.unshift({id:p.id, lineSig:p.lineSig, side}); if(S.recent.length > 12) S.recent.pop();
+    this.count++; this.updateCounter();
+    p.origBlob = await snap.blobP;
+    if(!p.origBlob){ state.pages.splice(state.pages.indexOf(p), 1); this.updateCounter(); return; }
+    processPage(p);
+  },
+  sticky(txt, cls, ms){
+    const hint = $('camHint'); hint.textContent = txt; hint.className = 'camhint ' + (cls || '');
+    this.stickyUntil = performance.now() + (ms || 900);
+  },
+  /* ipucu + sayfa çerçevesi */
+  show(r, st){
+    const L = this.live, now = performance.now();
+    if(now >= this.stickyUntil){
+      let txt, cls = '';
+      if(st === 'done'){ txt = this.doneHint || '✓ Tamam — sonraki sayfa'; cls = 'ok'; }
+      else if(st === 'moving') txt = this.retake ? 'Sayfayı göster…' : 'Sayfayı kadraja al, sabit tut';
+      else if(st === 'nopage') txt = 'Sayfayı kadraja al';
+      else if(st === 'finger'){ txt = 'Parmağını yazının üstünden çek'; cls = 'warn'; }
+      else if(L.verdict && now - L.lastTryWall < 1600){ txt = L.verdict.hint; cls = 'warn'; }
+      else txt = 'Sabit tut…';
+      const hint = $('camHint');
+      if(hint.textContent !== txt) hint.textContent = txt;
+      hint.className = 'camhint ' + cls;
+    }
+    this.draw(r, st);
+  },
+  draw(r, st){
     const ov = $('camOverlay'), v = $('camView');
     const W = ov.clientWidth, H = ov.clientHeight;
     if(ov.width !== W || ov.height !== H){ ov.width = W; ov.height = H; }
@@ -1332,52 +1575,25 @@ const cam = {
     const s = Math.min(W/v.videoWidth, H/v.videoHeight);
     const ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
     const P = det.quad.map(p => [ox + p[0]*s, oy + p[1]*s]);
-    const run = this.scanner.run;
-    const captured = run && run.emitted;
-    const warn = det.clipped.some(Boolean) || det.skinInner > 0.012;
-    const col = captured ? '#39d98a' : (warn ? '#ffb020' : '#4f8cff');
-    // hafif dolgu + ince kenar
-    x.fillStyle = captured ? '#39d98a30' : '#4f8cff14';
+    const done = st === 'done';
+    const warn = st === 'finger' || (this.live.verdict && st !== 'check');
+    const col = done ? '#39d98a' : (warn ? '#ffb020' : '#4f8cff');
+    x.fillStyle = done ? '#39d98a30' : '#4f8cff14';
     x.strokeStyle = col + 'aa'; x.lineWidth = 2;
+    if(st === 'check') x.setLineDash([10, 8]);
     x.beginPath(); P.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath(); x.fill(); x.stroke();
-    // köşe işaretleri (sayfa yakalandı hissi)
+    x.setLineDash([]);
+    // köşe işaretleri
     x.strokeStyle = col; x.lineWidth = 6; x.lineCap = 'round';
     for(let i=0;i<4;i++){
       const a = P[i], b = P[(i+1)%4], c = P[(i+3)%4];
-      const L = 0.16;
+      const Lk = 0.16;
       x.beginPath();
-      x.moveTo(a[0] + (b[0]-a[0])*L, a[1] + (b[1]-a[1])*L);
+      x.moveTo(a[0] + (b[0]-a[0])*Lk, a[1] + (b[1]-a[1])*Lk);
       x.lineTo(a[0], a[1]);
-      x.lineTo(a[0] + (c[0]-a[0])*L, a[1] + (c[1]-a[1])*L);
+      x.lineTo(a[0] + (c[0]-a[0])*Lk, a[1] + (c[1]-a[1])*Lk);
       x.stroke();
     }
-    // sabitlik ilerlemesi (¼ sn)
-    const prog = run && r.state === 'still' ? Math.min(1, r.dur*1000/settings.stableMs) : 0;
-    if(prog > 0 && prog < 1 && !captured){
-      x.fillStyle = '#fff'; x.fillRect(W*0.3, H-10, W*0.4*prog, 5);
-    }
-  },
-  async onCapture(c){
-    // yeniden çekim: yeni sayfa yerine hedef sayfanın yerine geç
-    if(this.retake){
-      const targetId = this.retake.ids[this.retake.i];
-      const target = state.pages.find(p => p.id === targetId);
-      if(c.replaceId == null && target){
-        this.feedback();
-        const blob = await c.blob;
-        target.origBlob = blob; target.issues = []; target.maybeDup = false;
-        processPage(target);
-        this.retake.i++;
-        if(this.retake.i >= this.retake.ids.length){ setTimeout(() => this.finish(), 450); }
-        else { this.newScanner(); this.updateRetakeUi(); }
-        return;
-      }
-      if(c.replaceId != null && target){ const blob = await c.blob; if(blob){ target.origBlob = blob; processPage(target); } }
-      return;
-    }
-    if(c.replaceId == null){ this.feedback(); this.count++; this.updateCounter(); }
-    const p = await addCapture(c);
-    if(p && p.thumbUrl) this.setThumb(p.thumbUrl);
   },
   onPageDone(p){ if(!this.retake && p.thumbUrl && state.pages[state.pages.length-1] === p) this.setThumb(p.thumbUrl); },
   setThumb(url){ $('camThumb').style.backgroundImage = `url("${url}")`; },
@@ -1396,20 +1612,26 @@ const cam = {
     $('camRetakeTxt').innerHTML = `<b>${state.pages.indexOf(p)+1}. sayfayı</b> çek<br><small>${pageIssueText(p) || ''}</small>`;
     this.updateCounter();
   },
-  feedback(){
-    const f = $('camFlash'); f.style.transition = 'none'; f.style.opacity = '0.55';
-    requestAnimationFrame(() => { f.style.transition = 'opacity .3s'; f.style.opacity = '0'; });
-    try{ navigator.vibrate && navigator.vibrate(35); }catch(_){}
+  /* "tamam" işareti: yeşil çerçeve + büyük ✓ */
+  flash(){
+    const f = $('camOk'); f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+    try{ navigator.vibrate && navigator.vibrate(40); }catch(_){}
     if(native.has('Haptics')) native.call('Haptics', 'impact', {style:'MEDIUM'}).catch(()=>{});
+  },
+  /* "tamam" sesi: iki notalı kısa çan (ding-dong yukarı) */
+  chime(){
+    const a = this.audio; if(!a) return;
     try{
-      const a = this.audio; if(!a) return;
       if(a.state === 'suspended') a.resume();
-      const o = a.createOscillator(), g = a.createGain();
-      o.type = 'square'; o.frequency.value = 1400;
-      g.gain.setValueAtTime(0.0001, a.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.25, a.currentTime + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + 0.07);
-      o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime + 0.08);
+      const t = a.currentTime + 0.01;
+      [[880, 0], [1318.5, 0.09]].forEach(([f, dt]) => {
+        const o = a.createOscillator(), g = a.createGain();
+        o.type = 'sine'; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t + dt);
+        g.gain.exponentialRampToValueAtTime(0.45, t + dt + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.17);
+        o.connect(g).connect(a.destination); o.start(t + dt); o.stop(t + dt + 0.19);
+      });
     }catch(_){}
   },
   updateTorchBtn(){ $('camTorch').classList.toggle('on', this.torch); },

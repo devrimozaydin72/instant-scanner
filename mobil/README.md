@@ -9,7 +9,8 @@ klasör yalnızca iOS kabuğunu içerir.
 - PDF, iPhone paylaşım menüsüyle açılır (Dosyalara Kaydet, WhatsApp, Mail, Yazdır…).
   Oluşturulan PDF'ler ve yarım kalan tarama (web sürümünde de) cihazda saklanır;
   "Önceki taramalar" listesinden yeniden açılır.
-- Her sayfa çekildiğinde telefon hafifçe titrer (dokunsal geri bildirim).
+- Sayfa tam, net ve yeni görününce "bip" sesi + büyük yeşil ✓ gelir ve telefon hafifçe titrer
+  (dokunsal geri bildirim); kullanıcı o an sayfayı çevirir.
 - Uygulama açıkken ekran kendiliğinden kararmaz.
 - Service worker kullanılmaz; dosyalar zaten cihazdadır, internet gerekmez.
 - Yalnız iPhone, yalnız dikey ekran, koyu görünüm.

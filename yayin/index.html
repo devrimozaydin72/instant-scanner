@@ -288,6 +288,7 @@
       <button class="btn gray" id="btnMore">➕ Dosya Ekle</button>
       <button class="btn gray" id="btnReset">🔁 Baştan</button>
     </div>
+    <button class="linkbtn" id="btnRaw">🐞 Sorun mu var? Ham kareleri paylaş (kameranın gördüğü hâli)</button>
   </section>
 
   <!-- ÖNCEKİ TARAMALAR (cihazda saklanır) -->
@@ -296,7 +297,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 10</p>
+  <p class="ver">INSTANT SCANNER · sürüm 11</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -558,10 +559,10 @@ const pdfDlg = {
   show(d){
     this.cur = d;
     if(this.url){ URL.revokeObjectURL(this.url); this.url = null; }
-    $('pdfTitle').textContent = d.fresh ? '✅ PDF hazır' : '📄 Önceki tarama';
+    $('pdfTitle').textContent = d.raw ? '🐞 Ham kareler' : d.fresh ? '✅ PDF hazır' : '📄 Önceki tarama';
     $('pdfInfo').innerHTML = `<b>${esc(d.name)}</b><br>${d.pages} sayfa · ${fmtMB(d.size)}` +
       (d.created ? ' · ' + fmtDate(d.created) : '') +
-      (d.fresh ? (d.docId ? '<br>"Önceki taramalar" listesine kaydedildi.' : '<br>⚠ Bu cihaza kaydedilemedi; şimdi indir ya da paylaş.') : '');
+      (d.fresh && !d.raw ? (d.docId ? '<br>"Önceki taramalar" listesine kaydedildi.' : '<br>⚠ Bu cihaza kaydedilemedi; şimdi indir ya da paylaş.') : '');
     const share = native.on || canShareFile(d);
     const preferShare = share && (isIOS || native.on);
     $('pdfShare').hidden = !share;
@@ -569,13 +570,25 @@ const pdfDlg = {
     $('pdfDown').hidden = native.on;
     $('pdfDown').className = 'btn ' + (preferShare ? 'gray' : 'green');
     $('pdfOpen').hidden = native.on || isIOS;     // iOS'ta indirme zaten görüntüleme seçeneği sunar
-    $('pdfNew').hidden = !d.fresh;
+    $('pdfNew').hidden = !d.fresh || !!d.raw;
     $('pdfDel').hidden = d.fresh || !d.docId;
     $('pdfDlg').hidden = false;
   },
   hide(){ $('pdfDlg').hidden = true; },
 };
 function pdfFile(d){ return new File([d.blob], d.name, {type:'application/pdf'}); }
+/* hata bildirimi: işlenmemiş (kameranın çektiği) kareler tek PDF'te → geliştiriciye gönderilir */
+$('btnRaw').onclick = async () => {
+  const pages = state.pages.filter(p => p.origBlob);
+  if(!pages.length) return;
+  showOverlay('Ham kareler hazırlanıyor…');
+  try{
+    const blob = await buildPdf(pages.map(p => ({id:p.id, procBlob:p.origBlob})));
+    hideOverlay();
+    pdfDlg.show({blob, name:($('fname').value || 'tarama') + '-ham.pdf', pages:pages.length, size:blob.size, fresh:true, raw:true, docId:null});
+    $('pdfInfo').innerHTML += '<br>Bu dosyayı gönderirsen çekimdeki sorunları birebir görüp düzeltebilirim.';
+  }catch(e){ hideOverlay(); toast('Ham kareler hazırlanamadı: ' + (e && e.message)); }
+};
 function canShareFile(d){
   try{ return !!(navigator.share && navigator.canShare && navigator.canShare({files:[pdfFile(d)]})); }catch(_){ return false; }
 }

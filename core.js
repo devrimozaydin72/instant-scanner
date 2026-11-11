@@ -409,18 +409,10 @@ function detectPageData(px, sw, sh, W, H){
       if(an < 0.5) iso[i] = 1;
     }
     boxBlur(iso, sw, sh, 2, 1);                             // 5×5 çoğunluk
-    // Yalnız kadraj kenarına değen dokulu bölgeler silinir: zemin örtüsü ve kenardaki komşu
-    // sayfa şeridi. Sayfanın İÇİNDEKİ yazı küçük ölçekte yönsüz görünebilir; kenar boşluğuyla
-    // çevrili olduğundan kenara değmez → silinmez (silinirse maske delik deşik olur, dörtgen
-    // yamulur, yazı kayar).
-    const isoB = new Uint8Array(N);
-    for(let i=0;i<N;i++) isoB[i] = iso[i] > 0.45 ? 1 : 0;
-    const LI = labelComponents(isoB, sw, sh);
-    const edgeL = new Uint8Array(LI.count + 1);
-    for(let x=0;x<sw;x++) for(const y of [0, 1, sh-2, sh-1]) edgeL[LI.labels[y*sw+x]] = 1;
-    for(let y=0;y<sh;y++) for(const x of [0, 1, sw-2, sw-1]) edgeL[LI.labels[y*sw+x]] = 1;
+    // Yönsüz doku (dantel, desenli örtü) maskeden silinir. Küçük ölçekte sayfa içindeki yazı da
+    // yönsüz görünüp delinebilir; o delikler sayfa seçildikten sonra (açmadan önce) doldurulur.
     let removed = 0;
-    for(let i=0;i<N;i++) if(mask[i] && isoB[i] && edgeL[LI.labels[i]]){ mask[i] = 0; removed++; }
+    for(let i=0;i<N;i++) if(mask[i] && iso[i] > 0.45){ mask[i] = 0; removed++; }
     res.texRemoved = removed / N;
   }
   // 2) sıcaklık kümelemesi: kağıt sıcak, ekran/soğuk ışık mavimsi
@@ -466,6 +458,17 @@ function detectPageData(px, sw, sh, W, H){
   // 5) açma: ince kolları/yansımaları sil
   let comp = new Uint8Array(N);
   for(let i=0;i<N;i++) comp[i] = L.labels[i]===best ? 1 : 0;
+  // iç delikler (doku filtresinin yazıda açtığı delikler, fotoğraflar) açmadan önce doldurulur:
+  // yoksa delik deşik sayfa açmada parçalanır, kenar boşluğu ince kalır, dörtgen yamulur
+  {
+    const inv = new Uint8Array(N);
+    for(let i=0;i<N;i++) inv[i] = comp[i] ? 0 : 1;
+    const LI0 = labelComponents(inv, sw, sh);
+    const bd0 = new Uint8Array(LI0.count+1);
+    for(let x=0;x<sw;x++){ bd0[LI0.labels[x]]=1; bd0[LI0.labels[(sh-1)*sw+x]]=1; }
+    for(let y=0;y<sh;y++){ bd0[LI0.labels[y*sw]]=1; bd0[LI0.labels[y*sw+sw-1]]=1; }
+    for(let i=0;i<N;i++){ const l=LI0.labels[i]; if(l && !bd0[l]) comp[i]=1; }
+  }
   const compPre = new Uint8Array(comp);   // açma öncesi (ince kenar boşlukları korunur)
   {
     let core = comp;
@@ -1177,7 +1180,9 @@ function bgGridRGBA(d, w, h){
     if(L[k] < L[bk]*0.9){
       // ton farkı (sıcak ışıkta sırt/sayfa kenarı turuncu-sarı görünür) şart değil: düz bölge kendi
       // rengine bölünür → hem gölge hem renk lekesi beyaza döner (eskiden sarı/turuncu şerit kalıyordu)
-      const shade = Sd[k] < 7 && L[k] > L[bk]*0.42 && L[k] > 60;
+      // yalnız gerçekten koyu bloklar (fotoğraf, koyu kutu: komşu kağıdın %45'inden koyu) komşunun rengini alır;
+      // sırt/kıvrım gölgesi (yazılı ya da yazısız) kendi rengine bölünür → beyaz olur, sarı/gri şerit kalmaz
+      const shade = (Sd[k] < 7 || L[k] > L[bk]*0.55) && L[k] > L[bk]*0.45 && L[k] > 55;
       if(!shade){ R2[k]=R[bk]; G2[k]=Gc[bk]; B2[k]=B[bk]; }
     }
   }
@@ -1457,6 +1462,8 @@ function processCanvas(src, opts){
   // taşan payı dantel/zemin/sayfa kenarı içerir. B yalnız sayfa kenarı görünmüyorsa ya da A eğikse.
   // (kitapta sırt tarafında maske komşu sayfayla kadraj kenarına bağlanır → det.clipped değil, dörtgen köşelerine bakılır)
   const mgn = 0.01*Math.min(W, H);
+  const pageCut = det && det.ok ? [0,1,2,3].map(e => { const a = det.quad[e], b = det.quad[(e+1)%4], m = 0.012*Math.min(W, H);
+    return e === 0 ? (a[1] < m && b[1] < m) : e === 1 ? (a[0] > W-1-m && b[0] > W-1-m) : e === 2 ? (a[1] > H-1-m && b[1] > H-1-m) : (a[0] < m && b[0] < m); }) : null;
   const pageOk = !!(det && det.ok && det.quad.every(([x, y]) => x > mgn && y > mgn && x < W-1-mgn && y < H-1-mgn));
   const mA = A.margins;
   const aStraight = !!(A.tb && mA && mA.L && mA.L.inl > 0.7 && Math.abs(mA.L.b) < 0.04 &&
@@ -1682,7 +1689,7 @@ function processCanvas(src, opts){
     const metricsQ = {sharp: st.sharp, crisp: st.crisp, inkFrac: st.frac, ms: Date.now()-t0, mode, quick: true,
                       lines: (mode === 'yazı' ? P : A).tb ? (mode === 'yazı' ? P : A).tb.n : 0, tilt, room, side: side.side,
                       srcPitch: content.pitch ? content.pitch*(mode === 'yazı' ? P : A).srcPerPx/qScale : 0,
-                      extraTop: content.extraTop || 0, extraBot: content.extraBot || 0};
+                      extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut};
     dbg.push(tms.join(' ')); dbg.push(`hızlı ${W}x${H}, ${metricsQ.ms} ms`);
     return {canvas: null, issues, metrics: metricsQ, dbg: dbg.join(' | '), lineSig: mode === 'yazı' ? lineSigs(P) : null};
   }
@@ -1690,7 +1697,7 @@ function processCanvas(src, opts){
   const metrics = {sharp: st.sharp, crisp: st.crisp, inkFrac: st.frac, ms: 0, mode,
                    lines: PP && PP.tb ? PP.tb.n : 0, tilt, room, side: side.side,
                    srcPitch: content.pitch && PP ? content.pitch*PP.srcPerPx/qScale : 0,
-                   extraTop: content.extraTop || 0, extraBot: content.extraBot || 0};
+                   extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut};
 
   // ---- tek tip çıktı sayfası (tam outW×outH)
   let out;

@@ -297,7 +297,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 11</p>
+  <p class="ver">INSTANT SCANNER · sürüm 12</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1453,6 +1453,8 @@ const cam = {
       hint: cut.side === 2 ? 'Sayfanın altı görünmüyor — telefonu biraz uzaklaştır' :
             cut.side === 0 ? 'Sayfanın üstü görünmüyor — telefonu biraz uzaklaştır' : 'Sayfanın tamamı görünsün — biraz uzaklaştır'};
     if(has('nopage')) return {ok:false, hard:true, code:'nopage', hint:'Sayfayı kadraja al'};
+    // sayfanın üst ya da alt kenarı kadraj dışında: yazı bloğu görünse de sayfa yarım (başlık/sayfa no kaybolur)
+    if(m.pageCut && (m.pageCut[0] || m.pageCut[2])) return {ok:false, soft:true, code:'room', hint:'Sayfanın tamamı görünsün — telefonu biraz uzaklaştır'};
     if(m.mode === 'yazı'){
       // silik/bulanık yazı: kesin bulanık her zaman reddedilir, hafif bulanık oturumun tipik netliğine göre
       // (çok bulanık yazıda hiç koyu piksel kalmaz → crisp ölçülemez (-1): bu da bulanıktır)
@@ -1460,6 +1462,8 @@ const cam = {
       const rc = median(S.refC), rs = median(S.refS);
       if(S.refC.length >= 2 && m.crisp >= 0 && m.crisp < rc*0.55 && m.sharp < rs*0.8) return {ok:false, soft:true, code:'soft-blur', hint:'Bulanık — telefonu sabit tut'};
       const r = m.room;
+      // yazının kendisi kadraj dışına taşıyor (içerik kutusunun kenarı bile görünmüyor) → kesik, asla kabul edilmez
+      if(r && r.some(v => v < 0)) return {ok:false, hard:true, code:'cut', hint: r[2] < 0 ? 'Sayfanın altı görünmüyor — telefonu biraz uzaklaştır' : r[0] < 0 ? 'Sayfanın üstü görünmüyor — telefonu biraz uzaklaştır' : 'Sayfanın tamamı görünsün — biraz uzaklaştır'};
       if(r){
         // sayfa numarası / üst başlık için yazının altında ve üstünde de pay olmalı
         const needB = m.extraBot >= 1 ? 0.5 : 2.5, needT = m.extraTop >= 1 ? 0.5 : 1.5;

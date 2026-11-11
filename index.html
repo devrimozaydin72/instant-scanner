@@ -297,7 +297,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 12</p>
+  <p class="ver">INSTANT SCANNER · sürüm 13</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1154,6 +1154,7 @@ function issueText(i){
     case 'soft-blur': return 'bulanık olabilir';
     case 'room': return 'sayfa kenarı / sayfa no kadraj dışında olabilir';
     case 'tilt': return 'çok eğik çekilmiş';
+    case 'partial': return 'yazının bir kısmı alınamamış olabilir';
     case 'far': return 'yazı çok küçük çekilmiş';
     case 'error': return 'işlenemedi';
     default: return i.code;
@@ -1471,6 +1472,8 @@ const cam = {
         if(r[0] < needT) return {ok:false, soft:true, code:'room', hint:'Sayfanın üstü de görünsün — biraz uzaklaştır'};
         if(r[1] < 0.5 || r[3] < 0.5) return {ok:false, soft:true, code:'room', hint:'Sayfanın kenarları da görünsün'};
       }
+      // sayfadaki yazının bir kısmı çıktıya girmiyor (kıvrık/gölgede kalan bölüm, yanlış perspektif)
+      if(m.leftover > 0.08) return {ok:false, soft:true, code:'partial', hint:'Sayfanın bir kısmı alınamadı — sayfayı düz tut, telefonu sayfaya paralel tut'};
       if(m.tilt > 1.5) return {ok:false, soft:true, code:'tilt', hint:'Telefonu sayfaya paralel tut'};
       if(m.srcPitch && m.srcPitch < 11) return {ok:false, soft:true, code:'far', hint:'Biraz yaklaş — yazı çok küçük'};
     }

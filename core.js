@@ -1421,6 +1421,41 @@ function sideCues(sd, W, H, tq){
   if(isL && !isR) return {side:'L', why};
   return {side:'', why};
 }
+/* içerik koordinatı → kaynak eşlemesi (P düzlemi, içerik kutusu c) */
+function makeMap(P, c){
+  const hmap = marginMap(P);
+  return (x, y) => { let X = c.x0 + x; const Y = c.y0 + y; if(hmap) X = hmap(X, Y); return P.toSrc(X, Y); };
+}
+/* EKSİK YAZI: sayfa düzleminde (A) yazıya benzeyen mürekkebin ne kadarı çıktının içerik kutusunun
+   DIŞINDA kalıyor? (0: hepsi alındı). Kenar şeritleri/gölge (düz koyuluk) yazı sayılmaz:
+   yatayda kısa aralıkta çok kez açılıp kapanan mürekkep yazıdır. */
+function leftoverInk(A, map, c){
+  if(!A.ink || !c) return 0;
+  const poly = [], NP = 14;
+  for(let i=0;i<NP;i++) poly.push(map(c.w*i/NP, 0));
+  for(let i=0;i<NP;i++) poly.push(map(c.w, c.h*i/NP));
+  for(let i=0;i<NP;i++) poly.push(map(c.w*(1-i/NP), c.h));
+  for(let i=0;i<NP;i++) poly.push(map(0, c.h*(1-i/NP)));
+  if(!poly.every(p => isFinite(p[0]) && isFinite(p[1]))) return 0;
+  const pip = (x, y) => { let ins = false; for(let i=0, j=poly.length-1; i<poly.length; j=i++){ const a = poly[i], b = poly[j];
+    if(((a[1] > y) !== (b[1] > y)) && x < (b[0]-a[0])*(y-a[1])/(b[1]-a[1]) + a[0]) ins = !ins; } return ins; };
+  const ink = A.ink, w = A.bw, h = A.bh, P = Math.max(6, Math.round(A.pitch || 20));
+  const mx = Math.round(w*0.03), my = Math.round(h*0.03);
+  let tot = 0, out = 0;
+  for(let y=my; y<h-my; y+=3){
+    const r = y*w;
+    for(let x=mx; x<w-mx; x+=3){
+      const v = ink[r+x]; if(v < 0.3) continue;
+      let tr = 0, prev = 1;
+      for(let xx=Math.max(0, x-P); xx<Math.min(w, x+P); xx++){ const on = ink[r+xx] > 0.3 ? 1 : ink[r+xx] < 0.1 ? 0 : prev; if(on !== prev){ tr++; prev = on; } }
+      if(tr < 5) continue;                                       // düz koyuluk: yazı değil
+      tot += v;
+      const p = A.toSrc(x, y);
+      if(!pip(p[0], p[1])) out += v;
+    }
+  }
+  return tot > 20 ? out/tot : 0;
+}
 function processCanvas(src, opts){
   const t0 = Date.now();
   // hızlı kontrol (canlı çekimde 'bip' kararı): küçük kaynak, küçük düzlemler, çıktı yok
@@ -1520,6 +1555,18 @@ function processCanvas(src, opts){
   // B olmadıysa: A'nın yazı bloğundan içerik kutusu (perspektif daha kaba ama arka plan yine dışarıda)
   let P = B;
   if(!content && A.tb && A.ink){ content = contentBox(A, dbg); P = A; }
+  // eksik yazı denetimi; B kullanılıyorsa A'nın içerik kutusuyla da karşılaştırılır, daha azını
+  // dışarıda bırakan seçilir (sayfanın kıvrık ya da gölgede kalan kısmı atılmasın)
+  let leftover = 0;
+  if(content && A.ink){
+    leftover = leftoverInk(A, makeMap(P, content), content);
+    if(P === B && A.tb){
+      const cA = contentBox(A, []);
+      const lA = leftoverInk(A, makeMap(A, cA), cA);
+      dbg.push(`dışarıda kalan yazı B:%${(leftover*100)|0} A:%${(lA*100)|0}`);
+      if(lA + 0.03 < leftover){ P = A; B = null; content = cA; leftover = lA; dbg.push('A seçildi (daha az yazı dışarıda)'); }
+    } else dbg.push(`dışarıda kalan yazı %${(leftover*100)|0}`);
+  }
   // ---- son eşleme: çıktı pikseli → kaynak
   let mapOut, srcSpanH, mode;
   if(content){
@@ -1571,7 +1618,10 @@ function processCanvas(src, opts){
   const mx = content === null ? 0 : (mode === 'yazı' ? 0.075 : 0), myT = mode === 'yazı' ? 0.06 : 0, myB = mode === 'yazı' ? 0.06 : 0;
   const availW = outW*(1-2*mx), availH = outH*(1-myT-myB);
   let s = Math.min(availW/content.w, availH/content.h);
-  if(mode === 'yazı' && content.pitch){
+  // yazı boyutu tutarlılığı yalnız sayfanın bir kısmını kaplayan içerikte (bölüm sonu, kısa sayfa):
+  // kapak/büyük başlık gibi sayfayı dolduran içerik satır aralığına göre küçültülmez, sayfaya sığdırılır
+  const contentFrac = det && det.ok && mode === 'yazı' ? (content.h*P.srcPerPx)/Math.max(1, srcPageH) : 0;
+  if(mode === 'yazı' && content.pitch && contentFrac < 0.6){
     const sPitch = (outW*0.86/26) / content.pitch;      // ~26 satır aralığı = sayfa genişliği
     s = Math.min(s, sPitch*1.0);
   }
@@ -1689,7 +1739,7 @@ function processCanvas(src, opts){
     const metricsQ = {sharp: st.sharp, crisp: st.crisp, inkFrac: st.frac, ms: Date.now()-t0, mode, quick: true,
                       lines: (mode === 'yazı' ? P : A).tb ? (mode === 'yazı' ? P : A).tb.n : 0, tilt, room, side: side.side,
                       srcPitch: content.pitch ? content.pitch*(mode === 'yazı' ? P : A).srcPerPx/qScale : 0,
-                      extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut};
+                      extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut, leftover};
     dbg.push(tms.join(' ')); dbg.push(`hızlı ${W}x${H}, ${metricsQ.ms} ms`);
     return {canvas: null, issues, metrics: metricsQ, dbg: dbg.join(' | '), lineSig: mode === 'yazı' ? lineSigs(P) : null};
   }
@@ -1697,7 +1747,7 @@ function processCanvas(src, opts){
   const metrics = {sharp: st.sharp, crisp: st.crisp, inkFrac: st.frac, ms: 0, mode,
                    lines: PP && PP.tb ? PP.tb.n : 0, tilt, room, side: side.side,
                    srcPitch: content.pitch && PP ? content.pitch*PP.srcPerPx/qScale : 0,
-                   extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut};
+                   extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut, leftover};
 
   // ---- tek tip çıktı sayfası (tam outW×outH)
   let out;

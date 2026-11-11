@@ -1,4 +1,4 @@
-const CACHE = 'instant-scanner-v12';
+const CACHE = 'instant-scanner-v13';
 const CORE = ['./', './index.html', './core.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {

@@ -145,6 +145,7 @@
   #camOk span{width:110px; height:110px; border-radius:50%; background:#1d9e63e6; color:#fff; font-size:70px; font-weight:900;
     display:flex; align-items:center; justify-content:center; box-shadow:0 6px 30px #0008}
   #camOk.on{animation:okfl .75s ease-out}
+  #camOk.warn span{background:#d9861de6}
   @keyframes okfl{0%{opacity:0; transform:scale(.85)} 12%{opacity:1; transform:scale(1.04)} 60%{opacity:1; transform:scale(1)} 100%{opacity:0}}
   .camhint{
     position:absolute; top:max(14px, env(safe-area-inset-top)); left:50%; transform:translateX(-50%);
@@ -297,7 +298,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 15</p>
+  <p class="ver">INSTANT SCANNER · sürüm 16</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -475,7 +476,7 @@ const session = {
         const ver = p.ver;
         await store.put('pages', {id:p.id, ver, orig: await toAB(p.origBlob), proc: await toAB(p.procBlob),
           thumb: await toAB(p.thumbBlob), outW:p.outW, outH:p.outH, rot:p.rot||0, time:p.time||0,
-          maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}, side:p.side||'', lineSig:p.lineSig||null, soft:p.soft||null});
+          maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}, side:p.side||'', lineSig:p.lineSig||null, soft:p.soft||null, noText:!!p.noText});
         this.saved.set(p.id, ver);
         askPersist();
       }
@@ -496,7 +497,7 @@ const session = {
         const procBlob = fromAB(r.proc, 'image/jpeg'), thumbBlob = fromAB(r.thumb, 'image/jpeg') || procBlob;
         pages.push({id:r.id, ver:r.ver, status:'done', origBlob: fromAB(r.orig, 'image/jpeg'), procBlob, thumbBlob,
           thumbUrl: URL.createObjectURL(thumbBlob), outW:r.outW, outH:r.outH, rot:r.rot, time:r.time,
-          maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}, side:r.side||'', lineSig:r.lineSig||null, soft:r.soft||null});
+          maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}, side:r.side||'', lineSig:r.lineSig||null, soft:r.soft||null, noText:!!r.noText});
         this.saved.set(r.id, r.ver);
       }
       for(const r of recs) if(!this.saved.has(r.id)) store.del('pages', r.id).catch(()=>{});
@@ -766,7 +767,8 @@ function processPage(p){
     if(p.soft && !p.issues.some(i => i.code === p.soft)) p.issues.push({code:p.soft, side:-1});
     if(r.lineSig && !p.lineSig) p.lineSig = r.lineSig;
     if(r.metrics && r.metrics.side && !p.side) p.side = r.metrics.side;
-    p.status = 'done';
+    p.status = 'done'; p.fullSig = r.lineSig || null;
+    dedupeAfter(p);
     log(`sayfa ${p.id}:`, r.dbg);
     onPageProcessed(p);
   }).catch(err => {
@@ -774,6 +776,28 @@ function processPage(p){
     console.error(err); p.status = 'error'; p.issues = [{code:'error', side:-1}];
     onPageProcessed(p);
   });
+}
+/* işleme sonrası güvenlik ağı (canlı çekim): art arda iki çekim aynı sayfaysa — tam çözünürlüklü satır imzaları
+   güçlü biçimde eşleşiyorsa — kötüsü atılır; eşleşme orta düzeydeyse sonraki sayfa "TEKRAR?" ile işaretlenir. */
+function dedupeAfter(p){
+  if(!p.fullSig || !p.cap) return;
+  const i = state.pages.indexOf(p);
+  if(i < 0) return;
+  for(const j of [i - 1, i + 1]){
+    const q = state.pages[j];
+    if(!q || q.status !== 'done' || !q.fullSig || q.cap !== p.cap) continue;
+    const m = Math.max(C.lineMatch(p.fullSig, q.fullSig, true), C.lineMatch(q.fullSig, p.fullSig, true));
+    if(m < 0.5) continue;
+    if(m < 0.75){ (j > i ? q : p).maybeDup = true; continue; }
+    const score = x => -(x.issues ? x.issues.length : 0)*1e6 + (x.metrics ? (x.metrics.sharp || 0)*(0.5 + Math.max(0, x.metrics.crisp || 0)) : 0);
+    const drop = score(p) >= score(q) ? q : p, keep = drop === p ? q : p;
+    const k = state.pages.indexOf(drop);
+    state.pages.splice(k, 1);
+    if(drop.thumbUrl) URL.revokeObjectURL(drop.thumbUrl);
+    log(`aynı sayfa iki kez çekilmiş (eşleşme ${m.toFixed(2)}): ${k + 1}. sayfa atıldı`);
+    if(typeof cam !== 'undefined') cam.pageDropped(drop, keep, k, m);
+    return;
+  }
 }
 let renderTimer = null;
 function onPageProcessed(p){
@@ -798,6 +822,12 @@ const NO_DET = {ok:false, quad:null, quadS:null, clipped:[false,false,false,fals
 const TURN_MIN = 30;            // son çekimden beri bu kadar hareket birikmediyse sayfa çevrilmemiştir (yazısız sayfalarda aynı sayfa koruması)
 const MOVE_CHECK = 12;          // çekilen sayfa kadrajdayken bu kadar hareket birikince hemen yeniden bakılır
 const QUICK_MAX = 1120;         // hızlı kontrole giden karenin uzun kenarı
+const LIVE_STILL = 1.4;         // canlıda durgunluk eşiği çarpanı (ince netlik haritası asıl bekçidir)
+const STEADY_LO = 0.86, STEADY_HI = 1.14, STEADY_MID = 1.045;   // kare "oturmuş": hiçbir bölge öncekilerden belirgin bulanık değil, netlik artık artmıyor
+const BLUR_BAND = 0.6, BLUR_PAGE = 0.65, BLUR_ABS = 0.2;   // bölge / sayfa / mutlak bulanıklık eşikleri (ince netlik oranları)
+const PRE_SIG = 16;             // doğrulanmış çerçeve ile çekilecek kare arasındaki en büyük görüntü farkı (sayfa imzası)
+const PRE_TTL = 4000;           // doğrulanmış yazı çerçevesinin ömrü (ms)
+const BLUR_WAIT = 3000;         // bulanık bölge düzelmiyorsa bu kadar sonra eldeki en net kare UYARIYLA alınır (ms)
 const diagLog = [];             // canlı çekim tanı günlüğü (ham kare dosyasının son sayfasına yazılır)
 const TURN_SUM = 60;           // sayfa çevirme sayılacak birikmiş hareket
 
@@ -895,7 +925,8 @@ class FrameScanner {
     this.prevC = cg;
     if(motion < 99){ this.mhist.push(motion); if(this.mhist.length > 90) this.mhist.shift(); }
     const thr = this.threshold();
-    const still = motion <= thr;
+    // canlıda durgunluk eşiği gevşektir: çekilecek karenin gerçekten net ve oturmuş olduğuna ince netlik haritası karar verir
+    const still = motion <= thr*(this.o.live ? LIVE_STILL : 1);
     if(this.o.debug && this.o.live) this.debug.push(['m', +t.toFixed(3), +motion.toFixed(2), +mFull.toFixed(2), +thr.toFixed(2)]);
     this.lastFull = mFull;
     // birikmiş hareket (sayfa çevirme / başka sayfaya geçiş kanıtı): canlıda karenin TAMAMINDAKİ değişim
@@ -907,14 +938,17 @@ class FrameScanner {
       if(this.o.debug) this.debug.push([+t.toFixed(3), +motion.toFixed(2), +thr.toFixed(2), 0]);
       return {state:'moving', motion, thr, captured};
     }
-    // 3) netlik: merkezde doğal çözünürlükte Laplace varyansı
-    const cs = Math.min(CROP, vw, vh);
-    const cx = this.crop.getContext('2d', {willReadFrequently:true});
-    cx.drawImage(v, (vw-cs)>>1, (vh-cs)>>1, cs, cs, 0, 0, cs, cs);
-    const sharp = C.lapVar(C.grayOf(cx.getImageData(0, 0, cs, cs).data, cs*cs), cs, cs);
-    this.shist.push(sharp); if(this.shist.length > 300) this.shist.shift();
+    // 3) netlik: merkezde doğal çözünürlükte Laplace varyansı (canlıda ince netlik haritası kullanılır → grab)
+    let sharp = 0;
+    if(!this.o.live){
+      const cs = Math.min(CROP, vw, vh);
+      const cx = this.crop.getContext('2d', {willReadFrequently:true});
+      cx.drawImage(v, (vw-cs)>>1, (vh-cs)>>1, cs, cs, 0, 0, cs, cs);
+      sharp = C.lapVar(C.grayOf(cx.getImageData(0, 0, cs, cs).data, cs*cs), cs, cs);
+      this.shist.push(sharp); if(this.shist.length > 300) this.shist.shift();
+    }
     if(this.o.debug) this.debug.push([+t.toFixed(3), +motion.toFixed(2), +thr.toFixed(2), sharp|0]);
-    if(!this.run) this.run = {t0:t, t1:t, n:0, best:null, emitted:false, emitId:null, emitScore:0, lastDet:null, lastDetT:-9, w0:performance.now()};
+    if(!this.run) this.run = {t0:t, t1:t, n:0, fn:0, sh:null, best:null, emitted:false, emitId:null, emitScore:0, lastDet:null, lastDetT:-9, w0:performance.now()};
     const run = this.run; run.t1 = t; run.n++;
     const dur = run.t1 - run.t0 + this.dtAvg;
     if(this.o.live){
@@ -940,19 +974,99 @@ class FrameScanner {
     this.cost = this.cost*0.9 + (performance.now()-c0)*0.1;
     return res;
   }
-  /* canlı: o anki karenin tam çözünürlüklü kopyası (çekilirse JPEG'e çevrilir) + hızlı kontrol için küçük kopyası.
-     Tam kare tuvalleri dönüşümlü kullanılır: denetimi ya da kodlaması süren karenin üzerine yazılmaz.
-     JPEG kodlaması yalnız kare gerçekten çekilirse yapılır (her denetimde değil). */
-  snapshot(){
-    const v = this.lastV, c = this.run && this.run.cur;
-    if(!v || !c) return null;
+  /* ---- canlı: o anki karenin tam çözünürlüklü kopyası + İNCE NETLİK HARİTASI ----
+     Kare, dönüşümlü kullanılan tam boy tuvallerden birine çizilir (çekilirse JPEG'e çevrilir; kodlama yalnız o zaman).
+     Netlik haritası: tuvalde 6×10 seyrek pencere, doğal çözünürlükte. Her pencerede
+       s  = kenar dikliği (güçlü gradyanların kendi ağırlıklı ortalaması / kağıt parlaklığı): yazı miktarından bağımsızdır,
+            bulanıkta ve çift görüntüde (hareket) düşer;
+       d  = mürekkep derinliği (kağıt − en koyu)/kağıt;   tx = pencerede yazı (koyu piksel) var mı.
+     Aynı pencere art arda karelerde karşılaştırılır: netlik hâlâ artıyor mu (sayfa/odak oturuyor), bu kare öncekiler
+     kadar net mi (steady) → çekilecek kare bunlardan seçilir. */
+  fineInit(){
+    const P = Math.max(40, Math.min(72, Math.round(Math.min(this.fw, this.fh)/22)));
+    const nx = 6, ny = 10, N = nx*ny, xs = [], ys = [];
+    for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){
+      xs.push(Math.max(0, Math.min(this.fw - P, Math.round(this.fw*(0.06 + 0.88*(i + 0.5)/nx) - P/2))));
+      ys.push(Math.max(0, Math.min(this.fh - P, Math.round(this.fh*(0.05 + 0.90*(j + 0.5)/ny) - P/2))));
+    }
+    return this.fg = {P, nx, ny, N, xs, ys, gray:new Uint8Array(P*P), hist:new Uint16Array(256), fw:this.fw, fh:this.fh};
+  }
+  grab(){
+    const v = this.lastV, run = this.run;
+    if(!v || !run || !run.cur) return null;
     if(!this.ring) this.ring = [];
     let full = this.ring.find(f => !f.busy && f.width === this.fw && f.height === this.fh);
     if(!full){
-      if(this.ring.length >= 3) return null;
-      full = mk(this.fw, this.fh, false); full.busy = 0; this.ring.push(full);
+      if(this.ring.length >= 6) return null;
+      full = mk(this.fw, this.fh, true); full.busy = 0; this.ring.push(full);
     }
-    full.getContext('2d').drawImage(v, 0, 0, this.fw, this.fh);
+    const x = full.getContext('2d', {willReadFrequently:true});
+    x.drawImage(v, 0, 0, this.fw, this.fh);
+    full.busy = 1;
+    const g = this.fg && this.fg.fw === this.fw && this.fg.fh === this.fh ? this.fg : this.fineInit();
+    const N = g.N, P = g.P, n = P*P, gray = g.gray, hist = g.hist;
+    const s = new Float32Array(N), d = new Float32Array(N), tx = new Uint8Array(N);
+    for(let k=0;k<N;k++){
+      const px = x.getImageData(g.xs[k], g.ys[k], P, P).data;
+      hist.fill(0);
+      for(let i=0, j=0; i<n; i++, j+=4){ const l = (px[j]*77 + px[j+1]*150 + px[j+2]*29) >> 8; gray[i] = l; hist[l]++; }
+      let c = 0, lo = 0, paper = 255;
+      for(let b=0;b<256;b++){ c += hist[b]; if(c >= n*0.03){ lo = b; break; } }
+      c = 0; for(let b=255;b>=0;b--){ c += hist[b]; if(c >= n*0.10){ paper = b; break; } }
+      const pp = Math.max(40, paper), th = pp*0.85, gt = pp*0.06;
+      let dark = 0; for(let b=0;b<th;b++) dark += hist[b];
+      let s2 = 0, s1 = 0, cnt = 0;
+      for(let y=0;y<P-1;y++){
+        const r = y*P;
+        for(let xx=0;xx<P-1;xx++){
+          const i = r + xx, a = gray[i], gm = Math.abs(gray[i+1] - a) + Math.abs(gray[i+P] - a);
+          if(gm > gt){ s2 += gm*gm; s1 += gm; cnt++; }
+        }
+      }
+      s[k] = cnt >= 12 ? s2/s1/pp : 0;
+      d[k] = (paper - lo)/pp;
+      const fr = dark/n;
+      tx[k] = paper >= 70 && fr >= 0.04 && fr <= 0.6 ? 1 : 0;
+    }
+    // kısa bir kıpırtı duruşu böldüyse (görüntü aynı) önceki duruşun netlik geçmişi sürdürülür
+    const hk = this.shKeep;
+    if(!run.sh && hk && this.moveSum - hk.ms < MOVE_CHECK && performance.now() - hk.at < 400) run.sh = hk.sh;
+    // önceki iki kareye göre: en çok netleşen ve en çok bulanıklaşan pencereler (%90 / %10)
+    let q10 = 0, q90 = 9, q50 = 9;
+    if(run.sh && run.sh.length >= 2){
+      const a = run.sh[0], b = run.sh[1], rs = [];
+      for(let k=0;k<N;k++){
+        const m = Math.max(a[k], b[k]);
+        if(m > 0.08) rs.push(s[k]/m); else if(s[k] > 0.15) rs.push(2);
+      }
+      if(rs.length >= 6){ rs.sort((u, w) => u - w); q10 = rs[Math.floor(rs.length*0.1)]; q90 = rs[Math.floor(rs.length*0.9)]; q50 = rs[rs.length >> 1]; }
+      else { q10 = 1; q90 = 1; q50 = 1; }
+    }
+    (run.sh = run.sh || []).unshift(s); if(run.sh.length > 2) run.sh.pop();
+    this.shKeep = {sh: run.sh, ms: this.moveSum, at: performance.now()};
+    // kadrajın herhangi bir yerinde belirgin biçimde kıpırdayan bir şey var mı (çekilen el, parmak)?
+    let hot = 0; const dmq = this.dmap;
+    if(dmq) for(let i=0;i<dmq.length;i++) if(dmq[i] > 22) hot++;
+    const c = run.cur;
+    const fr = {full, refs:1, enc:false, bp:null, run, n: ++run.fn, t:c.t, sharp:0, s, d, tx, grid:g, q10, q90, q50,
+                steady: q10 >= STEADY_LO && q90 <= STEADY_HI && q50 <= STEADY_MID,
+                busy: !!dmq && hot >= Math.max(4, dmq.length*0.004),
+                sig: C.pageSignature(this.lastPx, this.sw, this.sh, null), moveSum:this.moveSum,
+                dmap: dmq ? dmq.slice() : null, dcw:this.dcw, dch:this.dch, thr:this.threshold(), mFull:this.lastFull || 0, w0:run.w0};
+    const free = () => { if(fr.refs <= 0 && !fr.enc) full.busy = 0; };
+    fr.hold = () => { fr.refs++; return fr; };
+    fr.release = () => { fr.refs--; free(); };
+    // JPEG kodlaması (yalnız kare çekilirse); çağıran, sonuç gelene kadar kareyi tutar
+    fr.blob = () => fr.bp || (fr.bp = new Promise(res => {
+      if(fr.refs <= 0){ res(null); return; }
+      fr.enc = true;
+      full.toBlob(b => { fr.enc = false; free(); res(b); }, 'image/jpeg', 0.92);
+    }));
+    return fr;
+  }
+  /* hızlı kontrole gidecek küçük kopya (karenin tam boy tuvalinden) */
+  snapshot(fr){
+    const full = fr.full;
     const qs = Math.min(1, QUICK_MAX/Math.max(this.fw, this.fh));
     const qw = Math.round(this.fw*qs), qh = Math.round(this.fh*qs);
     if(!this.qc || this.qc.width !== qw || this.qc.height !== qh) this.qc = mk(qw, qh, true);
@@ -965,18 +1079,7 @@ class FrameScanner {
       x2.drawImage(full, 0, 0, qw*2, qh*2); from = this.q2;
     }
     qx.drawImage(from, 0, 0, qw, qh);
-    full.busy = 1;
-    // kadrajın herhangi bir yerinde belirgin biçimde kıpırdayan bir şey var mı (çekilen el, parmak)?
-    let hot = 0; const dmq = this.dmap;
-    if(dmq) for(let i=0;i<dmq.length;i++) if(dmq[i] > 22) hot++;
-    const snap = {busy: !!dmq && hot >= Math.max(4, dmq.length*0.004),t:c.t, sharp:c.sharp, sig:C.pageSignature(this.lastPx, this.sw, this.sh, null), qc:this.qc, moveSum:this.moveSum,
-                  dmap: this.dmap ? this.dmap.slice() : null, dcw:this.dcw, dch:this.dch, thr:this.threshold(), mFull:this.lastFull || 0, w0:this.run.w0, bp:null, rel:false};
-    snap.release = () => { if(!snap.rel){ snap.rel = true; full.busy = 0; } };
-    snap.blob = () => snap.bp || (snap.bp = new Promise(res => {
-      if(snap.rel){ res(null); return; }
-      full.toBlob(b => { snap.release(); res(b); }, 'image/jpeg', 0.92);
-    }));
-    return snap;
+    return this.qc;
   }
   /* canlıda çekimden önce: sayfa tam görünüyor mu, parmak yazı üstünde mi */
   gateOk(det){
@@ -1206,7 +1309,8 @@ function computeDocIssues(){
   const med = sh.length ? sh[sh.length>>1] : 0;
   for(const p of state.pages){
     p.issues = (p.issues||[]).filter(i => i.code !== 'blur');
-    if(med && done.length >= 4 && p.metrics && p.metrics.sharp > 0 && p.metrics.sharp < med*0.62)
+    // (yazısız sayfanın — kapak, resim — netlik ölçüsü yazı sayfalarıyla karşılaştırılamaz)
+    if(med && done.length >= 4 && p.metrics && p.metrics.sharp > 0 && p.metrics.sharp < med*0.62 && !(p.noText && p.metrics.mode !== 'yazı'))
       p.issues.push({code:'blur', side:-1});
   }
 }
@@ -1427,7 +1531,7 @@ const cam = {
     this.retake = opts.retake ? {ids:opts.retake.slice(), i:0} : null;
     // oturum: yeniden çekimde sıra/tekrar kuralları uygulanmaz
     const last = state.pages[state.pages.length - 1];
-    this.sess = {id: Date.now(), recent:[], refS:[], refC:[], refL:[], refW:[], ang:null, last:null};
+    this.sess = {id: Date.now(), recent:[], refS:[], refC:[], refF:[], refW:[], ang:null, last:null};
     this.t0 = performance.now(); this.resNoted = false;
     diagLog.push('--- canlı çekim ' + new Date().toLocaleTimeString('tr-TR') + (opts.retake ? ' (yeniden çekim)' : ''));
     for(const p of state.pages.slice(-12).reverse()) if(p.lineSig) this.sess.recent.push({id:p.id, lineSig:p.lineSig, side:p.side});
@@ -1445,8 +1549,13 @@ const cam = {
   newScanner(){
     this.scanner = new FrameScanner({live:true, stableMs:settings.stableMs, debug:!!window.__scanDebug});
     if(window.__scanDebug){ window.__camDebugLog = this.scanner.debug; window.__camEvents = window.__camEvents || []; }
-    this.live = {phase:'hunt', inflight:false, lastTryWall:0, tries:0, firstTryT:0, tryMove:0,
-                 bestFail:null, verdict:null, moveAt:0, quad:null, quadAt:0, quadOk:false, upTries:0, dupNote:null};
+    if(this.live && this.live.best) this.live.best.release();
+    if(this.live && this.live.alt) this.live.alt.release();
+    if(this.live) this.dropKeep(this.live);
+    this.live = {phase:'hunt', inflight:false, lastTryWall:0, tries:0, firstTryT:0, tryMove:0, verdict:null, verdictAt:0,
+                 moveAt:0, quad:null, quadAt:0, quadOk:false, upTries:0, dupNote:null,
+                 viewN:0, viewMove:0, viewAt:0, keep:null, chkMove:null, incons:0,
+                 best:null, alt:null, top:null, topA:null, pre:null, steady:false, blurS:null, blurNoted:false, cap:null};
   },
   ev(...a){ if(window.__camEvents) window.__camEvents.push([+(performance.now()/1000).toFixed(2), ...a]); },
   /* tanı günlüğü: "ham kareleri paylaş" dosyasının son sayfasına yazılır (telefondaki gecikmenin nedeni görülebilsin) */
@@ -1474,59 +1583,175 @@ const cam = {
     if('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(step);
     else this.raf = requestAnimationFrame(step);
   },
-  /* her analiz edilen kare. ANINDA çekim: sayfa durur durmaz (ilk durgun kare) arka planda denetlenir; yazı tam ve
-     netse hemen çekilir (bip). Reddedilen kare beklemeden yeniden denenir. Çekilen sayfa kadrajda kaldıkça seyrek
-     aralıkla yeniden bakılır: daha iyi bir kare gelirse sessizce onunla değiştirilir. */
+  /* her analiz edilen kare. ANINDA ve NET çekim:
+     • sayfa durur durmaz (ilk durgun kare) arka planda hızlı kontrol başlar: yazı tam mı, kadrajda mı, yeni sayfa mı;
+     • bu sırada (denetim sürerken) her durgun karenin tam çözünürlüklü kopyasında ince netlik haritası çıkarılır,
+       görünümün en net karesi elde tutulur → onay geldiği anda çekilecek kare hazırdır;
+     • kontrol "tamam" derse çekilen kare kontrol edilen kare değil, görünümün EN NET karesidir. Netlik artık artmıyorsa
+       (sayfa ve odak oturmuş) ve yazının hiçbir bölgesi bulanık değilse hemen çekilir (bip);
+     • bir bölge bulanık kalıyorsa onay verilmez, ne yapılacağı yazılır; düzelmezse ~3 sn sonra UYARI sesiyle alınır;
+     • onay gelmeden / çekim yapılmadan görüntü değiştiyse (hızlı çevirme) o görünümün elde tutulan en iyi karesi alınır;
+     • çekimden sonra sayfa kadrajda kaldıkça daha net bir kare gelirse sessizce onunla değiştirilir. */
   step(r){
     const L = this.live, sc = this.scanner, now = performance.now();
+    // aday kareler "görünüm"e bağlıdır: kısa kıpırtılar duruşu böler ama sayfa aynıdır; görünüm ancak görüntü kayda
+    // değer oynadığında (birikmiş hareket) biter
+    if(L.viewN && sc.moveSum - L.viewMove >= MOVE_CHECK) this.endView(true);
     const done = L.phase === 'done';
     if(r.state !== 'still') return this.show(r, done ? 'done' : 'moving');
-    if(L.inflight) return this.show(r, done ? 'done' : 'check');
-    const since = now - L.lastTryWall;
+    const since = now - L.lastTryWall, moved = sc.moveSum - L.moveAt;
+    // doğrulanmış yazı çerçevesi: görüntü kayda değer oynamadıkça geçerlidir (kısa kıpırtılar duruşu böler ama sayfa aynıdır)
+    if(L.pre && (sc.moveSum - L.pre.moveSum >= MOVE_CHECK || now - L.pre.at > PRE_TTL)) L.pre = null;
+    let due = false;
     if(done){
-      // kayda değer hareket olduysa (sayfa çevrildi, öbür sayfaya geçildi) HEMEN; yoksa seyrek aralıkla
-      const moved = sc.moveSum - L.moveAt;
-      if(moved < MOVE_CHECK && since < (L.upTries >= 3 ? 1500 : 700)) return this.show(r, 'done');
+      // kayda değer hareket olduysa (sayfa çevrildi, öbür sayfaya geçildi) HEMEN; yoksa seyrek aralıkla yeniden bakılır
+      due = !L.inflight && (moved >= MOVE_CHECK || since >= (L.upTries >= 3 ? 1500 : 700));
     } else {
       // görüntü değiştiyse bu sayfanın deneme sayacı sıfırlanır
       if(L.tries && sc.moveSum - L.tryMove >= TURN_MIN) this.resetTry();
       // aynı görüntü üst üste reddediliyorsa denemelerin arası açılır (işlemci / pil)
-      if(since < (L.tries >= 4 ? 300 : 50)) return this.show(r, 'check');
-      // netlik oturumdaki tipik netliğin çok altındaysa çok kısa bir süre daha net kare beklenir
-      const refL = median(this.sess.refL), cur = sc.run && sc.run.cur;
-      if(refL && cur && cur.sharp < refL*0.5 && r.dur < 0.3) return this.show(r, 'steady');
+      due = !L.inflight && !L.pre && since >= (L.tries >= 4 ? 300 : 50);
     }
-    const snap = sc.snapshot();
-    if(snap) this.check(snap);
-    this.show(r, done ? 'done' : 'check');
+    const cap = L.cap;
+    // çekimden sonra görüntü değiştiyse (yeni sayfa olabilir) denetim sürerken de aday kareler toplanır
+    const collect = !done || moved >= MOVE_CHECK;
+    const watch = collect || (!!cap && sc.moveSum - cap.moveSum < MOVE_CHECK && cap.swaps < 2 && (cap.blur || now - cap.at < 1200));
+    if(!watch && !due) return this.show(r, 'done');
+    const fr = sc.grab();
+    if(!fr) return this.show(r, done ? 'done' : 'check');
+    L.steady = fr.steady;
+    if(collect){
+      if(!L.viewN){ L.viewMove = fr.moveSum; L.viewAt = now; }
+      L.viewN++;
+      // görünümün en net karesi: zirveye en çok %3 uzak olan EN YENİ kare (el kadrajdan çekildikçe yenisi yeğlenir).
+      // best: yalnız "oturmuş" kareler arasından (çekilecek kare); alt: tüm kareler arasından (oturma hiç gelmezse yedek)
+      if(!L.topA || this.sharper(fr, L.topA) > 1.015) L.topA = {s: fr.s};
+      if(!L.alt || this.sharper(fr, L.topA) >= 0.97){ if(L.alt) L.alt.release(); L.alt = fr.hold(); }
+      if(fr.steady){
+        if(!L.top || this.sharper(fr, L.top) > 1.015) L.top = {s: fr.s};
+        if(!L.best || this.sharper(fr, L.top) >= 0.97){ if(L.best) L.best.release(); L.best = fr.hold(); }
+      }
+      if(due && !done){
+        // netlik hızla artıyorsa (odak/sayfa oturuyor) ya da bulanık bulunan kareden beri netleşme yoksa kısa süre beklenir
+        const young = now - fr.w0 < 350;
+        if(young && fr.n >= 3 && fr.q90 > 1.25) due = false;
+        else if(L.blurS && since < 450 && !(fr.steady && this.sharper(fr, {s: L.blurS}) > 1.1) && this.sharper(fr, {s: L.blurS}) < 1.25) due = false;
+      }
+    } else if(watch) this.swapIfSharper(fr, now);
+    if(due) this.check(fr);
+    else if(!done && L.pre) this.tryCapture(now);
+    fr.release();
+    this.show(r, L.phase === 'done' ? 'done' : 'check');
   },
+  /* görünüm bitti (görüntü kayda değer oynadı): aday kareler bırakılır. Önce
+     • yazısı doğrulanmış ama çekimi bekleyen sayfa varsa eldeki en iyi kare hemen alınır (bulanık değilse);
+     • o görünümün denetimi sürüyorsa en iyi aday, sonuç gelene kadar elde tutulur (L.keep): hızlı çevirmede onay,
+       sayfa kadrajdan çıktıktan sonra gelse de sayfa alınır (verdict → lateCapture). */
+  endView(final){
+    const L = this.live;
+    if(final && L.pre && L.phase !== 'done' && (L.best || L.alt)) this.tryCapture(performance.now(), true);
+    if(final && L.inflight && L.chkMove != null && L.chkMove >= L.viewMove && (L.best || L.alt)){
+      this.dropKeep(L);
+      L.keep = (L.best || L.alt).hold();
+    }
+    if(L.best){ L.best.release(); L.best = null; }
+    if(L.alt){ L.alt.release(); L.alt = null; }
+    L.top = null; L.topA = null; L.steady = false; L.viewN = 0; L.incons = 0;
+  },
+  dropKeep(L){ if(L.keep){ L.keep.release(); L.keep = null; } },
   resetTry(){
     const L = this.live;
-    if(L.bestFail) L.bestFail.snap.release();
-    L.tries = 0; L.bestFail = null; L.verdict = null;
+    L.tries = 0; L.verdict = null; L.blurS = null;
   },
-  check(snap){
+  /* iki karenin ince netlik oranı (aynı pencereler; geometrik ortalama). >1: a daha net */
+  sharper(a, b){
+    let sum = 0, n = 0;
+    for(let k=0;k<a.s.length;k++){
+      const x = a.s[k], y = b.s[k];
+      if(x < 0.08 && y < 0.08) continue;
+      sum += Math.log(Math.max(0.5, Math.min(2, (x + 0.02)/(y + 0.02)))); n++;
+    }
+    return n >= 4 ? Math.exp(sum/n) : 1;
+  },
+  /* yazı bloğunun içindeki pencerelerde bölgesel netlik (üst / orta / alt bant). Bir bant, sayfanın en net bandına
+     göre belirgin biçimde bulanıksa (ya da sayfa bu oturumdaki sayfalara göre bulanıksa) kare kabul edilmez. */
+  blurOf(fr, quadN){
+    const g = fr.grid, S = this.sess;
+    if(!quadN || !g) return {unknown:true, n:0};
+    const q = quadN.map(p => [p[0]*g.fw, p[1]*g.fh]);
+    const inside = (x, y) => { let c = false; for(let i=0, j=3; i<4; j=i++){ const a = q[i], b = q[j];
+      if((a[1] > y) !== (b[1] > y) && x < (b[0] - a[0])*(y - a[1])/(b[1] - a[1]) + a[0]) c = !c; } return c; };
+    const dl = (a, b, x, y) => Math.abs((b[0] - a[0])*(y - a[1]) - (b[1] - a[1])*(x - a[0]))/Math.max(1e-6, Math.hypot(b[0] - a[0], b[1] - a[1]));
+    const bands = [[], [], []], bd = [[], [], []], all = [];
+    for(let k=0;k<g.N;k++){
+      if(!fr.tx[k]) continue;
+      const x = g.xs[k] + g.P/2, y = g.ys[k] + g.P/2;
+      if(!inside(x, y)) continue;
+      const dt = dl(q[0], q[1], x, y), db = dl(q[3], q[2], x, y);
+      const b = Math.min(2, Math.floor(dt/Math.max(1e-6, dt + db)*3));
+      bands[b].push(fr.s[k]); bd[b].push(fr.d[k]); all.push(fr.s[k]);
+    }
+    if(all.length < 6) return {unknown:true, n:all.length};
+    const bs = bands.map(v => v.length >= 3 ? median(v) : -1), ds = bd.map(v => v.length >= 3 ? median(v) : -1);
+    const page = median(all), best = Math.max(bs[0], bs[1], bs[2]), bestD = Math.max(ds[0], ds[1], ds[2]);
+    let worst = -1, wr = 1;
+    for(let k=0;k<3;k++){
+      if(bs[k] < 0 || best <= 0) continue;
+      const rr = Math.min(bs[k]/best, bestD > 0 ? ds[k]/bestD/0.85 : 9);    // derinlik oranı 0.85'in altına inince de sayılır
+      if(rr < wr){ wr = rr; worst = k; }
+    }
+    const ref = S.refF.length >= 2 ? median(S.refF) : 0;
+    // yama yama bulanıklık: yazı pencerelerinin kayda değer bölümü sayfanın net pencerelerinin yarısından bulanık
+    // (havada duran yaprak, çift görüntülü köşe). Temiz gerçek sayfalarda bu oran en çok ~%10'dur. Resimli sayfada
+    // yanılabileceği için yalnız beklenemeyen çekimlerde (görünüm bitmiş) kullanılır.
+    const srt = all.slice().sort((u, w) => u - w), q75 = srt[Math.floor(srt.length*0.75)];
+    let low = 0; for(const v of all) if(v < q75*0.5) low++;
+    const out = {n: all.length, page, bs, wr, worst, ref, bad:false, where:-1, low, patchy: low >= Math.max(6, all.length*0.22)};
+    if(wr < BLUR_BAND){ out.bad = true; out.where = worst; }
+    else if((ref && page < ref*BLUR_PAGE) || page < BLUR_ABS) out.bad = true;
+    out.hint = !out.bad ? '' : out.where === 0 ? 'Üst kısım bulanık — telefonu biraz uzaklaştır, sayfaya paralel tut' :
+               out.where === 2 ? 'Alt kısım bulanık — telefonu biraz uzaklaştır, sayfaya paralel tut' :
+               out.where === 1 ? 'Orta kısım bulanık — telefonu sabit tut' : 'Bulanık — telefonu sabit tut, biraz uzaklaştır';
+    return out;
+  },
+  /* yazı bloğunun yakınında kıpırdayan bir şey (çekilmekte olan el) var mı: blok farkı haritasında sıcak bloklar */
+  handNear(fr, quadN){
+    const dm = fr.dmap, cw = fr.dcw, ch = fr.dch;
+    if(!dm || !cw || !quadN) return false;
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+    for(const p of quadN){ x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }
+    const ax = Math.max(0, Math.floor((x0 - 0.05)*cw)), bx = Math.min(cw - 1, Math.ceil((x1 + 0.05)*cw));
+    const ay = Math.max(0, Math.floor((y0 - 0.05)*ch)), by = Math.min(ch - 1, Math.ceil((y1 + 0.05)*ch));
+    let hot = 0;
+    for(let y=ay;y<=by;y++) for(let x=ax;x<=bx;x++) if(dm[y*cw + x] > 22) hot++;
+    return hot >= 3;
+  },
+  check(fr){
     const L = this.live;
-    L.inflight = true; L.lastTryWall = performance.now();
-    if(L.phase !== 'done' && !L.tries){ L.firstTryT = performance.now(); L.tryMove = snap.moveSum; }
+    L.inflight = true; L.lastTryWall = performance.now(); L.chkMove = fr.moveSum;
+    if(L.phase !== 'done' && !L.tries){ L.firstTryT = performance.now(); L.tryMove = fr.moveSum; }
     const t0 = performance.now();
-    quick.run(snap.qc, Object.assign(procOpts({rot:0}), {rot:0, angHint: this.sess.ang})).then(res => {
-      L.inflight = false;
-      if(this.live !== L || !this.active){ snap.release(); return; }
+    fr.hold();
+    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: this.sess.ang})).then(res => {
+      L.inflight = false; L.chkMove = null;
+      if(this.live !== L || !this.active){ fr.release(); this.dropKeep(L); return; }
       res.ms = performance.now() - t0;
       if(window.__scanDebug) (window.__quickDbg = window.__quickDbg || []).push(Math.round(res.ms) + 'ms ' + res.dbg);
-      if(!this.verdict(res, snap)) snap.release();
+      this.verdict(res, fr);
+      fr.release(); this.dropKeep(L);
     }).catch(err => {
-      L.inflight = false;
+      L.inflight = false; L.chkMove = null;
       log('hızlı kontrol hatası:', err && err.message);
       // kontrol yapılamıyorsa çekimi engelleme
-      if(this.live === L && this.active && L.phase !== 'done') this.accept({issues:[], metrics:{}, lineSig:null}, snap, null);
-      else snap.release();
+      if(this.live === L && this.active && L.phase !== 'done') this.accept({issues:[], metrics:{}, lineSig:null}, fr, null, null);
+      fr.release(); this.dropKeep(L);
     });
   },
-  /* hızlı kontrol sonucu → kabul / ret. ok: hemen çekilir. hard: asla çekilmez (kesik, bulanık).
-     soft: küçük kusur → kısa süre daha iyisi beklenir, gelmezse eldeki en iyi kare alınır
-     (slow: belirsiz durum — yazısız sayfa, bulanıklık şüphesi, çevrilmekte olan sayfa → daha uzun beklenir) */
+  /* hızlı kontrol sonucu → kabul / ret. ok: çekilebilir. hard: asla çekilmez (kesik, parmak).
+     soft: küçük kusur → kısa süre daha iyisi beklenir, gelmezse eldeki en net kare alınır
+     (slow: belirsiz durum — yazısız sayfa, çevrilmekte olan sayfa → daha uzun beklenir).
+     Bulanıklığa burada değil, çekilecek karenin ince netlik haritasında bakılır (tryCapture); yalnız yazısı
+     ölçülemeyecek kadar bulanık kare (blur) yeniden denetlenir. */
   judge(res, snap){
     const m = res.metrics || {}, iss = res.issues || [], S = this.sess;
     const has = c => iss.some(i => i.code === c);
@@ -1539,13 +1764,10 @@ const cam = {
     if(cut) return {ok:false, hard:true, code:'cut', hint: cutHint(cut.side)};
     if(has('nopage')) return {ok:false, hard:true, code:'nopage', hint:'Sayfayı kadraja al'};
     if(m.mode === 'yazı'){
-      // silik/bulanık yazı: kesin bulanık her zaman reddedilir, hafif bulanık oturumun tipik netliğine göre
-      // (çok bulanık yazıda hiç koyu piksel kalmaz → crisp ölçülemez (-1): bu da bulanıktır)
-      if(m.sharp < 95 || (m.crisp >= 0 ? m.crisp < 0.14 : m.lines >= 5)) return {ok:false, hard:true, code:'blur', hint:'Bulanık — telefonu sabit tut'};
-      const rc = median(S.refC), rs = median(S.refS);
-      if(S.refC.length >= 2 && m.crisp >= 0 && m.crisp < rc*0.55 && m.sharp < rs*0.8) return {ok:false, soft:true, slow:true, code:'soft-blur', hint:'Bulanık — telefonu sabit tut'};
-      // netlik oturumdaki sayfaların belirgin altında: hareket bulanıklığı, çevrilmekte olan sayfa
-      if(S.refS.length >= 2 && m.sharp < rs*0.72) return {ok:false, soft:true, slow:true, code:'soft-blur', hint:'Bulanık — telefonu sabit tut'};
+      // denetlenen kare bulanık (odak arıyor, sayfa iniyor): yazı çerçevesi yine de geçerlidir; çekilecek kare bundan
+      // belirgin biçimde net olmak zorundadır (tryCapture). Çok bulanık yazıda koyu piksel kalmaz → crisp ölçülemez (-1).
+      const b0 = snap.fine0, ref = S.refF.length >= 2 ? median(S.refF) : 0;
+      const blur0 = !!b0 && !b0.unknown && (b0.page < BLUR_ABS || (ref && b0.page < ref*BLUR_PAGE));
       const r = m.room;
       if(r){
         // yazının kendisi kadraj kenarına dayanıyor (satır uçları / ilk-son satır görünmüyor) → kesik, asla kabul edilmez
@@ -1558,6 +1780,7 @@ const cam = {
       if(S.refW.length >= 2 && m.cpl && m.cpl < median(S.refW)*0.72) return {ok:false, soft:true, slow:true, code:'tilt', hint:'Sayfayı düz tut'};
       if(m.tilt > 2.2) return {ok:false, soft:true, code:'tilt', hint:'Telefonu sayfaya paralel tut'};
       if(m.srcPitch && m.srcPitch < 9) return {ok:false, soft:true, code:'far', hint:'Biraz yaklaş — yazı çok küçük'};
+      if(blur0) return {ok:true, blur0:true};
     }
     return {ok:true};
   },
@@ -1587,76 +1810,195 @@ const cam = {
     let sm = 0; for(let i=0;i<m;i++) sm += vals[i];
     return sm/m;
   },
-  /* denetim sonucu işlenir; kare tutulduysa (çekildi / yedekte) true döner, yoksa çağıran kareyi bırakır */
+  /* denetim sonucu (snap = denetlenen kare) */
   verdict(res, snap){
     const L = this.live, S = this.sess, now = performance.now(), m = res.metrics || {};
     if(m.ang != null) S.ang = m.ang;
+    snap.fine0 = this.blurOf(snap, (m.contN || m.blockN || m.quadN));       // denetlenen karenin ince netliği
     let v = this.judge(res, snap);
     // yazı bloğunun içinde hareket var (sayfa hâlâ iniyor / çevriliyor): bu kare alınmaz, hemen yeniden bakılır
-    const lm = this.localMotion(snap, m.quadN);
+    const lm = this.localMotion(snap, (m.blockN || m.quadN));
     if(v.ok && lm > Math.max(6, snap.thr*2.5)) v = {ok:false, soft:true, slow:true, code:'moving', hint:''};
-    L.quad = m.quadN || null; L.quadAt = now; L.quadOk = v.ok;
+    L.quad = (m.blockN || m.quadN) || null; L.quadAt = now; L.quadOk = v.ok;
     const moved = snap.moveSum - L.moveAt;
     this.ev('kontrol', L.phase, v.ok ? 'tamam' : v.code, m.side || '', Math.round(res.ms || 0),
             [m.room, +(m.crisp||0).toFixed(2), Math.round(m.sharp||0), Math.round(moved), +lm.toFixed(1)]);
-    // aynı sayfa mı? Son sayfalarla satır imzası; imza tutmasa da son çekimden beri kayda değer hareket yoksa ve
-    // görüntü aynıysa aynı sayfadır (sayfa çevrilmeden ikinci kez çekilmez)
-    let dupK = -1;
+    // aynı sayfa mı? Son sayfalarla satır imzası; satırlar karşılaştırılamıyorsa son çekimden beri kayda değer hareket
+    // yoksa ve görüntü aynıysa aynı sayfadır (sayfa çevrilmeden ikinci kez çekilmez)
+    let dupK = -1, dupWhy = '';
     if(!this.retake){
-      if(res.lineSig) for(let k=0; k<S.recent.length; k++){ const q = S.recent[k]; if(q.lineSig && C.lineMatch(res.lineSig, q.lineSig) >= 0.5){ dupK = k; break; } }
+      if(res.lineSig) for(let k=0; k<S.recent.length; k++){ const q = S.recent[k]; if(!q.lineSig) continue;
+        const mm = C.lineMatch(res.lineSig, q.lineSig, k === 0); if(mm >= 0.5){ dupK = k; dupWhy = `satır imzası ${mm.toFixed(2)}`; break; } }
       if(dupK < 0 && S.last && S.last.sig && S.recent[0] && S.recent[0].id === S.last.id){
         const dd = C.sigDiff(snap.sig, S.last.sig, 2);
-        // satırlar karşılaştırılamıyorsa (son çekim ya da bu kare yazısız): hareket yok + görüntü benzer → aynı sayfa
-        if(!res.lineSig || !S.last.lined){ if((L.phase === 'done' && moved < TURN_MIN && dd < NEW_T) || dd < DUP_T) dupK = 0; }
+        // satır imzası seyrek sayfada (içindekiler, kısa satırlar, yazısız) kararsızdır: orada son çekimden beri sayfa
+        // çevirecek kadar hareket yoksa ve görüntü benzerse aynı sayfadır. Dolu yazı sayfasında imzaya güvenilir.
+        const sparse = !res.lineSig || !S.last.lined || res.lineSig.length < 20 || S.last.rows < 20;
+        if(sparse){ if((L.phase === 'done' && moved < TURN_MIN && dd < NEW_T) || ((!res.lineSig || !S.last.lined) && dd < DUP_T)){ dupK = 0; dupWhy = `görüntü farkı ${dd.toFixed(1)}, hareket ${Math.round(moved)}, imza ${res.lineSig ? res.lineSig.length : 'yok'}/${S.last.lined ? S.last.rows : 'yok'}`; } }
+        // kadraj hiç oynamadıysa (aynı duruş) görülen sayfa da aynıdır — imza tutmasa bile
+        if(dupK < 0 && L.phase === 'done' && ((L.cap && L.cap.run === snap.run) || moved < 5)){ dupK = 0; dupWhy = 'kadraj oynamadı'; }
       }
     }
     if(L.phase !== 'done' || dupK < 0)
-      this.note(`k ${L.phase === 'done' ? 'yeni' : 'ara'} ${v.ok ? 'TAMAM' : v.code} ${Math.round(res.ms || 0)}ms(iş ${m.ms || 0}) pay ${m.room ? m.room.join('/') : '-'} ek ${(m.extraTop||0).toFixed(1)}/${(m.extraBot||0).toFixed(1)} net ${Math.round(m.sharp||0)}/${(m.crisp||0).toFixed(2)} satır ${m.lines||0} hm ${Math.round(moved)} ym ${lm.toFixed(1)}/${snap.thr.toFixed(1)}`);
+      this.note(`k ${L.phase === 'done' ? 'yeni' : 'ara'} ${v.ok ? (v.blur0 ? 'bulanık' : 'TAMAM') : v.code} ${Math.round(res.ms || 0)}ms(iş ${m.ms || 0}) pay ${m.room ? m.room.join('/') : '-'} ek ${(m.extraTop||0).toFixed(1)}/${(m.extraBot||0).toFixed(1)} net ${snap.fine0 && !snap.fine0.unknown ? snap.fine0.page.toFixed(2) : '-'} satır ${m.lines||0} hm ${Math.round(moved)} ym ${lm.toFixed(1)}/${snap.thr.toFixed(1)}`);
     if(dupK >= 0){
       const q = S.recent[dupK];
+      if(L.phase !== 'done') this.note(`  → çekilmiş sayfa (${dupK + 1} önceki; ${dupWhy})`);
       if(L.phase === 'done') L.upTries++;
       this.markDone(snap);
-      if(dupK === 0){ if(v.ok) return this.upgrade(res, snap); }   // son sayfa hâlâ kadrajda: daha iyi kare → sessizce değiştir
+      if(dupK === 0){ if(v.ok) this.upgrade(res, snap); }   // son sayfa hâlâ kadrajda: daha iyi kare → sessizce değiştir
       else if(L.dupNote !== q.id){
         L.dupNote = q.id; this.ev('tekrar', dupK, q.id);
         this.chime(); this.flash(); this.sticky('✓ Bu sayfa zaten çekildi — sonrakine geç', 'ok', 1200);
       }
-      return false;
+      return;
     }
     if(L.phase === 'done'){
       // yeni bir görüntü: çekilen sayfa değişti
       this.ev('yeni-sayfa');
-      L.phase = 'hunt'; this.resetTry(); L.firstTryT = now - (res.ms || 0); L.tryMove = snap.moveSum; L.upTries = 0; L.dupNote = null;
+      L.phase = 'hunt'; this.resetTry(); L.firstTryT = now - (res.ms || 0); L.tryMove = snap.moveSum; L.upTries = 0; L.dupNote = null; L.cap = null;
     }
+    // denetlenen görüntü hâlâ geçerli mi (denetim sürerken kayda değer hareket olduysa sonuç eskidir)
+    const same = this.scanner.moveSum - snap.moveSum < MOVE_CHECK;
     L.tries++;
     if(!v.ok){
-      L.verdict = v;
-      if(!v.soft) return false;
-      // eldeki en iyi kusurlu kare yedekte tutulur
-      const q = this.quality(m);
-      let kept = false;
-      if(!L.bestFail || q > L.bestFail.q){ if(L.bestFail) L.bestFail.snap.release(); L.bestFail = {res, snap, v, q}; kept = true; }
-      // "mükemmeli bekleme": küçük kusurda ~½ sn, belirsiz durumda ~1.5 sn sonra eldeki en iyi kare alınır
-      const bf = L.bestFail, slow = bf.v.slow;
-      if(now - L.firstTryT >= (slow ? 1500 : 500) && L.tries >= (slow ? 3 : 2)){
-        L.bestFail = null;
-        this.accept(bf.res, bf.snap, bf.v);
-        return bf.snap === snap;
+      L.verdict = v; L.verdictAt = now; L.pre = null;
+      if(!v.soft) return;
+      // "mükemmeli bekleme": küçük kusurda ~½ sn, belirsiz durumda ~1.5 sn sonra bu duruşun en net karesi alınır
+      if(now - L.firstTryT >= (v.slow ? 1500 : 500) && L.tries >= (v.slow ? 3 : 2) && same){
+        L.pre = {res, at: now, soft: v, moveSum: snap.moveSum, s0: snap.s, sig: snap.sig};
+        this.tryCapture(now);
       }
-      return kept;
+      return;
     }
-    L.verdict = null;
-    this.accept(res, snap, null);
-    return true;
+    if(v.blur0){
+      // denetlenen kare bulanık (odak arıyor, sayfa iniyor, yaprak havada): bu kare üzerinden doğrulama yapılmaz —
+      // görüntü netleşince yeniden denetlenir (step: blurS). Hiç düzelmiyorsa ~3 sn sonra eldeki kare UYARIYLA alınır.
+      L.verdict = {ok:false, code:'blur', hint:'Bulanık — telefonu sabit tut'}; L.verdictAt = now; L.blurS = snap.s; L.pre = null;
+      if(!(same && now - L.firstTryT >= BLUR_WAIT)) return;
+    } else { L.verdict = null; L.verdictAt = now; L.blurS = null; }
+    if(!same) return this.lateCapture(res, snap);
+    L.pre = {res, at: now, soft: null, moveSum: snap.moveSum, s0: snap.s, sig: snap.sig};
+    this.tryCapture(now);
+  },
+  /* yazısı doğrulanmış görünümde çekim: görünümün en net karesi — netlik oturmuş ve hiçbir bölge bulanık değilse.
+     final: görünüm bitiyor (beklenemez) → eldeki en iyi kare bulanık değilse alınır, bulanıksa alınmaz. */
+  tryCapture(now, final){
+    const L = this.live, S = this.sess, pre = L.pre;
+    if(!pre) return;
+    const m = pre.res.metrics || {}, q = m.blockN || m.quadN, cq = m.contN || q;
+    // çekilecek kare: oturmuş karelerin en neti. Hiç oturmuş kare yoksa (el titremesi) eldeki en net kare: oturumun
+    // tipik netliğindeyse hemen, değilse ~⅓ sn içinde oturmuş kare gelmezse
+    const t0 = Math.max(pre.at, L.viewAt || 0);
+    let B = L.best, bl = null;
+    if(!B){
+      B = L.alt;
+      if(!B) return;
+      if(!final){
+        if(L.viewN < 3) return;
+        bl = this.blurOf(B, cq);
+        const ref = S.refF.length >= 2 ? median(S.refF) : 0;
+        if(!(ref && !bl.unknown && !bl.bad && bl.page >= ref*0.92 && bl.wr >= 0.8) && now - t0 < 350) return;
+      }
+    }
+    // çerçeve doğrulandığından beri görüntü değiştiyse (el kadraja girdi, sayfa oynadı) çerçeve geçersizdir: yeniden denetlenir
+    const preDd = pre.sig ? C.sigDiff(B.sig, pre.sig, 2) : 0;
+    if(preDd >= PRE_SIG){ this.note(`çerçeve eskidi (görüntü farkı ${preDd.toFixed(1)})`); L.pre = null; return; }
+    L.preDd = preDd;
+    // çekilecek kare, denetlenen kareyle AYNI görüntüyü göstermeli (yaprak çekildi, sayfa oturdu, odak değişti → içerik
+    // ve satır imzası başka): tutarsızsa yeniden denetlenir. Aynı görünümde üst üste tutarsızlıkta (gürültü) vazgeçilir.
+    if(pre.s0 && L.incons < 2 && !this.consistent(B, pre.s0)){
+      L.incons++; L.pre = null;
+      if(!final) this.note('çerçeve eskidi (netlik deseni değişti): yeniden denetim');
+      return;
+    }
+    // yazının yanında el kıpırdıyor ya da yazı bloğu oynuyor: sakin kare beklenir (en çok ~½ sn)
+    if(!final && now - t0 < 500 && (this.handNear(B, q) || this.localMotion(B, q) > Math.max(6, B.thr*2.5))) return;
+    if(!bl) bl = this.blurOf(B, cq);
+    if(final && (bl.bad || bl.patchy)){ this.note(`görünüm bitti: kare bulanık, alınmadı (${this.fineTxt(bl)})`); L.pre = null; return; }
+    if(bl.bad){
+      L.verdict = {ok:false, code:'blur', hint: bl.hint}; L.verdictAt = now;
+      if(!L.blurNoted){ L.blurNoted = true; this.note(`bulanık bölge: ${this.fineTxt(bl)}`); }
+      if(window.__scanDebug && L.blurDbg !== L.firstTryT){ L.blurDbg = L.firstTryT; (window.__fineDbg = window.__fineDbg || []).push({t: +(now/1000).toFixed(2), s: Array.from(B.s).map(x => +x.toFixed(2)), tx: Array.from(B.tx), d: Array.from(B.d).map(x => +x.toFixed(2)), quadN: cq, n: B.n, bl}); }
+      if(now - L.firstTryT < BLUR_WAIT) return;          // onay yok: daha net kare beklenir
+      L.pre = null;
+      return this.accept(pre.res, B, {soft:true, slow:true, code:'blur', hint: bl.hint}, bl);
+    }
+    L.pre = null;
+    if(final) this.note('görünüm bitti: eldeki en iyi kare alındı');
+    this.accept(pre.res, B, pre.soft, bl);
+  },
+  /* iki kare aynı görüntüyü mü gösteriyor (ince netlik haritaları): dokulu pencerelerin en az %80'inde netlik oranı
+     ×1.6 içinde. Titreme / küçük kayma bunu bozmaz; yaprağın çekilmesi, sayfanın oturması, odağın değişmesi bozar. */
+  consistent(fr, s0){
+    let n = 0, ok = 0;
+    for(let k=0;k<fr.s.length;k++){
+      const a = fr.s[k], b = s0[k];
+      if(a < 0.15 && b < 0.15) continue;
+      n++;
+      const r = (a + 0.03)/(b + 0.03);
+      if(r >= 0.625 && r <= 1.6) ok++;
+    }
+    return n < 6 || ok >= n*0.8;
+  },
+  /* onay, görünüm bittikten sonra geldi (hızlı çevirme): o görünümden elde tutulan en iyi kare (denetlenen kareyle
+     aynı görüntüyü gösteriyorsa) — yoksa denetlenen karenin kendisi — bulanık değilse alınır */
+  lateCapture(res, snap){
+    const L = this.live, m = res.metrics || {}, cq = m.contN || m.blockN || m.quadN;
+    const cands = [];
+    if(L.keep && L.keep !== snap && C.sigDiff(L.keep.sig, snap.sig, 2) < PRE_SIG && this.consistent(L.keep, snap.s)) cands.push(L.keep);
+    cands.push(snap);
+    let bl = null;
+    for(const B of cands){
+      bl = this.blurOf(B, cq);
+      if(bl.bad || bl.patchy) continue;
+      L.preDd = B === snap ? 0 : C.sigDiff(B.sig, snap.sig, 2);
+      this.note(`geç onay: görünüm değişmişti, ${B === snap ? 'denetlenen' : 'elde tutulan'} kare alındı`);
+      return this.accept(res, B, null, bl);
+    }
+    if(cands.length) this.note(`geç onay: kare bulanık, alınmadı (${this.fineTxt(bl)})`);
+  },
+  fineTxt(bl){
+    if(!bl || bl.unknown) return 'ince -';
+    return `ince ${bl.page.toFixed(2)} bant ${bl.bs.map(x => x < 0 ? '-' : x.toFixed(2)).join('/')} oran ${bl.wr.toFixed(2)}${bl.low ? ' düşük ' + bl.low + '/' + bl.n : ''}${bl.ref ? ' ref ' + bl.ref.toFixed(2) : ''}`;
   },
   markDone(snap){
     const L = this.live;
     // hareket, kontrol edilen karenin anından itibaren sayılır (kontrol sürerken sonraki sayfaya geçilmiş olabilir)
     L.phase = 'done'; L.moveAt = snap.moveSum != null ? snap.moveSum : this.scanner.moveSum;
-    if(L.bestFail && L.bestFail.snap !== snap) L.bestFail.snap.release();
-    L.bestFail = null; L.tries = 0; L.verdict = null;
+    L.tries = 0; L.verdict = null; L.pre = null; L.blurS = null; L.blurNoted = false;
+    if(L.best){ L.best.release(); L.best = null; }
+    if(L.alt){ L.alt.release(); L.alt = null; }
+    L.top = null; L.topA = null; L.viewN = 0; L.incons = 0;
   },
-  /* aynı sayfanın daha iyi karesi (ya da kusurlu çekilmiş sayfanın kusursuzu): sessizce yerine geçer */
+  /* sayfanın ham karesini değiştir ve yeniden işle */
+  replaceFrame(p, fr, why, clearFlag){
+    fr.hold();
+    fr.blob().then(blob => {
+      fr.release();
+      if(!blob || !state.pages.includes(p)) return;
+      p.origBlob = blob;
+      if(clearFlag){ p.soft = null; p.issues = []; }
+      this.ev('iyileşti', p.id, why); this.note(`iyileşti ${state.pages.indexOf(p) + 1}. sayfa (${why})`);
+      processPage(p);
+    });
+  },
+  /* çekimden hemen sonra, kadraj hiç oynamadan gelen daha net kare: sessizce yerine geçer (yeniden denetim gerekmez) */
+  swapIfSharper(fr, now){
+    const L = this.live, S = this.sess, cap = L.cap;
+    if(!cap || !fr.steady || fr.busy && !cap.busy) return;
+    const p = state.pages.find(x => x.id === cap.pid);
+    if(!p) return;
+    const g = this.sharper(fr, cap);
+    let ok = g >= 1.10 || (cap.busy && !fr.busy && g >= 0.97), fixed = false;
+    if(cap.blur){ const bl = this.blurOf(fr, cap.quadN); ok = !bl.bad && !bl.unknown; fixed = ok; }
+    if(!ok) return;
+    cap.s = fr.s; cap.swaps++; cap.busy = fr.busy;
+    if(S.last && S.last.id === p.id){ S.last.sig = fr.sig; if(!fr.busy && S.last.soft === 'busy') S.last.soft = null; if(fixed){ S.last.soft = null; S.last.flag = null; } }
+    if(fixed){ cap.blur = false; this.chime(); this.flash(); this.sticky('✓ Net kare alındı — sonraki sayfa', 'ok', 900); }
+    this.replaceFrame(p, fr, fixed ? 'bulanıklık düzeldi' : `daha net ×${g.toFixed(2)}`, fixed);
+  },
+  /* aynı sayfanın yeniden denetlenen daha iyi karesi (ya da kusurlu çekilmiş sayfanın kusursuzu): sessizce yerine geçer */
   upgrade(res, snap){
     const S = this.sess, last = S.last;
     if(!last || this.retake || last.ups >= 2) return false;
@@ -1664,41 +2006,57 @@ const cam = {
     // kadrajda bir şey kıpırdarken (el çekilirken) alınmış kare: yerine ancak sakin bir kare geçer
     const calm = !snap.busy;
     if(last.soft === 'busy' && !calm) return false;
+    const flagged = !!last.flag;
+    const bl = this.blurOf(snap, (m.contN || m.blockN || m.quadN));
+    if(bl.bad) return false;
+    // netlik karşılaştırması ince haritadan (yazı bloğundaki pencerelerin ortancası: kadraj değişse de karşılaştırılabilir)
+    const f1 = bl.unknown ? 0 : bl.page, f0 = last.fine || 0;
+    const notWorse = !f0 || !f1 || f1 >= f0*0.93;
     // daha net, daha tam (elin / gölgenin altından çıkan satır, sayfa no) ya da kusurlu çekimin kusursuzu
-    if(!((last.soft && (last.soft !== 'busy' || q > last.q*0.85)) || q > last.q*1.15 || (ext >= last.ext + 0.8 && q > last.q*0.85))) return false;
+    if(!(flagged || (f0 && f1 > f0*1.08) || (last.soft && notWorse) || (ext >= last.ext + 0.8 && notWorse))) return false;
     const p = state.pages.find(x => x.id === last.id);
     if(!p) return false;
-    last.q = q; last.ext = ext; last.soft = calm ? null : 'busy'; last.ups++; last.sig = snap.sig; last.lined = !!res.lineSig;
-    snap.blob().then(blob => {
-      if(!blob) return;
-      p.origBlob = blob; p.soft = null; p.issues = [];
-      if(res.lineSig){ p.lineSig = res.lineSig; if(S.recent[0] && S.recent[0].id === p.id) S.recent[0].lineSig = res.lineSig; }
-      this.ev('iyileşti', p.id, Math.round(q)); this.note(`iyileşti ${state.pages.indexOf(p) + 1}. sayfa`);
-      processPage(p);
-    });
+    last.q = q; last.ext = ext; last.soft = calm ? null : 'busy'; last.flag = null; last.fine = f1 || f0; last.ups++; last.sig = snap.sig; last.lined = !!res.lineSig; last.rows = res.lineSig ? res.lineSig.length : 0;
+    if(res.lineSig){ p.lineSig = res.lineSig; if(S.recent[0] && S.recent[0].id === p.id) S.recent[0].lineSig = res.lineSig; }
+    if(this.live.cap && this.live.cap.pid === p.id){ const c = this.live.cap; c.blur = false; c.s = snap.s; c.run = snap.run; c.moveSum = snap.moveSum; c.quadN = m.contN || m.blockN || m.quadN || c.quadN; }
+    if(flagged){ this.chime(); this.flash(); this.sticky('✓ Düzgün kare alındı — sonraki sayfa', 'ok', 900); }
+    this.replaceFrame(p, snap, flagged ? 'kusur giderildi' : 'daha iyi kare', true);
     return true;
   },
-  async accept(res, snap, softV){
+  /* çekim: fr = alınan kare (duruşun en net karesi), res = o duruşta doğrulanmış hızlı kontrol sonucu */
+  async accept(res, fr, softV, bl){
     const S = this.sess, m = res.metrics || {}, L = this.live, now = performance.now();
     const side = m.side || '';
-    // sayfaya işlenen uyarı yalnız belirsiz durumlarda (yazısız, bulanıklık şüphesi, eğik); küçük kusurlar sessizce geçer
-    const flag = softV && softV.slow && softV.code !== 'moving' ? softV.code : null;
-    this.note(`ÇEKİLDİ ${this.retake ? 'yeniden' : (state.pages.length + 1) + '.'} ${side || '?'}${softV ? ' (' + softV.code + ')' : snap.busy ? ' (el?)' : ''} karar ${((now - L.firstTryT)/1000).toFixed(2)}s deneme ${L.tries} durgun→bip ${((now - (snap.w0 || now))/1000).toFixed(2)}s kare ${this.scanner.cost.toFixed(0)}ms`);
-    this.markDone(snap);
+    // sayfaya işlenen uyarı yalnız gerçekten kusurlu alınan karede (bulanık bölge, çevrilmekte olan sayfa);
+    // küçük kusurlar ve yazısız sayfa (kapak, resim) uyarısız geçer
+    const flag = softV && softV.slow && softV.code !== 'moving' && softV.code !== 'notext' ? softV.code : null;
+    this.note(`ÇEKİLDİ ${this.retake ? 'yeniden' : (state.pages.length + 1) + '.'} ${side || '?'}${softV ? ' (' + softV.code + ')' : fr.busy ? ' (el?)' : ''} karar ${((now - L.firstTryT)/1000).toFixed(2)}s deneme ${L.tries} durgun→bip ${((now - (fr.w0 || now))/1000).toFixed(2)}s kare#${fr.n}/${L.viewN} fark ${(L.preDd || 0).toFixed(1)} otur ${fr.q10.toFixed(2)}/${fr.q50.toFixed(2)}/${fr.q90.toFixed(2)} ${this.fineTxt(bl)} analiz ${this.scanner.cost.toFixed(0)}ms`);
+    fr.hold();
+    this.markDone(fr);
     L.upTries = 0; L.dupNote = null;
     this.ev('çekildi', side, softV ? softV.code : '');
     if(m.mode === 'yazı' && !softV && m.crisp >= 0){ S.refC.push(m.crisp); S.refS.push(m.sharp); if(S.refC.length > 7){ S.refC.shift(); S.refS.shift(); } }
-    S.refL.push(snap.sharp); if(S.refL.length > 7) S.refL.shift();
+    if(bl && !bl.unknown && !bl.bad){ S.refF.push(bl.page); if(S.refF.length > 7) S.refF.shift(); }
     if(m.cpl && !softV){ S.refW.push(m.cpl); if(S.refW.length > 7) S.refW.shift(); }
-    this.chime(); this.flash();
-    this.doneHint = side === 'L' ? '✓ Tamam — şimdi sağ sayfa ▶' : side === 'R' ? '✓ Tamam — sayfayı çevir' : '✓ Tamam — sonraki sayfa';
-    this.sticky(flag ? '✓ Çekildi (kontrol et) — sonraki sayfa' : this.doneHint, 'ok', 900);
+    // yazısız sayfada (kapak, resim) hızlı kontrol sayfa kenarını kesik gördüyse "Tamam" denmez: sonuç ekranındaki
+    // uyarıyla çelişmesin
+    const cutNT = !!softV && softV.code === 'notext' && (res.issues || []).some(i => i.code === 'cut');
+    if(flag || cutNT){
+      this.warnChime(); this.flash(true);
+      this.sticky(flag === 'blur' ? '⚠ Bulanık çekildi — net olması için sayfayı yeniden göster' :
+                  cutNT ? '⚠ Çekildi — sayfanın kenarı kesik olabilir, tamamı görünecek şekilde yeniden göster' : '⚠ Çekildi ama kontrol et — sayfayı yeniden gösterebilirsin', 'warn', 1500);
+      this.doneHint = '⚠ Kusurlu çekildi — yeniden göster ya da sonraki sayfa';
+    } else {
+      this.chime(); this.flash();
+      this.doneHint = side === 'L' ? '✓ Tamam — şimdi sağ sayfa ▶' : side === 'R' ? '✓ Tamam — sayfayı çevir' : '✓ Tamam — sonraki sayfa';
+      this.sticky(this.doneHint, 'ok', 900);
+    }
     // yeniden çekim: yeni sayfa yerine hedef sayfanın yerine geç
     if(this.retake){
       const target = state.pages.find(p => p.id === this.retake.ids[this.retake.i]);
-      const blob = await snap.blob();
+      const blob = await fr.blob(); fr.release();
       if(target && blob){
-        target.origBlob = blob; target.issues = []; target.maybeDup = false; target.soft = flag;
+        target.origBlob = blob; target.issues = []; target.maybeDup = false; target.soft = flag; target.noText = !!softV && softV.code === 'notext';
         if(res.lineSig){ target.lineSig = res.lineSig; target.side = side; }
         processPage(target);
       }
@@ -1707,8 +2065,8 @@ const cam = {
       else { this.newScanner(); this.updateRetakeUi(); }
       return;
     }
-    const p = {id:state.nextId++, origBlob:null, rot:0, time:snap.t, maybeDup:false, issues:[], status:'busy',
-               lineSig:res.lineSig || null, side, soft: flag, cap: S.id};
+    const p = {id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:false, issues:[], status:'busy',
+               lineSig:res.lineSig || null, side, soft: flag, cap: S.id, noText: !!softV && softV.code === 'notext'};
     // sayfa sırası (bekletmeden): çevirince kamera sağ sayfada kalır ve önce o çekilirse, ardından gelen
     // sol sayfa onun ÖNÜNE yerleştirilir. Kanıt: art arda iki sağ sayfa (önceki açılımın sağı + yeni
     // açılımın sağı), sonra bir sol sayfa.
@@ -1719,10 +2077,13 @@ const cam = {
     }
     pages.splice(at, 0, p);
     S.recent.unshift({id:p.id, lineSig:p.lineSig, side}); if(S.recent.length > 12) S.recent.pop();
-    S.last = {id:p.id, q:this.quality(m), ext:this.extent(m), soft: softV ? softV.code : (snap.busy ? 'busy' : null),
-              ups:0, sig:snap.sig, lined:!!res.lineSig};
+    S.last = {id:p.id, q:this.quality(m), ext:this.extent(m), soft: softV ? softV.code : (fr.busy ? 'busy' : null),
+              flag, fine: bl && !bl.unknown ? bl.page : 0, ups:0, sig:fr.sig, lined:!!res.lineSig, rows: res.lineSig ? res.lineSig.length : 0};
+    // çekimden sonra aynı duruşta daha net kare gelirse değiştirilir (swapIfSharper)
+    L.cap = {pid:p.id, s:fr.s, run:fr.run, moveSum:fr.moveSum, at:now, swaps:0, blur: flag === 'blur', busy: fr.busy, quadN: m.contN || m.blockN || m.quadN || null};
     this.count++; this.updateCounter();
-    p.origBlob = await snap.blob();
+    p.origBlob = await fr.blob(); fr.release();
+    if(window.__scanDebug) p.firstBlob = p.origBlob;
     if(!p.origBlob){ state.pages.splice(state.pages.indexOf(p), 1); this.updateCounter(); return; }
     processPage(p);
   },
@@ -1736,7 +2097,7 @@ const cam = {
     if(now >= this.stickyUntil){
       let txt, cls = '';
       if(st === 'done'){ txt = this.doneHint || '✓ Tamam — sonraki sayfa'; cls = 'ok'; }
-      else if(L.verdict && L.verdict.hint && now - L.lastTryWall < 1600){ txt = L.verdict.hint; cls = 'warn'; }
+      else if(L.verdict && L.verdict.hint && now - Math.max(L.lastTryWall, L.verdictAt || 0) < 1600){ txt = L.verdict.hint; cls = 'warn'; }
       else if(st === 'moving') txt = this.retake ? 'Sayfayı göster…' : 'Sayfayı göster — kendiliğinden çekilir';
       else txt = 'Sayfa aranıyor…';
       const hint = $('camHint');
@@ -1775,6 +2136,16 @@ const cam = {
     }
   },
   onPageDone(p){ if(!this.retake && p.thumbUrl && state.pages[state.pages.length-1] === p) this.setThumb(p.thumbUrl); },
+  /* güvenlik ağı aynı sayfanın ikinci çekimini attı: oturum kayıtları kalan sayfaya bağlanır */
+  pageDropped(drop, keep, k, m){
+    const S = this.sess;
+    diagLog.push(`     çift çekim atıldı: ${k + 1}. sayfa (eşleşme ${m.toFixed(2)})`);
+    if(!S) return;
+    if(S.last && S.last.id === drop.id) S.last.id = keep.id;
+    S.recent = S.recent.filter(r => r.id !== drop.id);
+    if(this.live && this.live.cap && this.live.cap.pid === drop.id) this.live.cap.pid = keep.id;
+    if(this.active) this.updateCounter();
+  },
   setThumb(url){ $('camThumb').style.backgroundImage = `url("${url}")`; },
   updateCounter(){
     const n = this.retake ? this.retake.ids.length : state.pages.length;
@@ -1792,8 +2163,9 @@ const cam = {
     this.updateCounter();
   },
   /* "tamam" işareti: yeşil çerçeve + büyük ✓ */
-  flash(){
-    const f = $('camOk'); f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+  flash(warn){
+    const f = $('camOk'); f.classList.remove('on'); f.classList.toggle('warn', !!warn);
+    f.firstElementChild.textContent = warn ? '!' : '✓'; void f.offsetWidth; f.classList.add('on');
     try{ navigator.vibrate && navigator.vibrate(40); }catch(_){}
     if(native.has('Haptics')) native.call('Haptics', 'impact', {style:'MEDIUM'}).catch(()=>{});
   },
@@ -1810,6 +2182,22 @@ const cam = {
         g.gain.exponentialRampToValueAtTime(0.45, t + dt + 0.012);
         g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.17);
         o.connect(g).connect(a.destination); o.start(t + dt); o.stop(t + dt + 0.19);
+      });
+    }catch(_){}
+  },
+  /* "kusurlu çekildi" sesi: alçalan iki kalın nota (tamam çanından açıkça farklı) */
+  warnChime(){
+    const a = this.audio; if(!a) return;
+    try{
+      if(a.state === 'suspended') a.resume();
+      const t = a.currentTime + 0.01;
+      [[440, 0], [311, 0.13]].forEach(([f, dt]) => {
+        const o = a.createOscillator(), g = a.createGain();
+        o.type = 'triangle'; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t + dt);
+        g.gain.exponentialRampToValueAtTime(0.5, t + dt + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.22);
+        o.connect(g).connect(a.destination); o.start(t + dt); o.stop(t + dt + 0.24);
       });
     }catch(_){}
   },

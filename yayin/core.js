@@ -1300,14 +1300,17 @@ function rotateCanvas(src, rot){
    Düzleştirilmiş düzlemde her yazı satırının yatay mürekkep profili (satırın kendi
    başı-sonu arasında 96 kutu, yüksek geçiren): kelime/boşluk düzeni. Aynı sayfanın iki
    çekiminde satırlar birebir eşleşir (kırpma, ölçek, kayma fark etmez); farklı sayfada eşleşmez. */
-const LS_NB = 96;
+const LS_NB = 96, LS_SPAN = 24;
 function lineSigs(P){
   const m = P && P.margins, tb = P && P.tb;
   if(!m || !tb || !P.ink || !m.bands) return null;
   const ink = P.ink, w = P.bw, h = P.bh, pitch = P.pitch || 20, out = [];
   // Profil her satırda AYNI aralıkta (sütunun sol-sağ kenarı) alınır: satırın kendi ucu yanlış bulunsa da
   // (sırt üzerinden komşu sayfaya taşan iz, eksik izlenen uç) imza değişmez. Sütun bilinmiyorsa satırın kendi uçları.
-  const col = !G.__lsOld && isFinite(m.xa) && isFinite(m.xb) && m.xb - m.xa > pitch*6 ? [Math.max(0, m.xa), Math.min(w-1, m.xb)] : null;
+  // Sağı hizasız sayfada (içindekiler, şiir) sağ kenar kareden kareye oynar: orada aralık sol kenar + LS_SPAN satır aralığıdır.
+  const just = m.R && m.R.inl >= 0.45;
+  const col = !G.__lsOld && isFinite(m.xa) && isFinite(m.xb) && m.xb - m.xa > pitch*6 ?
+              [Math.max(0, m.xa), just ? Math.min(w-1, m.xb) : Math.max(0, m.xa) + LS_SPAN*pitch] : null;
   for(const b of m.bands){
     if(b.ym < tb.yTop || b.ym > tb.yBot) continue;
     const r0 = Math.max(0, b.l), r1 = Math.min(w-1, b.r);
@@ -1318,7 +1321,8 @@ function lineSigs(P){
     for(let k=0;k<LS_NB;k++){
       const xa = Math.floor(x0 + (x1-x0)*k/LS_NB), xb = Math.max(xa+1, Math.floor(x0 + (x1-x0)*(k+1)/LS_NB));
       let sm = 0, n = 0;
-      for(let y=y0; y<=y1; y++){ const r = y*w; for(let x=xa; x<xb; x++){ sm += ink[r+x]; n++; } }
+      if(xa >= w) break;                                  // düzlemin dışı: boş
+      for(let y=y0; y<=y1; y++){ const r = y*w; for(let x=xa; x<xb && x<w; x++){ sm += ink[r+x]; n++; } }
       v[k] = n ? sm/n : 0;
     }
     const lo = smooth1(v, 4); let e = 0;
@@ -1327,13 +1331,13 @@ function lineSigs(P){
     for(let k=0;k<LS_NB;k++) v[k] /= e;
     out.push(v);
   }
-  return out.length >= 3 ? out : null;
+  return out.length >= 5 ? out : null;                      // birkaç satırlık sayfada imza güvenilmez (rastlantısal eşleşme)
 }
 /* iki satır profilinin benzerliği (0..1). Profil 4 parçaya bölünür, her parça kendi küçük kaymasıyla (±3 kutu)
    eşleştirilir: kıvrık sayfada satırın farklı yerleri iki çekimde farklı miktarda esner; tek bir kayma buna yetmez. */
-const LS_SEG = 4, LS_SH = 3;
-function lineCorr(a, b){
-  const L = LS_NB/LS_SEG; let tot = 0, wsum = 0;
+const LS_SEG = 4, LS_SH = 3, LS_G = 12;
+function lineCorr(a, b, g){
+  const L = LS_NB/LS_SEG; let tot = 0, wsum = 0; g = g || 0;
   for(let s=0; s<LS_SEG; s++){
     const k0 = s*L, k1 = k0 + L;
     let ea = 0; for(let k=k0;k<k1;k++) ea += a[k]*a[k];
@@ -1341,27 +1345,73 @@ function lineCorr(a, b){
     let best = -1;
     for(let d=-LS_SH; d<=LS_SH; d++){
       let c = 0, eb = 0, e2 = 0;
-      for(let k=k0;k<k1;k++){ const j = k - d; if(j < 0 || j >= LS_NB) continue; const x = a[k], y = b[j]; c += x*y; eb += y*y; e2 += x*x; }
+      for(let k=k0;k<k1;k++){ const j = k - d - g; if(j < 0 || j >= LS_NB) continue; const x = a[k], y = b[j]; c += x*y; eb += y*y; e2 += x*x; }
       const v = c/Math.sqrt(Math.max(1e-9, e2*eb)); if(v > best) best = v;
     }
     tot += best*ea; wsum += ea;
   }
   return wsum > 0 ? tot/wsum : 0;
 }
+/* iki çekim arasında satır profillerinin ortak yatay kayması (kutu) ve esnemesi. Sol kenarı iki ayrı hizada bulunabilen
+   (içindekiler: numara sütunu / başlık sütunu) ya da satır aralığı biraz farklı ölçülen çekimlerde profiller kayık / esnek
+   olur. A'nın birkaç satırı B'nin tüm satırlarıyla her kayma ve esnemede karşılaştırılır; en az 3 satır (ve denenenlerin
+   yarısı) aynı dönüşümde güçlü biçimde eşleşirse o dönüşüm döner. */
+const LS_ST = [1, 0.96, 1.04, 0.92, 1.08];
+function lsStretch(b, st){
+  if(st === 1) return b;
+  const o = new Float32Array(LS_NB);
+  for(let k=0;k<LS_NB;k++){ const x = k*st, i = x|0, f = x - i; o[k] = i + 1 < LS_NB ? b[i]*(1-f) + b[i+1]*f : (i < LS_NB ? b[i]*(1-f) : 0); }
+  return o;
+}
+function lineAlign(A, B){
+  const NS = LS_ST.length, NG = 2*LS_G + 1, votes = new Int32Array(NS*NG), step = Math.max(1, Math.floor(A.length/10));
+  const BS = LS_ST.map(st => B.map(b => lsStretch(b, st)));
+  let tried = 0;
+  for(let i=0;i<A.length;i+=step){
+    const a = A[i]; let bv = 0, bg = 0, bs = 0; tried++;
+    for(let si=0; si<NS; si++) for(let j=0;j<B.length;j++){
+      const b = BS[si][j];
+      for(let g=-LS_G; g<=LS_G; g++){
+        let c = 0, ea = 0, eb = 0;
+        for(let k=Math.max(0, g), k1=Math.min(LS_NB, LS_NB + g); k<k1; k++){ const x = a[k], y = b[k-g]; c += x*y; ea += x*x; eb += y*y; }
+        if(ea < 0.5 || eb < 0.3) continue;                 // örtüşen kısım profilin çoğunu içermeli
+        const v = c/Math.sqrt(ea*eb);
+        if(v > bv){ bv = v; bg = g; bs = si; }
+      }
+    }
+    if(bv >= 0.62) votes[bs*NG + bg + LS_G]++;
+  }
+  let best = -1, bc = 0;
+  for(let si=0; si<NS; si++) for(let g=-LS_G; g<=LS_G; g++){
+    const o = si*NG + g + LS_G;
+    const c = votes[o] + (g > -LS_G ? votes[o-1] : 0) + (g < LS_G ? votes[o+1] : 0);
+    if(c > bc){ bc = c; best = o; }
+  }
+  if(bc < 3 || bc < tried*0.5) return null;
+  const si = (best/NG)|0;
+  return {g: best - si*NG - LS_G, st: LS_ST[si], B: BS[si]};
+}
 /* iki sayfanın satır imzaları: eşleşen satır oranı (0..1). Satırlar aynı sırayla ve
    tutarlı bir satır kaymasıyla eşleşmeli. */
-function lineMatch(A, B){
-  if(!A || !B || A.length < 3 || B.length < 3) return 0;
+function lineMatchG(A, B, g){
   const votes = new Map(), best = [];
   for(let i=0;i<A.length;i++){
     let bv = 0, bj = -1;
-    for(let j=0;j<B.length;j++){ const v = lineCorr(A[i], B[j]); if(v > bv){ bv = v; bj = j; } }
+    for(let j=0;j<B.length;j++){ const v = lineCorr(A[i], B[j], g); if(v > bv){ bv = v; bj = j; } }
     best.push([bv, bj]);
     if(bv >= 0.6){ const o = bj - i; votes.set(o, (votes.get(o) || 0) + 1); }
   }
   let mo = 0, mc = 0; for(const [o, c] of votes) if(c > mc){ mc = c; mo = o; }
   let n = 0; for(let i=0;i<best.length;i++) if(best[i][0] >= 0.6 && Math.abs(best[i][1] - i - mo) <= 1) n++;
   return n / Math.min(A.length, B.length);
+}
+/* deep: düz karşılaştırma tutmazsa kayma + esneme hizalamasıyla yeniden denenir (pahalı: yalnız son sayfa için) */
+function lineMatch(A, B, deep){
+  if(!A || !B || A.length < 5 || B.length < 5) return 0;
+  const m0 = lineMatchG(A, B, 0);
+  if(m0 >= 0.5 || !deep) return m0;
+  const al = lineAlign(A, B);
+  return al && (al.g || al.st !== 1) ? Math.max(m0, lineMatchG(A, al.B, al.g)) : m0;
 }
 /* Kitap sırtı hangi yanda (sayfa sol mu, sağ mı)? Yazı bloğu düzleminde bloğun iki
    yanına doğru kaynak kare örneklenir. Sırt tarafında kenar boşluğundan sonra dar bir
@@ -2799,6 +2849,18 @@ function processCanvas(src, opts){
     } else dbg.push(`dışarıda kalan yazı %${(leftover*100)|0}`);
   }
   if(TX){ P = TX.P; content = TX.content; tqSrc = TX.tq; }
+  // yazı bloğunun kaynak karedeki gerçek dörtgeni (düzlemin doğrulanmış satırlarından; tq zemindeki izleri de içerebilir)
+  let blockQ = null;
+  if(TX && P.tb){
+    const tb = P.tb, q = [P.toSrc(tb.Lf(tb.yTop), tb.yTop), P.toSrc(tb.Rf(tb.yTop), tb.yTop), P.toSrc(tb.Rf(tb.yBot), tb.yBot), P.toSrc(tb.Lf(tb.yBot), tb.yBot)];
+    if(q.every(p => isFinite(p[0]) && isFinite(p[1])) && isConvex(q)) blockQ = q;
+  }
+  // içeriğin tamamının (başlık, alıntı, sayfa no dahil) kaynak karedeki dörtgeni: netlik denetimi bu alanda yapılır
+  let contQ = null;
+  if(TX && content && content.w > 8 && content.h > 8){
+    const c = content, q = [P.toSrc(c.x0, c.y0), P.toSrc(c.x0 + c.w, c.y0), P.toSrc(c.x0 + c.w, c.y0 + c.h), P.toSrc(c.x0, c.y0 + c.h)];
+    if(q.every(p => isFinite(p[0]) && isFinite(p[1])) && isConvex(q)) contQ = q;
+  }
   // ---- son eşleme: çıktı pikseli → kaynak
   let mapOut, srcSpanH, mode;
   if(content){
@@ -2858,6 +2920,20 @@ function processCanvas(src, opts){
   }
   dbg.push(`yan:${side.side||'?'} (${side.why}) eğiklik ${tilt.toFixed(2)}${room ? ' pay ' + room.join('/') : ''}`);
 
+  // ---- hızlı kontrol, yazı yolu: çıktı sayfası üretilmez, netlik de burada ölçülmez (canlıda karenin tam çözünürlüklü
+  // ince netlik haritasına bakılır) → örnekleme / iyileştirme / mürekkep istatistikleri atlanır
+  if(quick && TX){
+    if(content.cutTop) issues.push({code:'cut', side:0});
+    if(content.cutBot) issues.push({code:'cut', side:2});
+    const cplQ = tqSrc && content.pitch ? ((dist(tqSrc[0],tqSrc[1]) + dist(tqSrc[3],tqSrc[2]))/2)/Math.max(1e-6, content.pitch*P.srcPerPx) : 0;
+    const metricsQ = {sharp: -1, crisp: -1, inkFrac: 0, ms: Date.now()-t0, mode, quick: true,
+                      lines: P.tb ? P.tb.n : 0, tilt, room, side: side.side, srcPitch: content.pitch ? content.pitch*P.srcPerPx/qScale : 0,
+                      extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut, leftover,
+                      quadN: tqSrc ? tqSrc.map(q => [q[0]/W, q[1]/H]) : null, blockN: (blockQ || tqSrc) ? (blockQ || tqSrc).map(q => [q[0]/W, q[1]/H]) : null,
+                      contN: contQ ? contQ.map(q => [q[0]/W, q[1]/H]) : null, ang: TX.ang, cpl: cplQ};
+    dbg.push(tms.join(' ')); dbg.push(`hızlı ${W}x${H}, ${metricsQ.ms} ms`);
+    return {canvas: null, issues, metrics: metricsQ, dbg: dbg.join(' | '), lineSig: lineSigs(P)};
+  }
   // ---- yerleşim: tüm sayfalarda tutarlı yazı boyutu (satır aralığına göre), kenar boşlukları beyaz
   const mx = content === null ? 0 : (mode === 'yazı' ? 0.075 : 0), myT = mode === 'yazı' ? 0.06 : 0, myB = mode === 'yazı' ? 0.06 : 0;
   const availW = outW*(1-2*mx), availH = outH*(1-myT-myB);
@@ -3009,7 +3085,7 @@ function processCanvas(src, opts){
                       lines: (mode === 'yazı' ? P : A).tb ? (mode === 'yazı' ? P : A).tb.n : 0, tilt, room, side: side.side,
                       srcPitch: content.pitch ? content.pitch*(mode === 'yazı' ? P : A).srcPerPx/qScale : 0,
                       extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut, leftover,
-                      quadN: tqSrc ? tqSrc.map(q => [q[0]/W, q[1]/H]) : null, ang: TX ? TX.ang : null, cpl};
+                      quadN: tqSrc ? tqSrc.map(q => [q[0]/W, q[1]/H]) : null, blockN: (blockQ || tqSrc) ? (blockQ || tqSrc).map(q => [q[0]/W, q[1]/H]) : null, ang: TX ? TX.ang : null, cpl};
     dbg.push(tms.join(' ')); dbg.push(`hızlı ${W}x${H}, ${metricsQ.ms} ms`);
     return {canvas: null, issues, metrics: metricsQ, dbg: dbg.join(' | '), lineSig: mode === 'yazı' ? lineSigs(P) : null};
   }
@@ -3018,7 +3094,7 @@ function processCanvas(src, opts){
                    lines: PP && PP.tb ? PP.tb.n : 0, tilt, room, side: side.side,
                    srcPitch: content.pitch && PP ? content.pitch*PP.srcPerPx/qScale : 0,
                    extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut, leftover,
-                      quadN: tqSrc ? tqSrc.map(q => [q[0]/W, q[1]/H]) : null, ang: TX ? TX.ang : null, cpl};
+                      quadN: tqSrc ? tqSrc.map(q => [q[0]/W, q[1]/H]) : null, blockN: (blockQ || tqSrc) ? (blockQ || tqSrc).map(q => [q[0]/W, q[1]/H]) : null, ang: TX ? TX.ang : null, cpl};
 
   // ---- tek tip çıktı sayfası (tam outW×outH)
   let out;

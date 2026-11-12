@@ -1305,10 +1305,14 @@ function lineSigs(P){
   const m = P && P.margins, tb = P && P.tb;
   if(!m || !tb || !P.ink || !m.bands) return null;
   const ink = P.ink, w = P.bw, h = P.bh, pitch = P.pitch || 20, out = [];
+  // Profil her satırda AYNI aralıkta (sütunun sol-sağ kenarı) alınır: satırın kendi ucu yanlış bulunsa da
+  // (sırt üzerinden komşu sayfaya taşan iz, eksik izlenen uç) imza değişmez. Sütun bilinmiyorsa satırın kendi uçları.
+  const col = !G.__lsOld && isFinite(m.xa) && isFinite(m.xb) && m.xb - m.xa > pitch*6 ? [Math.max(0, m.xa), Math.min(w-1, m.xb)] : null;
   for(const b of m.bands){
     if(b.ym < tb.yTop || b.ym > tb.yBot) continue;
-    const x0 = Math.max(0, b.l), x1 = Math.min(w-1, b.r);
-    if(x1 - x0 < pitch*3) continue;
+    const r0 = Math.max(0, b.l), r1 = Math.min(w-1, b.r);
+    if(Math.min(r1, col ? col[1] : r1) - Math.max(r0, col ? col[0] : r0) < pitch*3) continue;
+    const x0 = col ? col[0] : r0, x1 = col ? col[1] : r1;
     const y0 = Math.max(0, Math.round(b.ym - pitch*0.32)), y1 = Math.min(h-1, Math.round(b.ym + pitch*0.32));
     const v = new Float32Array(LS_NB);
     for(let k=0;k<LS_NB;k++){
@@ -1325,21 +1329,33 @@ function lineSigs(P){
   }
   return out.length >= 3 ? out : null;
 }
+/* iki satır profilinin benzerliği (0..1). Profil 4 parçaya bölünür, her parça kendi küçük kaymasıyla (±3 kutu)
+   eşleştirilir: kıvrık sayfada satırın farklı yerleri iki çekimde farklı miktarda esner; tek bir kayma buna yetmez. */
+const LS_SEG = 4, LS_SH = 3;
+function lineCorr(a, b){
+  const L = LS_NB/LS_SEG; let tot = 0, wsum = 0;
+  for(let s=0; s<LS_SEG; s++){
+    const k0 = s*L, k1 = k0 + L;
+    let ea = 0; for(let k=k0;k<k1;k++) ea += a[k]*a[k];
+    if(ea < 1e-6) continue;
+    let best = -1;
+    for(let d=-LS_SH; d<=LS_SH; d++){
+      let c = 0, eb = 0, e2 = 0;
+      for(let k=k0;k<k1;k++){ const j = k - d; if(j < 0 || j >= LS_NB) continue; const x = a[k], y = b[j]; c += x*y; eb += y*y; e2 += x*x; }
+      const v = c/Math.sqrt(Math.max(1e-9, e2*eb)); if(v > best) best = v;
+    }
+    tot += best*ea; wsum += ea;
+  }
+  return wsum > 0 ? tot/wsum : 0;
+}
 /* iki sayfanın satır imzaları: eşleşen satır oranı (0..1). Satırlar aynı sırayla ve
    tutarlı bir satır kaymasıyla eşleşmeli. */
 function lineMatch(A, B){
   if(!A || !B || A.length < 3 || B.length < 3) return 0;
-  const sh = 2, votes = new Map(), best = [];
+  const votes = new Map(), best = [];
   for(let i=0;i<A.length;i++){
     let bv = 0, bj = -1;
-    for(let j=0;j<B.length;j++){
-      const a = A[i], b = B[j];
-      for(let d=-sh; d<=sh; d++){
-        let s = 0;
-        for(let k=Math.max(0,d); k<LS_NB+Math.min(0,d); k++) s += a[k]*b[k-d];
-        if(s > bv){ bv = s; bj = j; }
-      }
-    }
+    for(let j=0;j<B.length;j++){ const v = lineCorr(A[i], B[j]); if(v > bv){ bv = v; bj = j; } }
     best.push([bv, bj]);
     if(bv >= 0.6){ const o = bj - i; votes.set(o, (votes.get(o) || 0) + 1); }
   }
@@ -1949,7 +1965,8 @@ function txFind(src, opts){
   TT('yön');
   if(!or || !or.pitch){ dbg.push('yön yok ' + (or ? 'aralık yok açı ' + (or.ang*180/Math.PI).toFixed(1) + ' karo ' + or.nt : G.__orWhy)); return {ok: false, dbg}; }
   dbg.push(`yön${or.hinted ? '(ipucu)' : ''} ${(or.ang*180/Math.PI).toFixed(1)}° A${or.A.toFixed(3)} B${(or.B*h0).toFixed(3)} p≈${(or.pitch/s0).toFixed(0)} karo ${or.nt}/${or.nTiles}`);
-  const maxSide = opts.maxSide || 1100;
+  // hızlı kontrolde çalışma ölçeği yazı boyuna göre seçilir (satır aralığı ≈ 10.5 px): iri yazıda küçük, ufak yazıda büyük
+  const maxSide = opts.quick ? Math.round(Math.max(520, Math.min(820, 10.5/(or.pitch/s0)*Math.max(W, H)))) : (opts.maxSide || 1100);
   const run = (a) => {
     const rot = txWarp(src, Object.assign({}, or, {ang: a}), s0, maxSide);
     TT('çarpıt');
@@ -2141,14 +2158,18 @@ function txPlane(sd, W, H, f, quick, dbg){
   const vTop = Math.min(0, mains[0].vm), vBot = Math.max(1, mains[mains.length-1].vm);
   const mg = 0.03*Math.max(W, H);
   const inFrame = (u, v) => { const q = applyH(HT, u, v); return q[0] > -mg && q[1] > -mg && q[0] < W + mg && q[1] < H + mg; };
-  const ext = (v0, dir) => { let e = 20*pv; while(e > 2.5*pv && !(inFrame(0.15, v0 + dir*e) || inFrame(0.5, v0 + dir*e) || inFrame(0.85, v0 + dir*e))) e -= pv; return e; };
-  let eyT = -vTop + ext(vTop, -1), eyB = (vBot - 1) + ext(vBot, 1);
+  const extCap = (quick ? 8 : 20)*pv;
+  const ext = (v0, dir) => { let e = extCap; while(e > 2.5*pv && !(inFrame(0.15, v0 + dir*e) || inFrame(0.5, v0 + dir*e) || inFrame(0.85, v0 + dir*e))) e -= pv; return e; };
+  const exT0 = ext(vTop, -1), exB0 = ext(vBot, 1);
+  // pay üst sınıra dayandıysa düzlemin ucu kadrajın ucu değildir (orada biten tarama 'kesik' sayılmaz)
+  let capT = exT0 >= extCap - 1e-9, capB = exB0 >= extCap - 1e-9;
+  let eyT = -vTop + exT0, eyB = (vBot - 1) + exB0;
   let exL = Math.max(0.18, 4*pu), exR = exL;
   let qB = null;
   for(let it=0; it<6; it++){
     const qq = [[-exL,-eyT],[1+exR,-eyT],[1+exR,1+eyB],[-exL,1+eyB]].map(([u,v]) => applyH(HT, u, v));
     if(qq.every(q => isFinite(q[0]) && isFinite(q[1])) && isConvex(qq) && quadArea(qq) < W*H*6){ qB = qq; break; }
-    eyT = -vTop + (eyT + vTop)*0.6; eyB = (vBot - 1) + (eyB - vBot + 1)*0.6; exL *= 0.75; exR *= 0.75;
+    eyT = -vTop + (eyT + vTop)*0.6; eyB = (vBot - 1) + (eyB - vBot + 1)*0.6; exL *= 0.75; exR *= 0.75; capT = capB = true;
   }
   if(!qB){ dbg.push('düzlem kurulamadı'); return null; }
   const totV = 1 + eyT + eyB, totX = 1 + exL + exR;
@@ -2161,9 +2182,30 @@ function txPlane(sd, W, H, f, quick, dbg){
   const hm = homography([[0,0],[Wb,0],[Wb,Hb],[0,Hb]], qB);
   if(!hm) return null;
   const MK = [254, 1, 253];
-  const rect = remap(sd, W, H, Wb, Hb, buildGrid(Wb, Hb, 8, (u, v) => applyH(hm, u, v)), false, MK);
   const g0 = new Float32Array(Wb*Hb), outM = new Uint8Array(Wb*Hb);
-  {
+  if(quick){
+    // hızlı kontrol: düzlem doğrudan gri örneklenir (renkli ara görüntü yok)
+    const gs = f.gsrc || grayOf(sd, W*H);
+    const grid = buildGrid(Wb, Hb, 8, (u, v) => applyH(hm, u, v)), {gw, gs: GS, mx, my} = grid, ls = [];
+    for(let v=0; v<Hb; v++){
+      const gyf = v/GS, gy = gyf|0, fy = gyf-gy;
+      for(let u=0; u<Wb; u++){
+        const gxf = u/GS, gx = gxf|0, fx = gxf-gx, i00 = gy*gw+gx, i01 = i00+gw, i = v*Wb+u;
+        const a0=(1-fx)*(1-fy), a1=fx*(1-fy), a2=(1-fx)*fy, a3=fx*fy;
+        let x = mx[i00]*a0 + mx[i00+1]*a1 + mx[i01]*a2 + mx[i01+1]*a3;
+        let y = my[i00]*a0 + my[i00+1]*a1 + my[i01]*a2 + my[i01+1]*a3;
+        if(!(x >= -1 && y >= -1 && x <= W && y <= H)){ outM[i] = 1; continue; }
+        x = x < 0 ? 0 : x > W-1.001 ? W-1.001 : x; y = y < 0 ? 0 : y > H-1.001 ? H-1.001 : y;
+        const xi = x|0, yi = y|0, tx = x-xi, ty = y-yi, q = yi*W+xi;
+        const gv = (gs[q]*(1-tx) + gs[q+1]*tx)*(1-ty) + (gs[q+W]*(1-tx) + gs[q+W+1]*tx)*ty;
+        g0[i] = gv;
+        if(i % 11 === 0 && gv > 110) ls.push(gv);
+      }
+    }
+    const pc = ls.length ? quantile(ls, 0.7) : 235;
+    for(let i=0;i<Wb*Hb;i++) if(outM[i]) g0[i] = pc;
+  } else {
+    const rect = remap(sd, W, H, Wb, Hb, buildGrid(Wb, Hb, 8, (u, v) => applyH(hm, u, v)), false, MK);
     const ls = [];
     for(let i=0, j=0; i<Wb*Hb; i++, j+=4){
       if(rect[j] === MK[0] && rect[j+1] === MK[1] && rect[j+2] === MK[2]){ outM[i] = 1; continue; }
@@ -2208,11 +2250,38 @@ function txPlane(sd, W, H, f, quick, dbg){
   // kıvrım alanı: ızgara sütunu × satır → düşey kayma; satırlar arasında doğrusal
   const GY = 8, ngy = Math.floor((Hb-1)/GY) + 2;
   const F = new Float32Array(ngx*ngy), has = new Uint8Array(ngx);
+  // Alana yalnız GÜVENİLİR satırlar girer: ana blok + en az 3 satırlı, satır aralığı gövdeye benzeyen kümeler.
+  // Tek başına duran satırların (büyük puntolu başlık, üst başlık, sayfa no) izi güvenilmezdir: harfler satır
+  // aralığından büyük olunca iz dalgalanır ve başlığı eğer. Bunlar komşu gövde satırlarının biçimiyle düzeltilir.
+  const fieldRows = (() => {
+    const byB = new Map(); for(const r of rows){ if(!byB.has(r.bi)) byB.set(r.bi, []); byB.get(r.bi).push(r); }
+    const okB = new Set();
+    for(const [bi, rs] of byB){
+      if(rs.length < 3) continue;
+      const gs = []; for(let i=1;i<rs.length;i++) gs.push(rs[i].yref - rs[i-1].yref);
+      const g = quantile(gs, 0.5);
+      if(g > pitch*0.7 && g < pitch*1.5) okB.add(bi);
+    }
+    const fr = rows.filter(r => r.main || okB.has(r.bi));
+    return fr.length >= 3 ? fr : rows;
+  })();
+  const med3 = (a, b, c) => a > b ? (b > c ? b : a > c ? c : a) : (a > c ? a : b > c ? c : b);
   for(let gx=0; gx<ngx; gx++){
     const X = gx*GX, list = [];
-    for(const r of rows){ if(X < r.X[0] - GX*0.75 || X > r.X[r.X.length-1] + GX*0.75) continue; list.push([r.yref, r.at(X) - r.yref]); }
+    for(const r of fieldRows){ if(X < r.X[0] - GX*0.75 || X > r.X[r.X.length-1] + GX*0.75) continue; list.push([r.yref, r.at(X) - r.yref]); }
     if(!list.length) continue;
     has[gx] = 1;
+    // komşu satırlarla uzlaşma: tek bir satırın izleme hatası (ör. kıvrımda komşu satıra kayma) alana geçmez
+    { const n = list.length, near = (i, j) => j >= 0 && j < n && Math.abs(list[j][0] - list[i][0]) < pitch*3.2;
+      const dv = new Float32Array(n);
+      for(let i=0;i<n;i++){
+        const c = list[i][1];
+        if(near(i, i-1) && near(i, i+1)) dv[i] = med3(list[i-1][1], c, list[i+1][1]);
+        else if(near(i, i+1) && near(i, i+2)) dv[i] = med3(c, list[i+1][1], list[i+2][1]);
+        else if(near(i, i-1) && near(i, i-2)) dv[i] = med3(c, list[i-1][1], list[i-2][1]);
+        else dv[i] = c;
+      }
+      for(let i=0;i<n;i++) list[i][1] = dv[i]; }
     let k = 0;
     for(let gy=0; gy<ngy; gy++){
       const Y = gy*GY;
@@ -2331,25 +2400,47 @@ function txPlane(sd, W, H, f, quick, dbg){
   const srcH = (dist(qB[0],qB[3]) + dist(qB[1],qB[2]))/2;
   dbg.push('düzlem süre ' + tm.join(' '));
   dbg.push(`düzlem ${Wb}x${Hb} aralık ${pitch.toFixed(1)} pay Ü${(eyT/pv).toFixed(1)} A${(eyB/pv).toFixed(1)} satır kıvrımı ≤${dmax.toFixed(1)}px kenar eğriliği ≤${hmax.toFixed(1)}px${stretch ? '' : ' (sağ serbest)'} blok ${tb.n} satır L(inl ${L.inl.toFixed(2)}) R(inl ${R.inl.toFixed(2)})`);
+  if(G.__txKeep){ G.__txAll = all.filter(r => !rows.includes(r)).map(r => ({X: r.X, Y: r.Y, X0: r.X0, X1: r.X1})); }
   if(G.__txKeep) G.__txKeep.push({g0, gray, ink, Wb, Hb, rows: rows.map(r => ({X: r.X, Y: r.Y, X0: r.X0, X1: r.X1, X0p: r.X0p, X1p: r.X1p, yref: r.yref, main: r.main})), tb: {yTop: tb.yTop, yBot: tb.yBot, L, R}, xa: Lref, xb: Rref});
   return {toSrc, bw: Wb, bh: Hb, fields: [], margins, tb, pitch, ink, gray, srcPerPx: srcH/Hb, neighborSide: [false,false,false,false],
-          box: {x0:0, y0:0, x1:Wb, y1:Hb}, Wa: Wb, Ha: Hb, tx: true, rows, all, PX, PY, pv, hm, qB, outD};
+          box: {x0:0, y0:0, x1:Wb, y1:Hb}, Wa: Wb, Ha: Hb, tx: true, rows, all, PX, PY, pv, hm, qB, outD, capT, capB};
 }
 /* yan sayfanın yazısı hangi tarafta? (ana bloğun sağında/solunda, düzenli satır aralıklı başka bir küme)
    Dönen 'L' (sol sayfa: komşu sağda), 'R' ya da '' */
-function txSide(P){
+function txSide(P, c){
   let nl = 0, nr = 0;
   const groups = new Map();
   for(const r of P.all){ if(r.main) continue; if(!groups.has(r.bi)) groups.set(r.bi, []); groups.get(r.bi).push(r); }
-  const y0 = P.tb.yTop - P.pitch*3, y1 = P.tb.yBot + P.pitch*3, xa = P.margins.xa, xb = P.margins.xb;
+  const p = P.pitch, y0 = P.tb.yTop - p*3, y1 = P.tb.yBot + p*3, xa = P.margins.xa, xb = P.margins.xb;
+  // sayfanın içerik alanı (başlık … sayfa no): komşu sayfanın yazısı da aşağı yukarı bu aralıktadır
+  const cy0 = c ? c.y0 - p*2.5 : -1e9, cy1 = c ? c.y0 + c.h + p*2.5 : 1e9;
+  const ym = r => (r.Y[0] + r.Y[r.Y.length-1])/2, len = r => Math.abs(r.X1 - r.X0);
+  const amp = r => { let a = 0, n = 0; for(const q of r.row.chains){ a += q.amp*q.n; n += q.n; } return n ? a/n : 0; };
+  const ampMain = quantile(P.all.filter(r => r.main).map(amp), 0.5) || 0;
   for(const g of groups.values()){
-    const rs = g.filter(r => { const y = (r.Y[0] + r.Y[r.Y.length-1])/2; return y > y0 && y < y1 && Math.abs(r.X1 - r.X0) > P.pitch*2.5; }).sort((a, b) => a.Y[0] - b.Y[0]);
+    const rs = g.filter(r => { const y = ym(r); return y > y0 && y < y1 && len(r) > p*2.5; }).sort((a, b) => a.Y[0] - b.Y[0]);
     if(rs.length < 6) continue;
     // düzenli aralık: komşu satır farklarının çoğu ana satır aralığına yakın
-    let reg = 0; for(let i=1;i<rs.length;i++){ const d = (rs[i].Y[0] - rs[i-1].Y[0])/P.pitch; if(d > 0.6 && d < 1.5) reg++; }
+    let reg = 0; for(let i=1;i<rs.length;i++){ const d = (rs[i].Y[0] - rs[i-1].Y[0])/p; if(d > 0.6 && d < 1.5) reg++; }
     if(reg < (rs.length-1)*0.6) continue;
     const right = rs.filter(r => r.X0 > xb).length, left = rs.filter(r => r.X1 < xa).length;
-    if(right >= rs.length*0.8) nr += rs.length; else if(left >= rs.length*0.8) nl += rs.length;
+    if(right < rs.length*0.8 && left < rs.length*0.8) continue;
+    const isR = right >= rs.length*0.8;
+    // Yazı mı, desen mi (dantel örtü, klavye)? Gerçek yazıda:
+    //  - küme sayfanın yazı alanının çok üstüne / altına taşmaz,
+    //  - satırların sırta bakan uçları düz bir kenara dizilir (komşu sayfanın kenar boşluğu),
+    //  - öbür uçları da hizalıdır (karşı kenar boşluğu ya da kadraj kenarı); desende dağınıktır,
+    //  - satırlar uzundur (ortanca ≥ 4 satır aralığı).
+    if(g.filter(r => { const y = ym(r); return (y < cy0 || y > cy1) && len(r) > p*2.5; }).length >= 3) continue;
+    const near = txEdge(rs.map(r => [ym(r), isR ? r.X0 : r.X1]), p*0.5, isR ? -1 : 1);
+    if(!near || near.inl < 0.6) continue;
+    const far = txEdge(rs.map(r => [ym(r), isR ? r.X1 : r.X0]), p*0.7, isR ? 1 : -1);
+    if(!far || far.inl < 0.5) continue;
+    if(quantile(rs.map(len), 0.5) < p*4) continue;
+    //  - satır izlerinin belirginliği (genlik) sayfanın kendi yazısına yakındır; desende belirgin biçimde düşüktür,
+    //  - komşu sayfadan en az 12 satır görünür.
+    if(rs.length < 12 || quantile(rs.map(amp), 0.5) < ampMain*0.75) continue;
+    if(isR) nr += rs.length; else nl += rs.length;
   }
   if(nr >= 6 && nr > nl*3) return 'L';
   if(nl >= 6 && nl > nr*3) return 'R';
@@ -2513,7 +2604,7 @@ function txContent(P, dbg){
       }
       y = y2;
     }
-    if(y < 0 || y >= h){ why = 'düzlem sonu'; if(gap < p*0.8) cut = true; }
+    if(y < 0 || y >= h){ why = 'düzlem sonu'; if(gap < p*0.8 && !(dir < 0 ? P.capT : P.capB)) cut = true; }
     if(!keepLast && why !== 'sayfa no / başlık' && why !== 'boşluk' && gap < p*0.5 && bands.length > nb0){
       const q = bands[bands.length-1];
       // yazı satırı içeren bant atılmaz (kadrajın kestiği gerçek yazı: 'kesik' olarak işaretli kalır)
@@ -2735,18 +2826,29 @@ function processCanvas(src, opts){
   if(tqSrc){
     const wT = dist(tqSrc[0],tqSrc[1]), wB = dist(tqSrc[3],tqSrc[2]), hL = dist(tqSrc[0],tqSrc[3]), hR = dist(tqSrc[1],tqSrc[2]);
     tilt = Math.max(wT/wB, wB/wT, hL/hR, hR/hL);
-    const sTx = TX ? txSide(TX.P) : '';
+    const sTx = TX ? txSide(TX.P, TX.content) : '';
     side = sTx ? {side: sTx, why: 'komşu sayfanın yazısı'} : sideCues(sd, W, H, tqSrc);
   }
   if(mode === 'yazı'){
-    // içerik kutusunun her yanında kadrajın kaç satır aralığı daha gördüğü (sayfa no, başlık için)
+    // içeriğin her yanında kadrajın kaç satır aralığı daha gördüğü (sayfa no, başlık için).
+    // Yazı yolunda ölçü YAZININ KENDİ SINIRINDAN alınır (satır uçlarının zarfı), kutunun köşelerinden değil:
+    // eğik tutulan sayfada kutunun boş köşesi kadraj dışına düşse de yazı tamdır.
     const tolR = 0.004*Math.min(W,H), pc = content.pitch || 20;
     const inside = p => isFinite(p[0]) && isFinite(p[1]) && p[0] >= tolR && p[1] >= tolR && p[0] <= W-1-tolR && p[1] <= H-1-tolR;
+    const envX = content.env ? (y => { const e = content.env(content.y0 + y); return [e[0] - content.x0, e[1] - content.x0]; }) : null;
     const sideIn = (e, k) => {
       const off = k*pc;
       for(let t=0.03; t<=0.98; t+=0.0475){
         let x, y;
-        if(e === 0){ x = t*content.w; y = -off; } else if(e === 1){ x = content.w + off; y = t*content.h; }
+        if(envX){
+          if(e === 0 || e === 2){
+            const q = envX(e === 0 ? Math.min(content.h, pc*0.9) : Math.max(0, content.h - pc*0.9));
+            x = q[0] + t*(q[1] - q[0]); y = e === 0 ? -off : content.h + off;
+          } else {
+            y = t*content.h; const q = envX(y);
+            x = e === 1 ? q[1] + pc*0.35 + off : q[0] - pc*0.35 - off;
+          }
+        } else if(e === 0){ x = t*content.w; y = -off; } else if(e === 1){ x = content.w + off; y = t*content.h; }
         else if(e === 2){ x = t*content.w; y = content.h + off; } else { x = -off; y = t*content.h; }
         if(!inside(mapOut(x, y))) return false;
       }
@@ -2768,15 +2870,17 @@ function processCanvas(src, opts){
     s = Math.min(s, sPitch*1.0);
   }
   const fw = Math.max(16, Math.round(content.w*s)), fh = Math.max(16, Math.round(content.h*s));
-  const grid = buildGrid(fw, fh, 8, (u, v) => mapOut(u/s, v/s));
+  // hızlı kontrolde (yazı yolu) çıktı sayfası üretilmez: netlik ölçüsü için yalnız ortadaki şerit örneklenir
+  const vOff = quick && TX ? Math.round(fh*0.3) : 0, fhR = quick && TX ? Math.max(16, Math.min(fh - vOff, Math.round(fh*0.4))) : fh;
+  const grid = buildGrid(fw, fhR, 8, (u, v) => mapOut(u/s, (v + vOff)/s));
   const mag = fh / Math.max(1, srcSpanH);
-  const pageData = remap(sd, W, H, fw, fh, grid, mag > 1.15, mode === 'yazı' ? [255,255,255] : null);
+  const pageData = remap(sd, W, H, fw, fhR, grid, mag > 1.15, mode === 'yazı' ? [255,255,255] : null);
   T('örnekle');
 
   // ---- parmak / sayfa dışı (1/4 çözünürlük)
-  const Q = 4, qw = Math.ceil(fw/Q), qh = Math.ceil(fh/Q);
-  const qRaw = shrinkRGB(pageData, fw, fh, Q);
-  const paperRaw = paperColorQ(qRaw, qw*qh);
+  const Q = 4, qw = Math.ceil(fw/Q), qh = Math.ceil(fhR/Q);
+  const qRaw = TX ? null : shrinkRGB(pageData, fw, fhR, Q);
+  const paperRaw = TX ? [255, 255, 255] : paperColorQ(qRaw, qw*qh);
   const paperL = 0.299*paperRaw[0]+0.587*paperRaw[1]+0.114*paperRaw[2];
   let fillQ = null, fingerQ = null;
   if(opts.smartCrop && !TX){
@@ -2836,7 +2940,7 @@ function processCanvas(src, opts){
     }
   }
   T('maske');
-  enhanceRGBA(pageData, fw, fh, opts.mode);
+  enhanceRGBA(pageData, fw, fhR, opts.mode);
   if(fillQ){
     let m = dilate1(fillQ, qw, qh);
     if(fingerQ) for(let k=0;k<2;k++) m = dilate1(m, qw, qh);
@@ -2847,13 +2951,13 @@ function processCanvas(src, opts){
   }
   if(mode === 'yazı' && content.env){
     // satır uçlarının zarfı dışında kalan her şey (sırt gölgesi, sayfa kenarı, dantel) kağıt rengine boyanır
-    const pc = opts.mode === 'orig' ? paperColor(pageData, fw, fh) : [255, 255, 255];
+    const pc = opts.mode === 'orig' ? paperColor(pageData, fw, fhR) : [255, 255, 255];
     const pad = content.envPad*s, fade = Math.max(2, content.pitch*0.3*s);
-    for(let v=0; v<fh; v++){
-      const e = content.env(content.y0 + v/s);
+    for(let v=0; v<fhR; v++){
+      const e = content.env(content.y0 + (v + vOff)/s);
       const xl = (e[0] - content.x0)*s - pad, xr = (e[1] - content.x0)*s + pad;
       const o = v*fw*4;
-      const er = content.erase, ey = er ? Math.min(content.eh-1, Math.max(0, Math.round(content.y0 + v/s)))*content.ew : 0;
+      const er = content.erase, ey = er ? Math.min(content.eh-1, Math.max(0, Math.round(content.y0 + (v + vOff)/s)))*content.ew : 0;
       for(let u=0; u<fw; u++){
         const d = u < xl ? xl - u : u > xr ? u - xr : 0;
         let a = d >= fade ? 1 : d/fade;
@@ -2867,18 +2971,18 @@ function processCanvas(src, opts){
     }
   }
   T('iyileştir');
-  const pageCanvas = putRGBA(pageData, fw, fh);
-  let fbox = {x0:0,y0:0,x1:fw,y1:fh};
+  const pageCanvas = quick ? null : putRGBA(pageData, fw, fh);
+  let fbox = {x0:0,y0:0,x1:fw,y1:fhR};
   if(mode === 'sayfa' && opts.smartCrop && opts.mode !== 'orig') fbox = trimEnhancedBox(pageData, fw, fh);
 
   // ---- sorunlar
-  const st = inkStatsQ(pageData, fw, fh, Q, fbox, fingerQ);
+  const st = inkStatsQ(pageData, fw, fhR, Q, fbox, fingerQ);
   if(mode === 'yazı'){
     // içerik kutusu kenarları kaynak karede kadraj kenarına değiyor/taşıyorsa → kesik
     const tolF = 0.012*Math.min(W,H);
     const near = (p) => p[0] < tolF || p[1] < tolF || p[0] > W-1-tolF || p[1] > H-1-tolF;
     const sides = [[0,0,1,0],[1,0,1,1],[0,1,1,1],[0,0,0,1]];      // üst, sağ, alt, sol
-    sides.forEach(([ax,ay,bx,by], e) => {
+    if(fhR === fh) sides.forEach(([ax,ay,bx,by], e) => {
       let n=0, k=0;
       for(let t=0.05; t<=0.95; t+=0.05){
         const x = (ax + (bx-ax)*t)*content.w, y = (ay + (by-ay)*t)*content.h;

@@ -298,7 +298,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 18</p>
+  <p class="ver">INSTANT SCANNER · sürüm 19</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1649,12 +1649,14 @@ const cam = {
        sayfa kadrajdan çıktıktan sonra gelse de sayfa alınır (verdict → lateCapture). */
   endView(final){
     const L = this.live, now = performance.now();
-    if(final && L.pre && L.phase !== 'done' && (L.best || L.alt)) this.tryCapture(now, true);
-    // sürekli çekim: bu görünüm denetimden geçti (tamam ya da küçük kusur) ama henüz çekilmedi → sayfa çevrilirken
-    // görünümün en iyi karesi yine de alınır (kapak, yazısız sayfa, kısa duruş — hiçbir sayfa kaybolmaz)
+    // çok kısa görünüm (1-3 kare: yaprak havada, çevirme anı) sayfa sayılmaz
+    if(final && L.pre && L.phase !== 'done' && (L.best || L.alt) && L.viewN >= 4) this.tryCapture(now, true);
+    // sürekli çekim: bu görünüm denetimden geçti (tamam ya da yazısız sayfa/kapak) ama henüz çekilmedi → sayfa
+    // çevrilirken görünümün en iyi OTURMUŞ karesi alınır. Kusurlu görünüm (alt/üst eksik, eğik) ve oturmuş karesi
+    // olmayan görünüm (yaprak havada, çevirme anı) alınmaz.
     const c = L.cand;
-    if(final && !L.pre && L.phase !== 'done' && c && c.viewId === L.viewId && (L.best || L.alt) &&
-       L.viewN >= 6 && now - L.viewAt >= 400){
+    if(final && !L.pre && L.phase !== 'done' && c && c.viewId === L.viewId && (c.v.ok || c.v.code === 'notext') &&
+       L.best && L.viewN >= 6 && now - L.viewAt >= 400){
       L.pre = {res: c.res, at: c.at, soft: c.v.ok ? null : c.v, moveSum: c.moveSum, s0: c.s0, sig: c.sig};
       this.note(`görünüm bitti: denetlenmiş görünüm çekilmemişti (${c.v.ok ? 'tamam' : c.v.code}) → en iyi kare`);
       this.tryCapture(now, true);
@@ -1881,9 +1883,9 @@ const cam = {
     if(!v.ok){
       L.verdict = v; L.verdictAt = now; L.pre = null;
       if(!v.soft) return;
-      // "mükemmeli bekleme": küçük kusurda hemen; yazısız sayfada (kapak) ~0.6 sn, diğer belirsiz durumda ~1 sn sonra
-      // bu duruşun en net karesi alınır (daha net kare gelirse sessizce değişir)
-      const waitMs = !v.slow ? 0 : v.code === 'notext' ? 600 : 1000, needTries = !v.slow ? 1 : 2;
+      // "mükemmeli bekleme": küçük kusurda (alt/üst eksik olabilir, eğik) ~½ sn, yazısız sayfada (kapak) ~0.6 sn,
+      // diğer belirsiz durumda ~1.5 sn sonra bu duruşun en net karesi alınır
+      const waitMs = !v.slow ? 500 : v.code === 'notext' ? 600 : 1500, needTries = !v.slow || v.code === 'notext' ? 2 : 3;
       if(now - L.firstTryT >= waitMs && L.tries >= needTries && same){
         L.pre = {res, at: now, soft: v, moveSum: snap.moveSum, s0: snap.s, sig: snap.sig};
         this.tryCapture(now);
@@ -1909,17 +1911,15 @@ const cam = {
     // çekilecek kare: oturmuş karelerin en neti. Hiç oturmuş kare yoksa (el titremesi) eldeki en net kare: oturumun
     // tipik netliğindeyse hemen, değilse ~⅓ sn içinde oturmuş kare gelmezse
     const t0 = Math.max(pre.at, L.viewAt || 0);
-    // sabitlenme beklenmez: oturmuş kare yoksa ya da tüm kareler arasındaki en net kare belirgin biçimde daha netse o alınır
     let B = L.best, bl = null;
-    if(B && L.alt && L.alt !== B && this.sharper(L.alt, B) > 1.08) B = L.alt;
     if(!B){
       B = L.alt;
       if(!B) return;
       if(!final){
-        if(L.viewN < 2) return;
+        if(L.viewN < 3) return;
         bl = this.blurOf(B, cq);
-        // net görünüyorsa hemen; ölçülemiyor / bulanıksa kısa süre (~¼ sn) daha net kare beklenir
-        if((bl.unknown || bl.bad || bl.wr < 0.8) && now - t0 < 250) return;
+        const ref = S.refF.length >= 2 ? median(S.refF) : 0;
+        if(!(ref && !bl.unknown && !bl.bad && bl.page >= ref*0.92 && bl.wr >= 0.8) && now - t0 < 350) return;
       }
     }
     // çerçeve doğrulandığından beri görüntü değiştiyse (el kadraja girdi, sayfa oynadı) çerçeve geçersizdir: yeniden denetlenir

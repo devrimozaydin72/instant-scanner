@@ -1,0 +1,14 @@
+{
+  "name": "INSTANT SCANNER (deneme)",
+  "short_name": "Scanner deneme",
+  "description": "Kitap ve notları canlı tarayarak saniyeler içinde düzgün PDF'e çevir.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1420",
+  "theme_color": "#0f1420",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

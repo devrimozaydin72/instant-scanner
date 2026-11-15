@@ -249,21 +249,45 @@
   /* 6: kalkan */
   .onb-s.on .o-pulse{animation:oPulse 2.2s ease-in-out infinite; transform-box:fill-box; transform-origin:center}
   @keyframes oPulse{0%,100%{transform:scale(1)} 50%{transform:scale(1.05)}}
+  /* dil seçimi */
+  #langPick{position:fixed; inset:0; z-index:210; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+    padding:max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+    background:radial-gradient(120% 70% at 50% 0%, #1d2b4f 0%, #0f1420 60%); color:var(--text); overflow-y:auto}
+  #langPick[hidden]{display:none}
+  #langPick .lp-globe{font-size:44px; line-height:1}
+  #langPick h2{margin:0; font-size:22px; text-align:center; line-height:1.35}
+  #langPick h2 small{display:block; color:var(--dim); font-weight:400; font-size:13px; margin-top:4px}
+  #langList{display:grid; grid-template-columns:1fr 1fr; gap:10px; width:100%; max-width:420px}
+  #langList button{border:1px solid var(--line); background:var(--card); color:var(--text); border-radius:14px; padding:15px 12px;
+    font-size:17px; font-weight:600; cursor:pointer; transition:transform .1s, border-color .15s}
+  #langList button:active{transform:scale(.97)}
+  #langList button.sug{border-color:var(--accent2); box-shadow:0 0 0 1px var(--accent2) inset}
+  #langList button.cur{background:linear-gradient(135deg,#46e39a,#2bc47c); color:#06210f; border-color:transparent}
+  #langList button:last-child:nth-child(odd){grid-column:1 / -1}
+  /* sağdan sola dilde (Arapça) kaydırma şeridi ve çizimler soldan sağa kalır; yalnız metin sağdan sola */
+  #onbTrack, .onb-dots, .onb-art svg{direction:ltr}
+  html[dir=rtl] .onb-s h2, html[dir=rtl] .onb-s p{direction:rtl}
   @media (prefers-reduced-motion: reduce){ #onb *{animation:none !important} .o-th{opacity:1} .o-cnt.c3{opacity:1} }
 </style>
 </head>
 <body>
+<!-- DİL SEÇİMİ (ilk açılışta) -->
+<div id="langPick" hidden role="dialog" aria-label="Language">
+  <div class="lp-globe">🌐</div>
+  <h2 id="langTitle">Dil seçin<small>Choose your language</small></h2>
+  <div id="langList"></div>
+</div>
 <!-- TANITIM (ilk açılışta bir kez) -->
 <div id="onb" hidden role="dialog" aria-label="Tanıtım">
-  <div class="onb-top"><span class="onb-brand">⚡ INSTANT SCANNER</span><button class="onb-skip" id="onbSkip">Geç</button></div>
+  <div class="onb-top"><span class="onb-brand">⚡ INSTANT SCANNER</span><button class="onb-skip" id="onbSkip" data-t>Geç</button></div>
   <div id="onbTrack">
     <!-- 1 · otomatik çekim -->
     <section class="onb-s">
       <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
         <rect x="92" y="14" width="116" height="36" rx="18" fill="#1f2942" stroke="#2b3654"/>
-        <text class="o-cnt c1" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700">1 sayfa ✓</text>
-        <text class="o-cnt c2" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700">2 sayfa ✓</text>
-        <text class="o-cnt c3" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700">3 sayfa ✓</text>
+        <text class="o-cnt c1" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700" data-t>1 sayfa ✓</text>
+        <text class="o-cnt c2" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700" data-t>2 sayfa ✓</text>
+        <text class="o-cnt c3" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700" data-t>3 sayfa ✓</text>
         <g stroke="#4f8cff" stroke-width="4" fill="none" stroke-linecap="round">
           <path d="M22 92 V72 H42"/><path d="M258 72 H278 V92"/><path d="M278 232 V252 H258"/><path d="M42 252 H22 V232"/>
         </g>
@@ -276,10 +300,33 @@
         <g class="o-beep"><circle cx="246" cy="76" r="24" class="o-ok"/><path d="M234 77 l8 8 l16 -17" stroke="#06210f" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
           <text x="246" y="42" text-anchor="middle" fill="#39d98a" font-size="15" font-weight="700">bip!</text></g>
       </svg></div>
-      <h2>Sayfayı çevir, <em>o çeksin</em></h2>
-      <p>Deklanşöre basmak yok, beklemek yok. Her yeni sayfa <b>kendiliğinden</b> çekilir; <b>bip</b> sesi “tamam” demektir. Sen çevirmeye devam et.</p>
+      <h2 data-t>Sayfayı çevir, <em>o çeksin</em></h2>
+      <p data-t>Deklanşöre basmak yok, beklemek yok. Her yeni sayfa <b>kendiliğinden</b> çekilir; <b>bip</b> sesi “tamam” demektir. Sen çevirmeye devam et.</p>
     </section>
-    <!-- 2 · kıvrım düzeltme -->
+    <!-- 2 · çift sayfa (yan tutuş) -->
+    <section class="onb-s">
+      <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
+        <polygon class="o-pg" points="44,74 150,66 150,206 44,200"/>
+        <polygon class="o-pg" points="150,66 256,74 256,200 150,206" style="fill:#ece8dc"/>
+        <g class="o-ln"><path d="M60 96 H134"/><path d="M60 110 H134"/><path d="M60 124 H134"/><path d="M60 138 H128"/><path d="M60 152 H134"/><path d="M60 166 H134"/><path d="M60 180 H110"/>
+          <path d="M166 96 H240"/><path d="M166 110 H240"/><path d="M166 124 H240"/><path d="M166 138 H236"/><path d="M166 152 H240"/><path d="M166 166 H240"/><path d="M166 180 H216"/></g>
+        <rect x="140" y="40" width="126" height="190" rx="16" fill="none" stroke="#4f8cff" stroke-width="5">
+          <animate attributeName="x" dur="4s" repeatCount="indefinite" keyTimes="0;0.35;0.5;0.85;1" values="140;140;26;26;140"/>
+          <animate attributeName="y" dur="4s" repeatCount="indefinite" keyTimes="0;0.35;0.5;0.85;1" values="40;40;52;52;40"/>
+          <animate attributeName="width" dur="4s" repeatCount="indefinite" keyTimes="0;0.35;0.5;0.85;1" values="126;126;248;248;126"/>
+          <animate attributeName="height" dur="4s" repeatCount="indefinite" keyTimes="0;0.35;0.5;0.85;1" values="190;190;166;166;190"/>
+        </rect>
+        <g><rect x="96" y="0" width="108" height="30" rx="15" fill="#1f2942" stroke="#2b3654"/>
+          <text x="150" y="20" text-anchor="middle" fill="#e8edf7" font-size="14" font-weight="700" data-t>📱 1 sayfa
+            <animate attributeName="opacity" dur="4s" repeatCount="indefinite" keyTimes="0;0.42;0.43;0.92;0.93;1" values="1;1;0;0;1;1"/></text>
+          <text x="150" y="20" text-anchor="middle" fill="#39d98a" font-size="14" font-weight="700" opacity="0" data-t>📖 2 sayfa
+            <animate attributeName="opacity" dur="4s" repeatCount="indefinite" keyTimes="0;0.42;0.43;0.92;0.93;1" values="0;0;1;1;0;0"/></text></g>
+        <g transform="translate(150 246)" fill="#93a0bd" font-size="12.5" text-anchor="middle"><text data-t>dik tut = tek sayfa · yan tut = iki sayfa</text></g>
+      </svg></div>
+      <h2 data-t>Yan tut, <em>iki sayfa</em> birden</h2>
+      <p data-t>Telefonu dik tutarsan tek sayfa çekilir. <b>Yan çevirirsen</b> açık kitabın iki sayfası tek seferde çekilir, ayrı sayfalar olarak kaydedilir: tarama iki kat hızlanır.</p>
+    </section>
+    <!-- 3 · kıvrım düzeltme -->
     <section class="onb-s">
       <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
         <path class="o-pg" d="M60 34 Q150 58 240 26 L240 246 Q150 262 60 240 Z">
@@ -295,8 +342,8 @@
           <path d="M78 208 Q150 218 190 212"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 208 Q150 218 190 212;M78 208 Q150 218 190 212;M78 202 Q134 202 190 202;M78 202 Q134 202 190 202;M78 208 Q150 218 190 212"/></path>
         </g>
       </svg></div>
-      <h2>Kıvrık sayfa <em>dümdüz</em></h2>
-      <p>Satırlar tek tek izlenir: sırt kıvrımı, eğik tutuş ve perspektif düzeltilir. Sayfa, düz bir tarayıcıdan çıkmış gibi olur.</p>
+      <h2 data-t>Kıvrık sayfa <em>dümdüz</em></h2>
+      <p data-t>Satırlar tek tek izlenir: sırt kıvrımı, eğik tutuş ve perspektif düzeltilir. Sayfa, düz bir tarayıcıdan çıkmış gibi olur.</p>
     </section>
     <!-- 3 · temizlik -->
     <section class="onb-s">
@@ -315,8 +362,8 @@
         </g>
         <rect x="28" y="2" width="4" height="260" rx="2" fill="#39d98a"><animate attributeName="x" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.15;0.6;0.85;1" values="28;28;268;268;28"/></rect>
       </svg></div>
-      <h2>Temiz, <em>bembeyaz</em> sayfa</h2>
-      <p>Sarı lamba ışığı, sırt gölgesi, masa örtüsü ve yandaki sayfa ayıklanır. Arkadan sızan silik yazı silinir; harfler net ve koyu kalır.</p>
+      <h2 data-t>Temiz, <em>bembeyaz</em> sayfa</h2>
+      <p data-t>Sarı lamba ışığı, sırt gölgesi, masa örtüsü ve yandaki sayfa ayıklanır. Arkadan sızan silik yazı silinir; harfler net ve koyu kalır.</p>
     </section>
     <!-- 4 · hiçbir sayfa kaçmaz -->
     <section class="onb-s">
@@ -328,8 +375,8 @@
         <g class="o-th" style="animation-delay:1.05s"><rect x="114" y="134" width="72" height="100" rx="5" fill="#fff" stroke="#ff5c7a" stroke-width="4"/><g class="o-ln" style="stroke-width:2.5"><path d="M124 152 H176"/><path d="M124 164 H176"/><path d="M124 176 H176"/></g><path d="M114 196 l12 -6 l12 6 l12 -6 l12 6 l12 -6 l12 6" stroke="#ff5c7a" stroke-width="2.5" fill="none" stroke-dasharray="4 3"/><rect x="122" y="208" width="56" height="20" rx="10" fill="#ff5c7a"/><text x="150" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">kesik</text></g>
         <g class="o-th" style="animation-delay:1.3s"><rect x="204" y="134" width="72" height="100" rx="5" fill="#fff" stroke="#ffb020" stroke-width="4"/><g class="o-ln" style="stroke-width:2.5"><path d="M214 152 H266"/><path d="M214 164 H266"/><path d="M214 176 H266"/><path d="M214 188 H266"/><path d="M214 200 H250"/></g><rect x="208" y="208" width="64" height="20" rx="10" fill="#ffb020"/><text x="240" y="222" text-anchor="middle" font-size="11.5" font-weight="700" fill="#2a1c00">TEKRAR?</text></g>
       </svg></div>
-      <h2>Hiçbir sayfa <em>kaçmaz</em></h2>
-      <p>Bulanık ya da yarım kare alınmaz. Kesik sayfa ve iki kez çekilen sayfa işaretlenir, <b>tek dokunuşla</b> yeniden çekilir.</p>
+      <h2 data-t>Hiçbir sayfa <em>kaçmaz</em></h2>
+      <p data-t>Bulanık ya da yarım kare alınmaz. Kesik sayfa ve iki kez çekilen sayfa işaretlenir, <b>tek dokunuşla</b> yeniden çekilir.</p>
     </section>
     <!-- 5 · doğru tutuş -->
     <section class="onb-s">
@@ -339,16 +386,16 @@
           <g transform="rotate(-42 70 110)"><rect x="30" y="102" width="80" height="14" rx="5" fill="#2b3654" stroke="#cfd8ea" stroke-width="2.5"/></g>
           <path d="M84 132 L30 206 M84 132 L150 206" stroke="#ff5c7a" stroke-width="2" stroke-dasharray="5 5" fill="none"/>
           <circle cx="75" cy="44" r="20" class="o-bad"/><path d="M67 36 l16 16 M83 36 l-16 16" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
-          <text x="75" y="248" text-anchor="middle" fill="#93a0bd" font-size="14">eğik</text>
+          <text x="75" y="248" text-anchor="middle" fill="#93a0bd" font-size="14" data-t>eğik</text>
         </g>
         <rect x="166" y="206" width="118" height="16" rx="3" fill="#f4f1e8"/>
         <g class="o-hover"><rect x="185" y="104" width="80" height="14" rx="5" fill="#2b3654" stroke="#cfd8ea" stroke-width="2.5"/>
           <path d="M190 118 L170 204 M260 118 L280 204" stroke="#39d98a" stroke-width="2" stroke-dasharray="5 5" fill="none"/></g>
         <circle cx="225" cy="44" r="20" class="o-ok"/><path d="M215 45 l7 7 l13 -14" stroke="#06210f" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-        <text x="225" y="248" text-anchor="middle" fill="#e8edf7" font-size="14" font-weight="700">tam üstünde</text>
+        <text x="225" y="248" text-anchor="middle" fill="#e8edf7" font-size="14" font-weight="700" data-t>tam üstünde</text>
       </svg></div>
-      <h2>Doğru tutuş = <em>en hızlı</em> tarama</h2>
-      <p>Telefonu sayfanın <b>tam üstünde</b>, kitaba paralel tut. Sayfa numarası dahil sayfanın <b>tamamı</b> ekranda görünsün.</p>
+      <h2 data-t>Doğru tutuş = <em>en hızlı</em> tarama</h2>
+      <p data-t>Telefonu sayfanın <b>tam üstünde</b>, kitaba paralel tut. Sayfa numarası dahil sayfanın <b>tamamı</b> ekranda görünsün.</p>
     </section>
     <!-- 6 · gizlilik -->
     <section class="onb-s">
@@ -359,8 +406,8 @@
           <circle cx="150" cy="132" r="6" fill="#39d98a"/><rect x="147" y="134" width="6" height="12" rx="3" fill="#39d98a"/></g>
         <g transform="translate(232 18)"><path d="M14 40 a14 14 0 0 1 2 -28 a20 20 0 0 1 38 4 a12 12 0 0 1 2 24 Z" fill="#2b3654"/><path d="M6 48 L60 2" stroke="#ff5c7a" stroke-width="5" stroke-linecap="round"/></g>
       </svg></div>
-      <h2>Sayfaların <em>sende kalır</em></h2>
-      <p>Tüm işlem telefonunda yapılır. Görüntülerin <b>hiçbir sunucuya</b> gönderilmez; internet olmadan da çalışır.</p>
+      <h2 data-t>Sayfaların <em>sende kalır</em></h2>
+      <p data-t>Tüm işlem telefonunda yapılır. Görüntülerin <b>hiçbir sunucuya</b> gönderilmez; internet olmadan da çalışır.</p>
     </section>
   </div>
   <div class="onb-bot">
@@ -373,27 +420,27 @@
   <div class="logo">⚡</div>
   <div>
     <h1>INSTANT SCANNER</h1>
-    <p>Kitap ve notları saniyeler içinde düzgün PDF'e çevir</p>
+    <p data-t>Kitap ve notları saniyeler içinde düzgün PDF'e çevir</p>
   </div>
 </header>
 
 <main>
   <!-- GİRİŞ -->
   <section class="card drop" id="introCard">
-    <h2>1 · Tara</h2>
-    <p class="sub">Kamerayı kitaba tut ve sayfaları çevir — her sayfa <b>kendiliğinden, beklemeden</b> çekilir; <b>bip</b> sesi "tamam" demektir.</p>
+    <h2 data-t>1 · Tara</h2>
+    <p class="sub" data-t>Kamerayı kitaba tut ve sayfaları çevir — her sayfa <b>kendiliğinden, beklemeden</b> çekilir; <b>bip</b> sesi "tamam" demektir.</p>
     <div class="bigbtns" style="margin-top:14px">
       <button class="bigbtn" id="btnLive">
-        <span class="ic">📷</span>Canlı Tara
-        <small>Beklemeden otomatik çekim · bip = tamam · 🔦 ışık</small>
+        <span class="ic">📷</span><span data-t>Canlı Tara</span>
+        <small data-t>Beklemeden otomatik çekim · bip = tamam · 🔦 ışık</small>
       </button>
       <button class="bigbtn alt" id="btnPick">
-        <span class="ic">📁</span>Video / Foto Seç
-        <small>Galeriden veya bilgisayardan</small>
+        <span class="ic">📁</span><span data-t>Video / Foto Seç</span>
+        <small data-t>Galeriden veya bilgisayardan</small>
       </button>
     </div>
-    <button class="linkbtn" id="btnRecord">🎥 Telefonun kamerasıyla video kaydet</button>
-    <p class="tips">
+    <button class="linkbtn" id="btnRecord" data-t>🎥 Telefonun kamerasıyla video kaydet</button>
+    <p class="tips" data-t>
       💡 <b>Nasıl çalışır:</b> Sayfanın <b>tamamı</b> (sayfa numarası dahil) görünsün; sayfa eğik, yan ya da kıvrık dursa da olur. Sayfa görünür görünmez arka planda denetlenir: tam, net ve yeni ise <b>bip</b> sesi gelir ve yeşil ✓ çıkar — beklemene gerek yok, sayfayı çevir. Sol/sağ sayfa sırası kendiliğinden düzeltilir, aynı sayfa iki kez alınmaz, yarım/bulanık kare alınmaz.
       Açılı çekimler düzleştirilir, kıvrık satırlar doğrultulur, kenardaki parmaklar ve sayfa dışı alanlar temizlenir.
       Eksik çıkan sayfaları sonra tek dokunuşla yeniden çekebilirsin.
@@ -404,31 +451,31 @@
   <!-- AYARLAR -->
   <section class="card" id="settingsCard">
     <div class="settings">
-      <label class="setting">Görüntü modu
+      <label class="setting"><span data-t>Görüntü modu</span>
         <select id="selMode">
-          <option value="color" selected>🎨 Renkli (temiz beyaz kağıt)</option>
-          <option value="gray">⬜ Gri tonlama</option>
-          <option value="doc">📄 Siyah-beyaz (en net yazı)</option>
-          <option value="orig">📷 Orijinal renkler</option>
+          <option value="color" selected data-t>🎨 Renkli (temiz beyaz kağıt)</option>
+          <option value="gray" data-t>⬜ Gri tonlama</option>
+          <option value="doc" data-t>📄 Siyah-beyaz (en net yazı)</option>
+          <option value="orig" data-t>📷 Orijinal renkler</option>
         </select>
       </label>
-      <label class="setting">PDF kalitesi
+      <label class="setting"><span data-t>PDF kalitesi</span>
         <select id="selQuality">
-          <option value="0.92">Yüksek (200 dpi)</option>
-          <option value="0.85" selected>Orta (150 dpi)</option>
-          <option value="0.7">Düşük (küçük dosya)</option>
+          <option value="0.92" data-t>Yüksek (200 dpi)</option>
+          <option value="0.85" selected data-t>Orta (150 dpi)</option>
+          <option value="0.7" data-t>Düşük (küçük dosya)</option>
         </select>
       </label>
-      <label class="setting">Otomatik çekim için sabit bekleme
+      <label class="setting"><span data-t>Otomatik çekim için sabit bekleme</span>
         <select id="selStable">
-          <option value="100" selected>Anında (en hızlı)</option>
-          <option value="250">¼ saniye</option>
-          <option value="500">½ saniye (en net)</option>
+          <option value="100" selected data-t>Anında (en hızlı)</option>
+          <option value="250" data-t>¼ saniye</option>
+          <option value="500" data-t>½ saniye (en net)</option>
         </select>
       </label>
-      <label class="setting">Akıllı temizlik
+      <label class="setting"><span data-t>Akıllı temizlik</span>
         <label class="switch"><input type="checkbox" id="chkCrop" checked>
-          🤖 Düzleştir · kırp · parmak sil</label>
+          <span data-t>🤖 Düzleştir · kırp · parmak sil</span></label>
       </label>
     </div>
   </section>
@@ -440,38 +487,38 @@
     <div id="progStatus">Hazırlanıyor…</div>
     <div id="progCount"></div>
     <div class="rowbtns" style="margin-top:12px">
-      <button class="btn red" id="btnCancel">İptal</button>
+      <button class="btn red" id="btnCancel" data-t>İptal</button>
     </div>
   </section>
 
   <!-- SONUÇLAR -->
   <section class="card" id="resultCard" hidden>
-    <h2>2 · Sayfalar <span id="pageCount" style="color:var(--accent2)"></span></h2>
-    <p class="sub">Dokunarak büyüt · 📷 yeniden çek · 🔄 döndür · 🗑 sil.
+    <h2><span data-t>2 · Sayfalar</span> <span id="pageCount" style="color:var(--accent2)"></span></h2>
+    <p class="sub" data-t>Dokunarak büyüt · 📷 yeniden çek · 🔄 döndür · 🗑 sil.
       <b style="color:var(--danger)">Kırmızı</b> çerçeve: sayfada eksik/sorun var.
       <b style="color:var(--warn)">TEKRAR?</b>: önceki sayfanın kopyası olabilir.</p>
     <div id="issueBar" hidden>
       <div class="txt" id="issueText"></div>
-      <button class="btn warn" id="btnRetakeAll">📷 Yeniden çek</button>
+      <button class="btn warn" id="btnRetakeAll" data-t>📷 Yeniden çek</button>
     </div>
     <div id="grid"></div>
     <div class="exportbar">
-      <input type="text" id="fname" value="tarama" placeholder="dosya adı">
-      <button class="btn green" id="btnPdf">📄 PDF İndir</button>
-      <button class="btn gray" id="btnMoreLive">📷 Sayfa Ekle</button>
-      <button class="btn gray" id="btnMore">➕ Dosya Ekle</button>
-      <button class="btn gray" id="btnReset">🔁 Baştan</button>
+      <input type="text" id="fname" value="tarama" placeholder="dosya adı" data-t-ph="dosya adı">
+      <button class="btn green" id="btnPdf" data-t>📄 PDF İndir</button>
+      <button class="btn gray" id="btnMoreLive" data-t>📷 Sayfa Ekle</button>
+      <button class="btn gray" id="btnMore" data-t>➕ Dosya Ekle</button>
+      <button class="btn gray" id="btnReset" data-t>🔁 Baştan</button>
     </div>
-    <button class="linkbtn" id="btnRaw">🐞 Sorun mu var? Ham kareleri paylaş (kameranın gördüğü hâli)</button>
+    <button class="linkbtn" id="btnRaw" data-t>🐞 Sorun mu var? Ham kareleri paylaş (kameranın gördüğü hâli)</button>
   </section>
 
   <!-- ÖNCEKİ TARAMALAR (cihazda saklanır) -->
   <section class="card" id="histCard" hidden>
-    <h2>📚 Önceki taramalar</h2>
-    <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
+    <h2 data-t>📚 Önceki taramalar</h2>
+    <p class="sub" id="histSub" data-t>Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 24 · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0">tanıtımı göster</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 25</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -480,24 +527,24 @@
   <div id="modalWhy"></div>
   <div class="rowbtns">
     <button class="btn gray" id="mPrev">‹</button>
-    <button class="btn warn" id="mRetake">📷 Yeniden çek</button>
+    <button class="btn warn" id="mRetake" data-t>📷 Yeniden çek</button>
     <button class="btn gray" id="mRotate">🔄</button>
     <button class="btn red" id="mDelete">🗑</button>
     <button class="btn gray" id="mNext">›</button>
-    <button class="btn" id="mClose">Kapat</button>
+    <button class="btn" id="mClose" data-t>Kapat</button>
   </div>
 </div>
 
 <!-- EKSİK SAYFA DİYALOĞU -->
 <div class="dialog" id="issueDlg" hidden>
   <div class="box">
-    <h3>⚠ Bazı sayfalarda eksik var</h3>
-    <div class="sub">Bu sayfaları yeniden çekmek ister misin? İstemezsen PDF yine de oluşturulur.</div>
+    <h3 data-t>⚠ Bazı sayfalarda eksik var</h3>
+    <div class="sub" data-t>Bu sayfaları yeniden çekmek ister misin? İstemezsen PDF yine de oluşturulur.</div>
     <ul id="issueList"></ul>
     <div class="rowbtns">
-      <button class="btn warn" id="dlgRetake">📷 Evet, yeniden çek</button>
-      <button class="btn green" id="dlgPdf">📄 Hayır, PDF'i yine de oluştur</button>
-      <button class="btn gray" id="dlgCancel">Vazgeç</button>
+      <button class="btn warn" id="dlgRetake" data-t>📷 Evet, yeniden çek</button>
+      <button class="btn green" id="dlgPdf" data-t>📄 Hayır, PDF'i yine de oluştur</button>
+      <button class="btn gray" id="dlgCancel" data-t>Vazgeç</button>
     </div>
   </div>
 </div>
@@ -508,12 +555,12 @@
     <h3 id="pdfTitle">✅ PDF hazır</h3>
     <div id="pdfInfo"></div>
     <div class="rowbtns">
-      <button class="btn green" id="pdfShare">📤 Paylaş / Dosyalara Kaydet</button>
-      <button class="btn" id="pdfDown">⬇ PDF İndir</button>
-      <button class="btn gray" id="pdfOpen">👁 Aç</button>
-      <button class="btn gray" id="pdfNew">🆕 Yeni tarama başlat</button>
-      <button class="btn red" id="pdfDel">🗑 Bu PDF'i sil</button>
-      <button class="btn gray" id="pdfClose">Kapat</button>
+      <button class="btn green" id="pdfShare" data-t>📤 Paylaş / Dosyalara Kaydet</button>
+      <button class="btn" id="pdfDown" data-t>⬇ PDF İndir</button>
+      <button class="btn gray" id="pdfOpen" data-t>👁 Aç</button>
+      <button class="btn gray" id="pdfNew" data-t>🆕 Yeni tarama başlat</button>
+      <button class="btn red" id="pdfDel" data-t>🗑 Bu PDF'i sil</button>
+      <button class="btn gray" id="pdfClose" data-t>Kapat</button>
     </div>
   </div>
 </div>
@@ -529,11 +576,11 @@
     <div id="camRetake" hidden><img id="camRetakeImg" alt=""><span id="camRetakeTxt"></span></div>
   </div>
   <div class="cambar">
-    <button class="camround" id="camClose" title="Kapat">✕</button>
-    <button class="camround" id="camTorch" title="El feneri" style="display:none">🔦</button>
+    <button class="camround" id="camClose" title="Kapat" data-t-title="Kapat">✕</button>
+    <button class="camround" id="camTorch" title="El feneri" data-t-title="El feneri" style="display:none">🔦</button>
     <div id="camThumb"><span id="camThumbN">0</span></div>
-    <button class="camround" id="camPause" title="Duraklat">⏸</button>
-    <button id="camDone">Bitti ✓</button>
+    <button class="camround" id="camPause" title="Duraklat" data-t-title="Duraklat">⏸</button>
+    <button id="camDone" data-t>Bitti ✓</button>
   </div>
 </div>
 
@@ -548,9 +595,42 @@
 <input type="file" id="fileCapture" accept="video/*" capture="environment" hidden>
 <input type="file" id="photoCapture" accept="image/*" capture="environment" hidden>
 
+<script src="i18n.js"></script>
 <script src="core.js"></script>
 <script>
 'use strict';
+/* ---------- ÇOK DİLLİLİK ----------
+   Anahtar = Türkçe metin. Çeviriler i18n.js'te (window.I18N_DATA[dil][türkçe]). {ad} yer tutucuları.
+   Sabit HTML: [data-t] öğenin içi, [data-t-ph] yer tutucu, [data-t-title] başlık özniteliği. */
+const LANGS = [['tr','Türkçe'],['en','English'],['es','Español'],['pt','Português'],['fr','Français'],['ru','Русский'],['ar','العربية'],['zh','中文'],['hi','हिन्दी']];
+const I18N = {lang: 'tr'};
+function T(s, v){
+  const d = I18N.lang !== 'tr' && window.I18N_DATA && window.I18N_DATA[I18N.lang];
+  let r = (d && d[s]) || s;
+  if(v) r = r.replace(/\{(\w+)\}/g, (m, k) => v[k] != null ? v[k] : m);
+  return r;
+}
+function applyLang(){
+  const html = document.documentElement;
+  html.lang = I18N.lang; html.dir = I18N.lang === 'ar' ? 'rtl' : 'ltr';
+  const norm = x => x.replace(/\s+/g, ' ').trim();
+  for(const el of document.querySelectorAll('[data-t]')){
+    if(el.__src == null) el.__src = norm(el.innerHTML);
+    const anim = el.querySelector && el.querySelector('animate');           // SVG yazısı içindeki animasyon korunur
+    el.innerHTML = T(el.__src.replace(/<animate[^>]*\/?>(<\/animate>)?/g, '').trim()) + (anim ? anim.outerHTML : '');
+  }
+  for(const el of document.querySelectorAll('[data-t-ph]')) el.placeholder = T(el.dataset.tPh);
+  for(const el of document.querySelectorAll('[data-t-title]')) el.title = T(el.dataset.tTitle);
+  document.title = T('INSTANT SCANNER — Kitaptan PDF');
+  const vt = document.getElementById('verTxt');
+  if(vt){ if(vt.__n == null) vt.__n = vt.textContent.replace(/\D+/g, ''); vt.textContent = T('sürüm {n}', {n: vt.__n}); }
+}
+function savedLang(){ try{ return localStorage.getItem('is.lang'); }catch(_){ return null; } }
+function guessLang(){
+  const n = (navigator.languages && navigator.languages[0] || navigator.language || 'tr').toLowerCase().slice(0, 2);
+  return LANGS.some(l => l[0] === n) ? n : 'en';
+}
+I18N.lang = savedLang() || guessLang();
 /* ============================================================
    INSTANT SCANNER — canlı tarama / video → sayfa → düzgün PDF
    Tüm işlem cihazda yapılır; hiçbir veri yüklenmez.
@@ -699,10 +779,10 @@ const archive = {
   async open(id){
     try{
       const meta = await store.get('docs', id), rec = await store.get('pdfs', id);
-      if(!meta || !rec){ toast('Bu PDF bulunamadı.'); return; }
+      if(!meta || !rec){ toast(T('Bu PDF bulunamadı.')); return; }
       pdfDlg.show({blob: fromAB(rec.pdf, 'application/pdf'), name: meta.name, pages: meta.pages, size: meta.size,
         created: meta.created, docId: id, fresh: false});
-    }catch(e){ toast('PDF açılamadı: ' + (e && e.message)); }
+    }catch(e){ toast(T('PDF açılamadı: {e}', {e: e && e.message})); }
   },
   async render(){
     let docs = [];
@@ -716,14 +796,14 @@ const archive = {
       const tb = fromAB(d.thumb, 'image/jpeg');
       let src = ''; if(tb){ src = URL.createObjectURL(tb); this.urls.push(src); }
       b.innerHTML = `<img ${src ? `src="${src}"` : ''} alt=""><div><div class="t">${esc(d.name)}</div>` +
-        `<div class="s">${d.pages} sayfa · ${fmtMB(d.size)} · ${fmtDate(d.created)}</div></div>`;
+        `<div class="s">${T('{n} sayfa', {n: d.pages})} · ${fmtMB(d.size)} · ${fmtDate(d.created)}</div></div>`;
       b.onclick = () => this.open(d.id);
       list.appendChild(b);
     }
     // iOS'ta Safari sekmesindeki site verisi uzun süre kullanılmazsa silinebilir; ana ekran uygulamasında kalıcıdır
     const tip = isIOS && !native.on && !navigator.standalone;
-    $('histSub').innerHTML = 'Oluşturduğun PDF\'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.' +
-      (tip ? '<br>💡 Kalıcı olması için Safari\'de <b>Paylaş → Ana Ekrana Ekle</b> ile uygulama olarak kullan.' : '');
+    $('histSub').innerHTML = T('Oluşturduğun PDF\'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.') +
+      (tip ? '<br>' + T('💡 Kalıcı olması için Safari\'de <b>Paylaş → Ana Ekrana Ekle</b> ile uygulama olarak kullan.') : '');
   },
 };
 
@@ -733,10 +813,10 @@ const pdfDlg = {
   show(d){
     this.cur = d;
     if(this.url){ URL.revokeObjectURL(this.url); this.url = null; }
-    $('pdfTitle').textContent = d.raw ? '🐞 Ham kareler' : d.fresh ? '✅ PDF hazır' : '📄 Önceki tarama';
-    $('pdfInfo').innerHTML = `<b>${esc(d.name)}</b><br>${d.pages} sayfa · ${fmtMB(d.size)}` +
+    $('pdfTitle').textContent = T(d.raw ? '🐞 Ham kareler' : d.fresh ? '✅ PDF hazır' : '📄 Önceki tarama');
+    $('pdfInfo').innerHTML = `<b>${esc(d.name)}</b><br>${T('{n} sayfa', {n: d.pages})} · ${fmtMB(d.size)}` +
       (d.created ? ' · ' + fmtDate(d.created) : '') +
-      (d.fresh && !d.raw ? (d.docId ? '<br>"Önceki taramalar" listesine kaydedildi.' : '<br>⚠ Bu cihaza kaydedilemedi; şimdi indir ya da paylaş.') : '');
+      (d.fresh && !d.raw ? '<br>' + T(d.docId ? '"Önceki taramalar" listesine kaydedildi.' : '⚠ Bu cihaza kaydedilemedi; şimdi indir ya da paylaş.') : '');
     const share = native.on || canShareFile(d);
     const preferShare = share && (isIOS || native.on);
     $('pdfShare').hidden = !share;
@@ -771,14 +851,14 @@ async function diagPages(){
 $('btnRaw').onclick = async () => {
   const pages = state.pages.filter(p => p.origBlob);
   if(!pages.length) return;
-  showOverlay('Ham kareler hazırlanıyor…');
+  showOverlay(T('Ham kareler hazırlanıyor…'));
   try{
     const dg = await diagPages().catch(() => []);
     const blob = await buildPdf(pages.map(p => ({id:p.id, procBlob:p.origBlob})).concat(dg.map((b, i) => ({id:'diag' + i, procBlob:b}))));
     hideOverlay();
     pdfDlg.show({blob, name:($('fname').value || 'tarama') + '-ham.pdf', pages:pages.length, size:blob.size, fresh:true, raw:true, docId:null});
-    $('pdfInfo').innerHTML += '<br>Bu dosyayı gönderirsen çekimdeki sorunları birebir görüp düzeltebilirim' + (dg.length ? ' (son sayfada çekim süreleri de var).' : '.');
-  }catch(e){ hideOverlay(); toast('Ham kareler hazırlanamadı: ' + (e && e.message)); }
+    $('pdfInfo').innerHTML += '<br>' + T(dg.length ? 'Bu dosyayı gönderirsen çekimdeki sorunları birebir görüp düzeltebilirim (son sayfada çekim süreleri de var).' : 'Bu dosyayı gönderirsen çekimdeki sorunları birebir görüp düzeltebilirim.');
+  }catch(e){ hideOverlay(); toast(T('Ham kareler hazırlanamadı: {e}', {e: e && e.message})); }
 };
 function canShareFile(d){
   try{ return !!(navigator.share && navigator.canShare && navigator.canShare({files:[pdfFile(d)]})); }catch(_){ return false; }
@@ -799,7 +879,7 @@ $('pdfShare').onclick = async () => {
   catch(e){
     if(e && e.name === 'AbortError') return;        // kullanıcı vazgeçti
     log('paylaşım açılamadı:', e && e.name, e && e.message);
-    toast('Paylaşım açılamadı, PDF indiriliyor.'); downloadBlob(d.blob, d.name);
+    toast(T('Paylaşım açılamadı, PDF indiriliyor.')); downloadBlob(d.blob, d.name);
   }
 };
 $('pdfDown').onclick = () => { const d = pdfDlg.cur; if(d) downloadBlob(d.blob, d.name); };
@@ -1324,6 +1404,14 @@ class FrameScanner {
 }
 
 /* çekilen kare → sayfa listesine ekle / değiştir, işleme gönder */
+/* çift sayfa: tam çözünürlüklü kareyi hızlı denetimin bulduğu geometriyle iki yarıya böl */
+async function splitBlob(blob, g){
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0); if(bmp.close) bmp.close();
+  const hv = C.spreadHalves(c, g);
+  return Promise.all(hv.map(h => C.canvasToBlob(h, 'image/jpeg', 0.92)));
+}
 async function addCapture(c, opts){
   const blob = await c.blob;
   if(!blob) return;
@@ -1352,7 +1440,7 @@ async function scanVideo(file){
     video.src = url;
     await new Promise((res, rej) => {
       video.onloadeddata = res;
-      video.onerror = () => rej(new Error('Video açılamadı. Format desteklenmiyor olabilir (ör. HEVC).'));
+      video.onerror = () => rej(new Error(T('Video açılamadı. Format desteklenmiyor olabilir (ör. HEVC).')));
     });
     if(!isFinite(video.duration)){                 // MediaRecorder webm düzeltmesi
       video.currentTime = 1e9;
@@ -1391,8 +1479,8 @@ async function scanVideo(file){
             else if(med < 0.05) nr = Math.min(4, rate*1.25);
             if(Math.abs(nr-rate) > 0.01){ rate = nr; video.playbackRate = rate; lastAdj = now; gaps.length = 0; }
           }
-          setProg(`Kareler inceleniyor… ${Math.round(meta.mediaTime/dur*100)}%`, meta.mediaTime/dur*80,
-                  `${state.pages.length - before} sayfa bulundu`);
+          setProg(T('Kareler inceleniyor… {p}%', {p: Math.round(meta.mediaTime/dur*100)}), meta.mediaTime/dur*80,
+                  T('{n} sayfa bulundu', {n: state.pages.length - before}));
           if(!video.ended) video.requestVideoFrameCallback(onFrame);
         };
         video.requestVideoFrameCallback(onFrame);
@@ -1406,7 +1494,7 @@ async function scanVideo(file){
         if(state.cancel) throw new Error('cancelled');
         await new Promise(r => { const f=()=>{video.removeEventListener('seeked',f); r();}; video.addEventListener('seeked',f); setTimeout(f,2500); video.currentTime=t; });
         sc.feed(video, t);
-        setProg(`Kareler inceleniyor… ${Math.round(t/dur*100)}%`, t/dur*80, `${state.pages.length - before} sayfa bulundu`);
+        setProg(T('Kareler inceleniyor… {p}%', {p: Math.round(t/dur*100)}), t/dur*80, T('{n} sayfa bulundu', {n: state.pages.length - before}));
       }
     }
     sc.flush();
@@ -1429,25 +1517,25 @@ async function runFiles(files){
   $('introErr').hidden = true;
   $('introCard').hidden = true; $('settingsCard').hidden = true; $('resultCard').hidden = true;
   $('progCard').hidden = false;
-  $('progTitle').textContent = 'Hazırlanıyor…';
-  setProg('Dosya açılıyor…', 0, '');
+  $('progTitle').textContent = T('Hazırlanıyor…');
+  setProg(T('Dosya açılıyor…'), 0, '');
   const before = state.pages.length;
   try{
     for(const f of files){
       if((f.type||'').startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name||'')){
-        $('progTitle').textContent = 'Fotoğraflar ekleniyor…';
+        $('progTitle').textContent = T('Fotoğraflar ekleniyor…');
         await addCapture({id:state.nextId++, blob:Promise.resolve(f), t:0});   // sayfa listeye girmeden "bulunamadı" denmesin
       } else {
-        $('progTitle').textContent = 'Video analiz ediliyor…';
+        $('progTitle').textContent = T('Video analiz ediliyor…');
         await scanVideo(f);
       }
     }
     if(state.pages.length === before) throw new Error(
-      'Sayfa bulunamadı.\nSayfanın tamamı görünecek şekilde tut ve her sayfada kısa bir an (¼ sn) sabit kal.');
-    $('progTitle').textContent = 'Sayfalar düzleştiriliyor…';
+      T('Sayfa bulunamadı.\nSayfanın tamamı görünecek şekilde tut ve her sayfada kısa bir an (¼ sn) sabit kal.'));
+    $('progTitle').textContent = T('Sayfalar düzleştiriliyor…');
     await proc.drain(n => {
       const total = state.pages.length - before, done = Math.max(0, total - n);
-      setProg(`Düzleştiriliyor, temizleniyor… ${done}/${total}`, 80 + 20*done/Math.max(1,total), `${total} sayfa`);
+      setProg(T('Düzleştiriliyor, temizleniyor… {a}/{b}', {a: done, b: total}), 80 + 20*done/Math.max(1,total), T('{n} sayfa', {n: total}));
     });
     state.issuesAccepted = false;
     showResults();
@@ -1489,18 +1577,18 @@ function computeDocIssues(){
 }
 function issueText(i){
   switch(i.code){
-    case 'cut': return `${SIDE_TR[i.side] || ''} kenarı kadraj dışında kalmış`;
-    case 'finger': return 'parmak yazının üstünde';
-    case 'nopage': return 'sayfa kenarları bulunamadı';
-    case 'blur': return 'bulanık';
-    case 'soft-blur': return 'bulanık olabilir';
-    case 'room': return 'sayfa kenarı / sayfa no kadraj dışında olabilir';
-    case 'tilt': return 'çok eğik çekilmiş';
-    case 'partial': return 'yazının bir kısmı alınamamış olabilir';
-    case 'far': return 'yazı çok küçük çekilmiş';
-    case 'notext': return 'yazı bulunamadı (kapak / resim sayfası mı?)';
-    case 'moving': return 'sayfa hareket ediyor olabilir';
-    case 'error': return 'işlenemedi';
+    case 'cut': return T((SIDE_TR[i.side] || '') + ' kenarı kadraj dışında kalmış');
+    case 'finger': return T('parmak yazının üstünde');
+    case 'nopage': return T('sayfa kenarları bulunamadı');
+    case 'blur': return T('bulanık');
+    case 'soft-blur': return T('bulanık olabilir');
+    case 'room': return T('sayfa kenarı / sayfa no kadraj dışında olabilir');
+    case 'tilt': return T('çok eğik çekilmiş');
+    case 'partial': return T('yazının bir kısmı alınamamış olabilir');
+    case 'far': return T('yazı çok küçük çekilmiş');
+    case 'notext': return T('yazı bulunamadı (kapak / resim sayfası mı?)');
+    case 'moving': return T('sayfa hareket ediyor olabilir');
+    case 'error': return T('işlenemedi');
     default: return i.code;
   }
 }
@@ -1523,17 +1611,17 @@ function renderGrid(){
     el.className = 'page' + (bad ? ' bad' : '');
     const why = bad ? `<div class="why">⚠ ${pageIssueText(p)}</div>` : '';
     const badges = [];
-    if(bad) badges.push('<span class="badge bad">EKSİK?</span>');
-    if(p.maybeDup) badges.push('<span class="badge dup" title="Önceki sayfayla aynı olabilir — kontrol et">TEKRAR?</span>');
+    if(bad) badges.push(`<span class="badge bad">${T('EKSİK?')}</span>`);
+    if(p.maybeDup) badges.push(`<span class="badge dup" title="${T('Önceki sayfayla aynı olabilir — kontrol et')}">${T('TEKRAR?')}</span>`);
     el.innerHTML = `
       <span class="num">${idx+1}</span>
       <div class="badges">${badges.join('')}</div>
-      ${p.thumbUrl ? `<img src="${p.thumbUrl}" alt="sayfa ${idx+1}" loading="lazy">` : '<div class="ph"><div class="spin sm"></div></div>'}
+      ${p.thumbUrl ? `<img src="${p.thumbUrl}" alt="${T('{n}. sayfa', {n: idx+1})}" loading="lazy">` : '<div class="ph"><div class="spin sm"></div></div>'}
       ${why}
       <div class="acts">
-        <button title="Öne al"${idx ? '' : ' disabled'}>◀</button>
-        <button title="Yeniden çek">📷</button>
-        <button title="Döndür">🔄</button>
+        <button title="${T('Öne al')}"${idx ? '' : ' disabled'}>◀</button>
+        <button title="${T('Yeniden çek')}">📷</button>
+        <button title="${T('Döndür')}">🔄</button>
         <button title="Sil">🗑</button>
         <button title="Arkaya al"${idx < state.pages.length-1 ? '' : ' disabled'}>▶</button>
       </div>`;
@@ -1551,8 +1639,8 @@ function renderGrid(){
   const bad = badPages();
   $('issueBar').hidden = !bad.length;
   if(bad.length){
-    $('issueText').innerHTML = `⚠ <b>${bad.length} sayfada</b> eksik/sorun olabilir: ` +
-      bad.slice(0,6).map(p => `${state.pages.indexOf(p)+1}. sayfa (${pageIssueText(p)})`).join(' · ') +
+    $('issueText').innerHTML = '⚠ ' + T('<b>{n} sayfada</b> eksik/sorun olabilir:', {n: bad.length}) + ' ' +
+      bad.slice(0,6).map(p => `${T('{n}. sayfa', {n: state.pages.indexOf(p)+1})} (${pageIssueText(p)})`).join(' · ') +
       (bad.length > 6 ? ' …' : '');
   }
   if(!state.pages.length){ $('resultCard').hidden = true; $('introCard').hidden = false; }
@@ -1562,17 +1650,17 @@ function renderGrid(){
 async function rotatePage(idx){
   const p = state.pages[idx];
   p.rot = ((p.rot||0) + 90) % 360;
-  showOverlay('Döndürülüyor…');
+  showOverlay(T('Döndürülüyor…'));
   await processPage(p);
   hideOverlay(); renderGrid();
   if(!$('modal').hidden) showModalPage(modalIdx);
 }
 async function reprocessAll(){
   if(!state.pages.length || state.busy) return;
-  showOverlay('Sayfalar yeniden işleniyor…');
+  showOverlay(T('Sayfalar yeniden işleniyor…'));
   const all = state.pages.map(p => processPage(p));
   let done = 0;
-  all.forEach(pr => pr.then(() => { done++; $('overlayText').textContent = `Yeniden işleniyor… ${done}/${all.length}`; }));
+  all.forEach(pr => pr.then(() => { done++; $('overlayText').textContent = T('Yeniden işleniyor… {a}/{b}', {a: done, b: all.length}); }));
   await Promise.all(all);
   hideOverlay(); computeDocIssues(); renderGrid();
 }
@@ -1681,7 +1769,7 @@ const cam = {
     // uygulama içinde (capacitor://) güvenli bağlam bayrağına bakılmaz; kamera iznini iOS verir
     if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || (!window.isSecureContext && !native.on)){
       if(opts.retake){ this.photoFallback(opts.retake); return; }
-      toast('Canlı kamera bu bağlantıda açılamıyor (https gerekli). Telefonun kamerasıyla video kaydı açılıyor.');
+      toast(T('Canlı kamera bu bağlantıda açılamıyor (https gerekli). Telefonun kamerasıyla video kaydı açılıyor.'));
       $('fileCapture').click(); return;
     }
     try{
@@ -1693,7 +1781,7 @@ const cam = {
     }catch(e){
       log('kamera açılamadı:', e.name);
       if(opts.retake){ this.photoFallback(opts.retake); return; }
-      toast('Kameraya erişilemedi (' + e.name + '). Video kaydı ile devam edebilirsin.');
+      toast(T('Kameraya erişilemedi ({e}). Video kaydı ile devam edebilirsin.', {e: e.name}));
       $('fileCapture').click(); return;
     }
     const v = $('camView');
@@ -1894,9 +1982,9 @@ const cam = {
     const out = {n: all.length, page, bs, wr, worst, ref, bad:false, where:-1, low, patchy: low >= Math.max(6, all.length*0.22)};
     if(wr < BLUR_BAND){ out.bad = true; out.where = worst; }
     else if((ref && page < ref*BLUR_PAGE) || page < BLUR_ABS) out.bad = true;
-    out.hint = !out.bad ? '' : out.where === 0 ? 'Üst kısım bulanık — telefonu biraz uzaklaştır, sayfaya paralel tut' :
+    out.hint = !out.bad ? '' : T(out.where === 0 ? 'Üst kısım bulanık — telefonu biraz uzaklaştır, sayfaya paralel tut' :
                out.where === 2 ? 'Alt kısım bulanık — telefonu biraz uzaklaştır, sayfaya paralel tut' :
-               out.where === 1 ? 'Orta kısım bulanık — telefonu sabit tut' : 'Bulanık — telefonu sabit tut, biraz uzaklaştır';
+               out.where === 1 ? 'Orta kısım bulanık — telefonu sabit tut' : 'Bulanık — telefonu sabit tut, biraz uzaklaştır');
     return out;
   },
   /* yazı bloğunun yakınında kıpırdayan bir şey (çekilmekte olan el) var mı: blok farkı haritasında sıcak bloklar */
@@ -1917,7 +2005,7 @@ const cam = {
     if(L.phase !== 'done' && !L.tries){ L.firstTryT = performance.now(); L.tryMove = fr.moveSum; }
     const t0 = performance.now();
     fr.hold();
-    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: this.sess.ang})).then(res => {
+    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: this.sess.ang, spread: true})).then(res => {
       L.inflight = false; L.chkMove = null;
       if(this.live !== L || !this.active){ fr.release(); this.dropKeep(L); return; }
       res.ms = performance.now() - t0;
@@ -1941,8 +2029,8 @@ const cam = {
     const m = res.metrics || {}, iss = res.issues || [], S = this.sess;
     const has = c => iss.some(i => i.code === c);
     // yazı bulunamadı (kapak, resim sayfası — ya da masa, el, çevrilmekte olan sayfa)
-    if(m.mode && m.mode !== 'yazı') return {ok:false, soft:true, slow:true, code:'notext', hint:'Yazı bulunamadı — kapak ya da resim sayfasıysa sabit tut'};
-    if(has('finger')) return {ok:false, hard:true, code:'finger', hint:'Parmağını yazının üstünden çek'};
+    if(m.mode && m.mode !== 'yazı') return {ok:false, soft:true, slow:true, code:'notext', hint:T('Yazı bulunamadı — kapak ya da resim sayfasıysa sabit tut')};
+    if(has('finger')) return {ok:false, hard:true, code:'finger', hint:T('Parmağını yazının üstünden çek')};
     const cut = iss.find(i => i.code === 'cut');
     // telefon eğik tutuluyor mu: yazı bloğu kadrajın alt kısmına sıkışmış (üstte masa) ya da üst kenarı alt kenarından
     // belirgin biçimde dar (perspektif). Bu duruşta "uzaklaş" işe yaramaz (sayfa daha da aşağı kayar): telefon sayfanın
@@ -1955,12 +2043,12 @@ const cam = {
       lowPage = top > 0.2 && top > (1 - bot)*2.5;
       keystone = wB > 0 && wT/wB < 0.85;
     }
-    const overHint = 'Telefonu sayfanın TAM ÜSTÜNE getir, sayfaya paralel tut';
-    const cutHint = e => (e === 2 && (lowPage || keystone)) ? overHint + ' (sayfanın altı görünmüyor)' :
+    const overHint = T('Telefonu sayfanın TAM ÜSTÜNE getir, sayfaya paralel tut');
+    const cutHint = e => T((e === 2 && (lowPage || keystone)) ? 'Telefonu sayfanın TAM ÜSTÜNE getir, sayfaya paralel tut (sayfanın altı görünmüyor)' :
                          e === 2 ? 'Sayfanın altı görünmüyor — telefonu biraz uzaklaştır' :
-                         e === 0 ? 'Sayfanın üstü görünmüyor — telefonu biraz uzaklaştır' : 'Sayfanın tamamı görünsün — biraz uzaklaştır';
+                         e === 0 ? 'Sayfanın üstü görünmüyor — telefonu biraz uzaklaştır' : 'Sayfanın tamamı görünsün — biraz uzaklaştır');
     if(cut) return {ok:false, hard:true, code:'cut', hint: cutHint(cut.side)};
-    if(has('nopage')) return {ok:false, hard:true, code:'nopage', hint:'Sayfayı kadraja al'};
+    if(has('nopage')) return {ok:false, hard:true, code:'nopage', hint:T('Sayfayı kadraja al')};
     if(m.mode === 'yazı'){
       // denetlenen kare bulanık (odak arıyor, sayfa iniyor): yazı çerçevesi yine de geçerlidir; çekilecek kare bundan
       // belirgin biçimde net olmak zorundadır (tryCapture). Çok bulanık yazıda koyu piksel kalmaz → crisp ölçülemez (-1).
@@ -1971,13 +2059,13 @@ const cam = {
         // yazının kendisi kadraj kenarına dayanıyor (satır uçları / ilk-son satır görünmüyor) → kesik, asla kabul edilmez
         for(const e of [2, 0, 1, 3]) if(r[e] < 0) return {ok:false, hard:true, code:'cut', hint: cutHint(e)};
         // sayfa numarası / üst başlık bulunamadı ve yazının altında-üstünde kadraj payı az: kadraj dışında kalmış olabilir
-        if(!(m.extraBot >= 1) && r[2] < 2.5) return {ok:false, soft:true, slow: r[2] < 1, code:'room', hint: (lowPage || keystone) ? overHint + ' (sayfa no da görünsün)' : 'Sayfanın altı (sayfa no) da görünsün — biraz uzaklaştır'};
-        if(!(m.extraTop >= 1) && r[0] < 1.5) return {ok:false, soft:true, slow: r[0] < 0.5, code:'room', hint:'Sayfanın üstü de görünsün — biraz uzaklaştır'};
+        if(!(m.extraBot >= 1) && r[2] < 2.5) return {ok:false, soft:true, slow: r[2] < 1, code:'room', hint: T((lowPage || keystone) ? 'Telefonu sayfanın TAM ÜSTÜNE getir, sayfaya paralel tut (sayfa no da görünsün)' : 'Sayfanın altı (sayfa no) da görünsün — biraz uzaklaştır')};
+        if(!(m.extraTop >= 1) && r[0] < 1.5) return {ok:false, soft:true, slow: r[0] < 0.5, code:'room', hint:T('Sayfanın üstü de görünsün — biraz uzaklaştır')};
       }
       // çevrilmekte olan sayfa: satırlar oturumdaki sayfalara göre belirgin biçimde dar (yandan görünüyor)
-      if(S.refW.length >= 2 && m.cpl && m.cpl < median(S.refW)*0.72) return {ok:false, soft:true, slow:true, code:'tilt', hint:'Sayfayı düz tut'};
+      if(S.refW.length >= 2 && m.cpl && m.cpl < median(S.refW)*0.72) return {ok:false, soft:true, slow:true, code:'tilt', hint:T('Sayfayı düz tut')};
       if(m.tilt > 2.2) return {ok:false, soft:true, code:'tilt', hint: overHint};
-      if(m.srcPitch && m.srcPitch < 9) return {ok:false, soft:true, code:'far', hint:'Biraz yaklaş — yazı çok küçük'};
+      if(m.srcPitch && m.srcPitch < 9) return {ok:false, soft:true, code:'far', hint:T('Biraz yaklaş — yazı çok küçük')};
       if(blur0) return {ok:true, blur0:true};
     }
     return {ok:true};
@@ -2012,6 +2100,7 @@ const cam = {
   verdict(res, snap){
     const L = this.live, S = this.sess, now = performance.now(), m = res.metrics || {};
     if(m.ang != null) S.ang = m.ang;
+    this.spreadOn = !!m.spread;
     snap.fine0 = this.blurOf(snap, (m.contN || m.blockN || m.quadN));       // denetlenen karenin ince netliği
     let v = this.judge(res, snap);
     // yazı bloğunun içinde hareket var (sayfa hâlâ iniyor / çevriliyor): bu kare alınmaz, hemen yeniden bakılır
@@ -2047,7 +2136,7 @@ const cam = {
       if(dupK === 0){ if(v.ok) this.upgrade(res, snap); }   // son sayfa hâlâ kadrajda: daha iyi kare → sessizce değiştir
       else if(L.dupNote !== q.id){
         L.dupNote = q.id; this.ev('tekrar', dupK, q.id);
-        this.chime(); this.flash(); this.sticky('✓ Bu sayfa zaten çekildi — sonrakine geç', 'ok', 1200);
+        this.chime(); this.flash(); this.sticky(T('✓ Bu sayfa zaten çekildi — sonrakine geç'), 'ok', 1200);
       }
       return;
     }
@@ -2082,7 +2171,7 @@ const cam = {
     if(v.blur0){
       // denetlenen kare bulanık (odak arıyor, sayfa iniyor, yaprak havada): bu kare üzerinden doğrulama yapılmaz —
       // görüntü netleşince yeniden denetlenir (step: blurS). Hiç düzelmiyorsa ~3 sn sonra eldeki kare UYARIYLA alınır.
-      L.verdict = {ok:false, code:'blur', hint:'Bulanık — telefonu sabit tut'}; L.verdictAt = now; L.blurS = snap.s; L.pre = null;
+      L.verdict = {ok:false, code:'blur', hint:T('Bulanık — telefonu sabit tut')}; L.verdictAt = now; L.blurS = snap.s; L.pre = null;
       if(!(same && now - L.firstTryT >= BLUR_WAIT)) return;
     } else { L.verdict = null; L.verdictAt = now; L.blurS = null; }
     if(!same) return this.lateCapture(res, snap);
@@ -2204,14 +2293,15 @@ const cam = {
     if(!ok) return;
     cap.s = fr.s; cap.swaps++; cap.busy = fr.busy;
     if(S.last && S.last.id === p.id){ S.last.sig = fr.sig; if(!fr.busy && S.last.soft === 'busy') S.last.soft = null; if(fixed){ S.last.soft = null; S.last.flag = null; } }
-    if(fixed){ cap.blur = false; this.chime(); this.flash(); this.sticky('✓ Net kare alındı — sonraki sayfa', 'ok', 900); }
+    if(fixed){ cap.blur = false; this.chime(); this.flash(); this.sticky(T('✓ Net kare alındı — sonraki sayfa'), 'ok', 900); }
     this.replaceFrame(p, fr, fixed ? 'bulanıklık düzeldi' : `daha net ×${g.toFixed(2)}`, fixed);
   },
   /* aynı sayfanın yeniden denetlenen daha iyi karesi (ya da kusurlu çekilmiş sayfanın kusursuzu): sessizce yerine geçer */
   upgrade(res, snap){
     const S = this.sess, last = S.last;
-    if(!last || this.retake || last.ups >= 2) return false;
+    if(!last || this.retake || last.ups >= 2 || last.spread) return false;
     const m = res.metrics || {}, q = this.quality(m), ext = this.extent(m);
+    if(m.spread) return false;                        // çift sayfa karesi tek sayfanın yerine geçmez
     // kadrajda bir şey kıpırdarken (el çekilirken) alınmış kare: yerine ancak sakin bir kare geçer
     const calm = !snap.busy;
     if(last.soft === 'busy' && !calm) return false;
@@ -2228,7 +2318,7 @@ const cam = {
     last.q = q; last.ext = ext; last.soft = calm ? null : 'busy'; last.flag = null; last.fine = f1 || f0; last.ups++; last.sig = snap.sig; last.lined = !!res.lineSig; last.rows = res.lineSig ? res.lineSig.length : 0;
     if(res.lineSig){ p.lineSig = res.lineSig; if(S.recent[0] && S.recent[0].id === p.id) S.recent[0].lineSig = res.lineSig; }
     if(this.live.cap && this.live.cap.pid === p.id){ const c = this.live.cap; c.blur = false; c.s = snap.s; c.run = snap.run; c.moveSum = snap.moveSum; c.quadN = m.contN || m.blockN || m.quadN || c.quadN; }
-    if(flagged){ this.chime(); this.flash(); this.sticky('✓ Düzgün kare alındı — sonraki sayfa', 'ok', 900); }
+    if(flagged){ this.chime(); this.flash(); this.sticky(T('✓ Düzgün kare alındı — sonraki sayfa'), 'ok', 900); }
     this.replaceFrame(p, snap, flagged ? 'kusur giderildi' : 'daha iyi kare', true);
     return true;
   },
@@ -2252,18 +2342,19 @@ const cam = {
     const cutNT = !!softV && softV.code === 'notext' && (res.issues || []).some(i => i.code === 'cut');
     if(flag || cutNT){
       this.warnChime(); this.flash(true);
-      this.sticky(flag === 'blur' ? '⚠ Bulanık çekildi — net olması için sayfayı yeniden göster' :
-                  cutNT ? '⚠ Çekildi — sayfanın kenarı kesik olabilir, tamamı görünecek şekilde yeniden göster' : '⚠ Çekildi ama kontrol et — sayfayı yeniden gösterebilirsin', 'warn', 1500);
-      this.doneHint = '⚠ Kusurlu çekildi — yeniden göster ya da sonraki sayfa';
+      this.sticky(T(flag === 'blur' ? '⚠ Bulanık çekildi — net olması için sayfayı yeniden göster' :
+                  cutNT ? '⚠ Çekildi — sayfanın kenarı kesik olabilir, tamamı görünecek şekilde yeniden göster' : '⚠ Çekildi ama kontrol et — sayfayı yeniden gösterebilirsin'), 'warn', 1500);
+      this.doneHint = T('⚠ Kusurlu çekildi — yeniden göster ya da sonraki sayfa');
     } else {
       this.chime(); this.flash();
-      this.doneHint = side === 'L' ? '✓ Tamam — şimdi sağ sayfa ▶' : side === 'R' ? '✓ Tamam — sayfayı çevir' : '✓ Tamam — sonraki sayfa';
+      this.doneHint = T(m.spread ? '✓ Tamam — 2 sayfa · sayfayı çevir' : side === 'L' ? '✓ Tamam — şimdi sağ sayfa ▶' : side === 'R' ? '✓ Tamam — sayfayı çevir' : '✓ Tamam — sonraki sayfa');
       this.sticky(this.doneHint, 'ok', 900);
     }
     // yeniden çekim: yeni sayfa yerine hedef sayfanın yerine geç
     if(this.retake){
       const target = state.pages.find(p => p.id === this.retake.ids[this.retake.i]);
-      const blob = await fr.blob(); fr.release();
+      let blob = await fr.blob(); fr.release();
+      if(blob && m.spread && m.split){ const hv = await splitBlob(blob, m.split); blob = hv[target && target.spreadHalf === 1 ? 1 : 0]; }
       if(target && blob){
         target.origBlob = blob; target.issues = []; target.maybeDup = false; target.soft = flag; target.noText = !!softV && softV.code === 'notext';
         if(res.lineSig){ target.lineSig = res.lineSig; target.side = side; }
@@ -2272,6 +2363,25 @@ const cam = {
       this.retake.i++;
       if(this.retake.i >= this.retake.ids.length){ setTimeout(() => this.finish(), 450); }
       else { this.newScanner(); this.updateRetakeUi(); }
+      return;
+    }
+    if(m.spread && m.split){
+      // ÇİFT SAYFA: kare sırttan ikiye bölünür, iki ayrı sayfa eklenir (her biri tek sayfa gibi işlenir)
+      const mk = k => ({id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:false, issues:[], status:'busy',
+                        lineSig:null, side:'', soft: flag, cap: S.id, noText:false, spreadHalf:k});
+      const pL = mk(0), pR = mk(1);
+      state.pages.push(pL, pR);
+      S.recent.unshift({id:pL.id, lineSig:res.lineSig || null, side:''}); if(S.recent.length > 12) S.recent.pop();
+      S.last = {id:pR.id, q:this.quality(m), ext:this.extent(m), soft: softV ? softV.code : (fr.busy ? 'busy' : null),
+                flag, fine: bl && !bl.unknown ? bl.page : 0, ups:0, sig:fr.sig, lined:!!res.lineSig, rows: res.lineSig ? res.lineSig.length : 0,
+                noText:false, at: now, spread:true};
+      L.cap = null;                                   // çift sayfada "daha net kareyle değiştir" yok
+      this.count += 2; this.updateCounter();
+      const blob = await fr.blob(); fr.release();
+      const hv = blob ? await splitBlob(blob, m.split).catch(() => null) : null;
+      if(!hv || !hv[0] || !hv[1]){ for(const q of [pL, pR]){ const i = state.pages.indexOf(q); if(i >= 0) state.pages.splice(i, 1); } this.count -= 2; this.updateCounter(); return; }
+      pL.origBlob = hv[0]; pR.origBlob = hv[1];
+      processPage(pL); processPage(pR);
       return;
     }
     const noText = !!softV && softV.code === 'notext';
@@ -2311,10 +2421,11 @@ const cam = {
     const L = this.live, now = performance.now();
     if(now >= this.stickyUntil){
       let txt, cls = '';
-      if(st === 'done'){ txt = this.doneHint || '✓ Tamam — sonraki sayfa'; cls = 'ok'; }
+      if(st === 'done'){ txt = this.doneHint || T('✓ Tamam — sonraki sayfa'); cls = 'ok'; }
       else if(L.verdict && L.verdict.hint && now - Math.max(L.lastTryWall, L.verdictAt || 0) < 1600){ txt = L.verdict.hint; cls = 'warn'; }
-      else if(st === 'moving') txt = this.retake ? 'Sayfayı göster…' : 'Sayfayı göster — kendiliğinden çekilir';
-      else txt = 'Sayfa aranıyor…';
+      else if(st === 'moving') txt = T(this.retake ? 'Sayfayı göster…' : 'Sayfayı göster — kendiliğinden çekilir');
+      else txt = T('Sayfa aranıyor…');
+      if(this.spreadOn && st !== 'done') txt = '📖 ' + T('2 sayfa') + ' · ' + txt;
       const hint = $('camHint');
       if(hint.textContent !== txt) hint.textContent = txt;
       hint.className = 'camhint ' + cls;
@@ -2365,7 +2476,7 @@ const cam = {
   updateCounter(){
     const n = this.retake ? this.retake.ids.length : state.pages.length;
     $('camThumbN').textContent = this.retake ? `${Math.min(this.retake.i+1, n)}/${n}` : state.pages.length;
-    $('camCounter').textContent = this.retake ? `Yeniden çekim ${Math.min(this.retake.i+1, n)}/${n}` : `${state.pages.length} sayfa`;
+    $('camCounter').textContent = this.retake ? T('Yeniden çekim {a}/{b}', {a: Math.min(this.retake.i+1, n), b: n}) : T('{n} sayfa', {n: state.pages.length});
   },
   updateRetakeUi(){
     const box = $('camRetake');
@@ -2374,7 +2485,7 @@ const cam = {
     if(!p){ box.hidden = true; return; }
     box.hidden = false;
     $('camRetakeImg').src = p.thumbUrl || '';
-    $('camRetakeTxt').innerHTML = `<b>${state.pages.indexOf(p)+1}. sayfayı</b> çek<br><small>${pageIssueText(p) || ''}</small>`;
+    $('camRetakeTxt').innerHTML = T('<b>{n}. sayfayı</b> çek', {n: state.pages.indexOf(p)+1}) + `<br><small>${pageIssueText(p) || ''}</small>`;
     this.updateCounter();
   },
   /* "tamam" işareti: yeşil çerçeve + büyük ✓ */
@@ -2422,7 +2533,7 @@ const cam = {
     if(!track) return;
     this.torch = !this.torch;
     try{ await track.applyConstraints({advanced:[{torch:this.torch}]}); }
-    catch(e){ this.torch = false; toast('⚠ Bu cihazda el feneri web üzerinden kontrol edilemiyor.'); }
+    catch(e){ this.torch = false; toast(T('⚠ Bu cihazda el feneri web üzerinden kontrol edilemiyor.')); }
     this.updateTorchBtn();
   },
   close(){
@@ -2440,9 +2551,9 @@ const cam = {
     if(!state.pages.length){ $('introCard').hidden = false; return; }
     $('introCard').hidden = true; $('settingsCard').hidden = true; $('resultCard').hidden = true;
     $('progCard').hidden = false;
-    $('progTitle').textContent = 'Sayfalar düzleştiriliyor…';
+    $('progTitle').textContent = T('Sayfalar düzleştiriliyor…');
     $('btnCancel').hidden = true;
-    await proc.drain(n => setProg(`Kalan ${n} sayfa işleniyor…`, 100 - Math.min(95, n*8), `${state.pages.length} sayfa`));
+    await proc.drain(n => setProg(T('Kalan {n} sayfa işleniyor…', {n}), 100 - Math.min(95, n*8), T('{n} sayfa', {n: state.pages.length})));
     $('btnCancel').hidden = false;
     if(!wasRetake) state.issuesAccepted = false;
     showResults();
@@ -2459,14 +2570,14 @@ function nextPhotoRetake(){
   if(!photoRetakeQueue.length) return;
   const p = state.pages.find(q => q.id === photoRetakeQueue[0]);
   if(!p){ photoRetakeQueue.shift(); nextPhotoRetake(); return; }
-  toast(`${state.pages.indexOf(p)+1}. sayfanın fotoğrafını çek`);
+  toast(T('{n}. sayfanın fotoğrafını çek', {n: state.pages.indexOf(p)+1}));
   $('photoCapture').click();
 }
 $('photoCapture').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   const id = photoRetakeQueue.shift();
   const p = state.pages.find(q => q.id === id);
-  if(f && p){ p.origBlob = f; p.issues = []; showOverlay('İşleniyor…'); await processPage(p); hideOverlay(); computeDocIssues(); renderGrid(); }
+  if(f && p){ p.origBlob = f; p.issues = []; showOverlay(T('İşleniyor…')); await processPage(p); hideOverlay(); computeDocIssues(); renderGrid(); }
   if(photoRetakeQueue.length) setTimeout(nextPhotoRetake, 300);
 };
 
@@ -2476,7 +2587,7 @@ $('camClose').onclick = () => cam.finish();
 $('camPause').onclick = () => {
   cam.paused = !cam.paused;
   $('camPause').textContent = cam.paused ? '▶' : '⏸';
-  $('camHint').textContent = cam.paused ? 'Duraklatıldı' : 'Sayfayı kadraja al';
+  $('camHint').textContent = T(cam.paused ? 'Duraklatıldı' : 'Sayfayı kadraja al');
   $('camHint').className = 'camhint';
   if(!cam.paused) cam.newScanner();
 };
@@ -2580,7 +2691,7 @@ const blobToBase64 = blob => new Promise((res, rej) => {
   r.readAsDataURL(blob);
 });
 async function sharePdfNative(blob, name){
-  $('overlayText').textContent = 'PDF kaydediliyor…';
+  $('overlayText').textContent = T('PDF kaydediliyor…');
   let uri;
   try{
     const data = await blobToBase64(blob);
@@ -2589,7 +2700,7 @@ async function sharePdfNative(blob, name){
   try{
     await native.call('Share', 'share', {title:name, files:[uri]});
   }catch(e){
-    if(!/cancel/i.test(e && e.message || '')) toast('PDF paylaşılamadı: ' + (e && e.message || e));
+    if(!/cancel/i.test(e && e.message || '')) toast(T('PDF paylaşılamadı: {e}', {e: e && e.message || e}));
   }
 }
 
@@ -2597,25 +2708,25 @@ async function sharePdfNative(blob, name){
 async function exportPdf(force){
   if(!state.pages.length) return;
   if(proc.pending()){
-    showOverlay('Sayfalar hazırlanıyor…');
-    await proc.drain(n => $('overlayText').textContent = `Sayfalar hazırlanıyor… (${n})`);
+    showOverlay(T('Sayfalar hazırlanıyor…'));
+    await proc.drain(n => $('overlayText').textContent = T('Sayfalar hazırlanıyor… ({n})', {n}));
     hideOverlay(); computeDocIssues(); renderGrid();
   }
   const bad = badPages();
   if(bad.length && !force && !state.issuesAccepted){
-    $('issueList').innerHTML = bad.map(p => `<li><b>${state.pages.indexOf(p)+1}. sayfa</b> — ${pageIssueText(p)}</li>`).join('');
+    $('issueList').innerHTML = bad.map(p => `<li><b>${T('{n}. sayfa', {n: state.pages.indexOf(p)+1})}</b> — ${pageIssueText(p)}</li>`).join('');
     $('issueDlg').hidden = false;
     return;
   }
   const ready = state.pages.filter(p => p.procBlob);
   if(!ready.length) return;
-  showOverlay('PDF oluşturuluyor…');
+  showOverlay(T('PDF oluşturuluyor…'));
   try{
     const blob = await buildPdf(ready);
     const name = ($('fname').value.trim() || 'tarama').replace(/[\\/:*?"<>|]+/g, '-') + '.pdf';
     window.__lastPdf = blob;
     log('PDF hazır:', name, (blob.size/1024/1024).toFixed(2)+' MB', ready.length + ' sayfa');
-    $('overlayText').textContent = 'PDF kaydediliyor…';
+    $('overlayText').textContent = T('PDF kaydediliyor…');
     let docId = null;
     try{ docId = await archive.add(blob, name, ready.length, ready[0].thumbBlob || null); }
     catch(e){ log('PDF cihaza kaydedilemedi:', e && e.message); }
@@ -2624,7 +2735,7 @@ async function exportPdf(force){
     archive.render();
   }catch(e){
     hideOverlay();
-    toast('PDF oluşturulamadı: ' + e.message);
+    toast(T('PDF oluşturulamadı: {e}', {e: e.message}));
     console.error(e);
   }
 }
@@ -2650,7 +2761,7 @@ $('fileCapture').onchange = e => { const fs = Array.from(e.target.files); e.targ
 $('btnCancel').onclick = () => { state.cancel = true; };
 $('btnMore').onclick = () => $('filePick').click();
 $('btnReset').onclick = () => {
-  if(state.pages.length && !confirm('Tüm sayfalar silinsin mi? (Oluşturduğun PDF\'ler "Önceki taramalar"da kalır.)')) return;
+  if(state.pages.length && !confirm(T('Tüm sayfalar silinsin mi? (Oluşturduğun PDF\'ler "Önceki taramalar"da kalır.)'))) return;
   clearPages();
 };
 const intro = $('introCard');
@@ -2679,13 +2790,13 @@ window.hs = { state, settings, proc, cam, FrameScanner, store, session, archive,
 $('fname').addEventListener('input', () => session.schedule());
 window.__ready = (async () => {
   const n = await session.restore();
-  if(n) toast(`Yarım kalan taraman geri yüklendi (${n} sayfa).`, 4000);
+  if(n) toast(T('Yarım kalan taraman geri yüklendi ({n} sayfa).', {n}), 4000);
   await archive.render();
 })();
 
 /* ---------- TANITIM: ilk açılışta bir kez; altta "Tanıtımı göster" ile yeniden ---------- */
 const onb = (() => {
-  const KEY = 'is.onb1', el = $('onb'), track = $('onbTrack'), dots = $('onbDots'), next = $('onbNext');
+  const KEY = 'is.onb2', el = $('onb'), track = $('onbTrack'), dots = $('onbDots'), next = $('onbNext');
   const slides = [...track.querySelectorAll('.onb-s')];
   slides.forEach(() => dots.appendChild(document.createElement('i')));
   let cur = -1;
@@ -2693,7 +2804,7 @@ const onb = (() => {
     if(i === cur) return; cur = i;
     slides.forEach((s, k) => s.classList.toggle('on', k === i));
     [...dots.children].forEach((d, k) => d.classList.toggle('on', k === i));
-    next.textContent = i === slides.length - 1 ? '📷 Taramaya başla' : 'Devam';
+    next.textContent = T(i === slides.length - 1 ? '📷 Taramaya başla' : 'Devam');
   };
   track.addEventListener('scroll', () => mark(Math.max(0, Math.min(slides.length - 1, Math.round(track.scrollLeft / Math.max(1, track.clientWidth))))), {passive: true});
   const close = () => { el.hidden = true; document.body.classList.remove('noscroll'); try{ localStorage.setItem(KEY, '1'); }catch(_){} };
@@ -2708,10 +2819,42 @@ const onb = (() => {
   };
   $('onbSkip').onclick = close;
   $('btnOnb').onclick = show;
-  let seen = false; try{ seen = localStorage.getItem(KEY) === '1'; }catch(_){}
-  if(!seen) show();
-  return {show, close};
+  const seen = () => { try{ return localStorage.getItem(KEY) === '1'; }catch(_){ return false; } };
+  return {show, close, seen};
 })();
+
+/* ---------- DİL SEÇİMİ: ilk açılışta tanıtımdan önce; altta 🌐 ile yeniden ---------- */
+const langPick = (() => {
+  const el = $('langPick'), list = $('langList');
+  let after = null;
+  const render = () => {
+    const sug = guessLang(), cur = savedLang();
+    list.innerHTML = '';
+    for(const [code, name] of LANGS){
+      const b = document.createElement('button');
+      b.textContent = name; b.lang = code; if(code === 'ar') b.dir = 'rtl';
+      if(cur ? code === cur : code === sug) b.className = cur ? 'cur' : 'sug';
+      b.onclick = () => pick(code);
+      list.appendChild(b);
+    }
+  };
+  const pick = code => {
+    I18N.lang = code;
+    try{ localStorage.setItem('is.lang', code); }catch(_){}
+    applyLang();
+    try{ renderGrid(); }catch(_){}
+    try{ archive.render(); }catch(_){}
+    try{ if(cam.active) cam.updateCounter(); }catch(_){}
+    el.hidden = true; document.body.classList.remove('noscroll');
+    const f = after; after = null; if(f) f();
+  };
+  const show = cb => { after = cb || null; render(); el.hidden = false; document.body.classList.add('noscroll'); };
+  $('btnLang').onclick = () => show();
+  return {show};
+})();
+applyLang();
+if(!savedLang()) langPick.show(() => { if(!onb.seen()) onb.show(); });
+else if(!onb.seen()) onb.show();
 log('INSTANT SCANNER hazır');
 </script>
 </body>

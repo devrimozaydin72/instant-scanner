@@ -117,6 +117,7 @@
   #modalImg{max-width:94vw; max-height:76vh; border-radius:8px; background:#fff}
   #modalWhy{color:#ffb3c1; font-size:14px; min-height:18px; text-align:center; padding:0 12px}
   #modal .rowbtns{justify-content:center}
+  #mMode{display:block; margin:8px auto 0; max-width:92vw}
   .dialog{position:fixed; inset:0; background:#000c; z-index:80; display:flex; align-items:center; justify-content:center; padding:16px}
   .dialog[hidden]{display:none}
   .dialog .box{background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; max-width:460px; width:100%}
@@ -518,13 +519,19 @@
     <p class="sub" id="histSub" data-t>Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 25</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 26</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
 <div id="modal" hidden>
   <img id="modalImg" alt="sayfa önizleme">
   <div id="modalWhy"></div>
+  <select id="mMode" aria-label="mode">
+    <option value="color" data-t>🎨 Renkli (temiz beyaz kağıt)</option>
+    <option value="gray" data-t>⬜ Gri tonlama</option>
+    <option value="doc" data-t>📄 Siyah-beyaz (en net yazı)</option>
+    <option value="orig" data-t>📷 Orijinal renkler</option>
+  </select>
   <div class="rowbtns">
     <button class="btn gray" id="mPrev">‹</button>
     <button class="btn warn" id="mRetake" data-t>📷 Yeniden çek</button>
@@ -728,7 +735,7 @@ const session = {
         if(p.status !== 'done' || !p.procBlob || this.saved.get(p.id) === p.ver) continue;
         const ver = p.ver;
         await store.put('pages', {id:p.id, ver, orig: await toAB(p.origBlob), proc: await toAB(p.procBlob),
-          thumb: await toAB(p.thumbBlob), outW:p.outW, outH:p.outH, rot:p.rot||0, time:p.time||0,
+          thumb: await toAB(p.thumbBlob), outW:p.outW, outH:p.outH, rot:p.rot||0, mode:p.mode||null, time:p.time||0,
           maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}, side:p.side||'', lineSig:p.lineSig||null, soft:p.soft||null, noText:!!p.noText});
         this.saved.set(p.id, ver);
         askPersist();
@@ -748,7 +755,7 @@ const session = {
       for(const id of (meta && meta.ids) || []){
         const r = by.get(id); if(!r || !r.proc) continue;
         const procBlob = fromAB(r.proc, 'image/jpeg'), thumbBlob = fromAB(r.thumb, 'image/jpeg') || procBlob;
-        pages.push({id:r.id, ver:r.ver, status:'done', origBlob: fromAB(r.orig, 'image/jpeg'), procBlob, thumbBlob,
+        pages.push({id:r.id, ver:r.ver, status:'done', mode:r.mode||null, origBlob: fromAB(r.orig, 'image/jpeg'), procBlob, thumbBlob,
           thumbUrl: URL.createObjectURL(thumbBlob), outW:r.outW, outH:r.outH, rot:r.rot, time:r.time,
           maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}, side:r.side||'', lineSig:r.lineSig||null, soft:r.soft||null, noText:!!r.noText});
         this.saved.set(r.id, r.ver);
@@ -1005,7 +1012,7 @@ proc.init();
 
 function procOpts(p){
   const [outW, outH] = OUT_SIZE[String(settings.quality)] || OUT_SIZE['0.85'];
-  return {mode:settings.mode, smartCrop:settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0};
+  return {mode:p.mode || settings.mode, smartCrop:settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0};
 }
 /* sayfayı (yeniden) işle; eski sonuçlar sürüm numarasıyla elenir */
 function processPage(p){
@@ -1676,7 +1683,16 @@ function showModalPage(idx){
   modalUrl = p.procBlob ? URL.createObjectURL(p.procBlob) : null;
   $('modalImg').src = modalUrl || p.thumbUrl || '';
   $('modalWhy').textContent = (p.issues && p.issues.length) ? '⚠ ' + pageIssueText(p) : '';
+  $('mMode').value = p.mode || settings.mode;
 }
+/* sayfa başına görüntü modu (tarama sonrası filtre) */
+$('mMode').onchange = async e => {
+  const p = state.pages[modalIdx]; if(!p) return;
+  p.mode = e.target.value === settings.mode ? null : e.target.value;
+  showOverlay(T('İşleniyor…'));
+  try{ await processPage(p); }finally{ hideOverlay(); }
+  renderGrid(); showModalPage(modalIdx); session.schedule();
+};
 function closeModal(){
   $('modal').hidden = true;
   if(modalUrl){ URL.revokeObjectURL(modalUrl); modalUrl=null; }
@@ -2005,7 +2021,7 @@ const cam = {
     if(L.phase !== 'done' && !L.tries){ L.firstTryT = performance.now(); L.tryMove = fr.moveSum; }
     const t0 = performance.now();
     fr.hold();
-    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: this.sess.ang, spread: true})).then(res => {
+    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: this.sess.ang, spread: true, mask: (this.maskN = (this.maskN || 0) + 1) % 3 === 1 || !L.polys})).then(res => {
       L.inflight = false; L.chkMove = null;
       if(this.live !== L || !this.active){ fr.release(); this.dropKeep(L); return; }
       res.ms = performance.now() - t0;
@@ -2029,8 +2045,8 @@ const cam = {
     const m = res.metrics || {}, iss = res.issues || [], S = this.sess;
     const has = c => iss.some(i => i.code === c);
     // yazı bulunamadı (kapak, resim sayfası — ya da masa, el, çevrilmekte olan sayfa)
-    if(m.mode && m.mode !== 'yazı') return {ok:false, soft:true, slow:true, code:'notext', hint:T('Yazı bulunamadı — kapak ya da resim sayfasıysa sabit tut')};
     if(has('finger')) return {ok:false, hard:true, code:'finger', hint:T('Parmağını yazının üstünden çek')};
+    if(m.mode && m.mode !== 'yazı') return {ok:false, soft:true, slow:true, code:'notext', hint:T('Yazı bulunamadı — kapak ya da resim sayfasıysa sabit tut')};
     const cut = iss.find(i => i.code === 'cut');
     // telefon eğik tutuluyor mu: yazı bloğu kadrajın alt kısmına sıkışmış (üstte masa) ya da üst kenarı alt kenarından
     // belirgin biçimde dar (perspektif). Bu duruşta "uzaklaş" işe yaramaz (sayfa daha da aşağı kayar): telefon sayfanın
@@ -2107,6 +2123,8 @@ const cam = {
     const lm = this.localMotion(snap, (m.blockN || m.quadN));
     if(v.ok && lm > Math.max(6, snap.thr*2.5)) v = {ok:false, soft:true, slow:true, code:'moving', hint:''};
     L.quad = (m.blockN || m.quadN) || null; L.quadAt = now; L.quadOk = v.ok;
+    if(m.polys) L.polys = m.polys; else if(!L.polys && L.quad) L.polys = [L.quad];
+    L.polyAt = now; L.polyOk = v.ok; L.polyHard = !!(v.hard);
     const moved = snap.moveSum - L.moveAt;
     this.ev('kontrol', L.phase, v.ok ? 'tamam' : v.code, m.side || '', Math.round(res.ms || 0),
             [m.room, +(m.crisp||0).toFixed(2), Math.round(m.sharp||0), Math.round(moved), +lm.toFixed(1)]);
@@ -2432,33 +2450,32 @@ const cam = {
     }
     this.draw(r, st);
   },
+  /* canlı sayfa maskesi: son denetimin bulduğu (kıvrık sayfada eğri) sayfa alanı yarı saydam boyanır.
+     Kare kıpırdarken de görünür, yeni sonuca yumuşakça kayar, ~1.5 sn'de söner */
   draw(r, st){
     const ov = $('camOverlay'), v = $('camView'), L = this.live;
     const W = ov.clientWidth, H = ov.clientHeight;
     if(ov.width !== W || ov.height !== H){ ov.width = W; ov.height = H; }
     const x = ov.getContext('2d');
     x.clearRect(0, 0, W, H);
-    // çerçeve yalnız taze (son ~0.6 sn) ve kare hâlâ sabitken gösterilir
-    if(!L.quad || !v.videoWidth || performance.now() - L.quadAt > 600 || r.state !== 'still') return;
-    // object-fit: contain eşlemesi
-    const s = Math.min(W/v.videoWidth, H/v.videoHeight);
-    const ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
-    const P = L.quad.map(p => [ox + p[0]*v.videoWidth*s, oy + p[1]*v.videoHeight*s]);
-    const done = st === 'done' || L.quadOk;
-    const col = done ? '#39d98a' : '#ffb020';
-    x.fillStyle = done ? '#39d98a26' : '#ffb02014';
-    x.strokeStyle = col + 'aa'; x.lineWidth = 2;
-    x.beginPath(); P.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath(); x.fill(); x.stroke();
-    // köşe işaretleri
-    x.strokeStyle = col; x.lineWidth = 6; x.lineCap = 'round';
-    for(let i=0;i<4;i++){
-      const a = P[i], b = P[(i+1)%4], c = P[(i+3)%4];
-      const Lk = 0.16;
-      x.beginPath();
-      x.moveTo(a[0] + (b[0]-a[0])*Lk, a[1] + (b[1]-a[1])*Lk);
-      x.lineTo(a[0], a[1]);
-      x.lineTo(a[0] + (c[0]-a[0])*Lk, a[1] + (c[1]-a[1])*Lk);
-      x.stroke();
+    if(!L || !L.polys || !v.videoWidth) { if(L) L.disp = null; return; }
+    const age = performance.now() - L.polyAt;
+    if(age > 1500){ L.disp = null; return; }
+    // yumuşak geçiş: aynı yapıdaki çokgenlerde noktalar hedefe kayar
+    const tgt = L.polys;
+    if(!L.disp || L.disp.length !== tgt.length || L.disp.some((p, i) => p.length !== tgt[i].length)) L.disp = tgt.map(p => p.map(q => q.slice()));
+    else L.disp.forEach((p, i) => p.forEach((q, j) => { q[0] += (tgt[i][j][0] - q[0])*0.35; q[1] += (tgt[i][j][1] - q[1])*0.35; }));
+    const s = Math.min(W/v.videoWidth, H/v.videoHeight), ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
+    const fade = age < 800 ? 1 : Math.max(0, 1 - (age - 800)/700);
+    const done = st === 'done';
+    const ok = done || L.polyOk;
+    const rgb = ok ? '47,224,176' : L.polyHard ? '255,92,122' : '255,176,32';
+    x.lineJoin = 'round';
+    for(const poly of L.disp){
+      const P = poly.map(p => [ox + p[0]*v.videoWidth*s, oy + p[1]*v.videoHeight*s]);
+      x.beginPath(); P.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath();
+      x.fillStyle = `rgba(${rgb},${((done ? 0.5 : ok ? 0.38 : 0.22)*fade).toFixed(3)})`; x.fill();
+      x.strokeStyle = `rgba(${rgb},${(0.95*fade).toFixed(3)})`; x.lineWidth = 3; x.stroke();
     }
   },
   onPageDone(p){ if(!this.retake && p.thumbUrl && state.pages[state.pages.length-1] === p) this.setThumb(p.thumbUrl); },

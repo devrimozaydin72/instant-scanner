@@ -361,6 +361,14 @@ function skinRef(pc){
   return {wr: pm/Math.max(pc[0],1), wg: pm/Math.max(pc[1],1), wb: pm/Math.max(pc[2],1),
           L: 0.299*pc[0]+0.587*pc[1]+0.114*pc[2]};
 }
+/* el/parmak: ten testine ek olarak kırmızılık sarılıktan belirgin fazla olmalı. Sarı ışıkta gölgedeki kağıt,
+   sayfa kenarı ve ahşap masa turuncu-sarıdır ((G-B)/G ≈ 0.06-0.08); ten kırmızıdır, yeşil≈mavi ((G-B)/G ≈ 0.02-0.03).
+   Ölçüm: parmak (R-G)/R-(G-B)/G ≈ 0.12-0.13, gölge/masa ≈ 0.03-0.05 */
+function isHandRef(r, g, b, ref){
+  if(!isSkinRef(r, g, b, ref)) return false;
+  const R = r*ref.wr, Gg = g*ref.wg, B = b*ref.wb;
+  return (R - Gg)/R - (Gg - B)/Math.max(1, Gg) > 0.08;
+}
 function isSkinRef(r, g, b, ref){
   const l = 0.299*r+0.587*g+0.114*b;
   if(l > ref.L*0.93) return false;                 // ten kağıttan koyudur
@@ -2990,6 +2998,7 @@ function processCanvas(src, opts){
     try{
       const f = txFind(src, {sd, maxSide: quick ? 760 : 1100, quick, angHint: opts.angHint});
       for(const d of f.dbg) dbg.push(d);
+      if(f.ok && Math.abs(Math.sin(f.st.ang)) > 0.77 && W < H && f.rows && f.rows.length < 8){ f.ok = false; dbg.push('yan dönmüş az satır (kapak harfleri?) → yazı sayılmadı'); }
       if(f.ok){
         const Pn = txPlane(sd, W, H, f, quick, dbg);
         if(Pn){ const c = txContent(Pn, dbg); if(c && c.w > 8 && c.h > 8) TX = {P: Pn, content: c, tq: f.quad, f, ang: f.st.ang}; }
@@ -3006,7 +3015,7 @@ function processCanvas(src, opts){
       if(eq){
         const dc = det.ok ? eq.support(det.quad) : 0, da = det.ok ? quadArea(det.quad)/(W*H) : 0;
         dbg.push(`kenar dörtgeni destek ${eq.cov.toFixed(2)} (tespit ${dc.toFixed(2)}) alan ${eq.area.toFixed(2)}/${da.toFixed(2)}`);
-        if(eq.cov >= 0.8 && eq.cov >= dc + 0.25 && (!det.ok || eq.area >= da*0.8)){
+        if((eq.cov >= 0.8 && eq.cov >= dc + 0.25 && (!det.ok || eq.area >= da*0.8)) || (!det.ok && eq.cov >= 0.62 && eq.area >= 0.18)){
           const tol = 0.03*Math.min(W, H);
           const clipped = [0,1,2,3].map(e => { const a = eq.quad[e], b = eq.quad[(e+1)%4], mx = (a[0]+b[0])/2, my = (a[1]+b[1])/2; return Math.min(mx, my, W-1-mx, H-1-my) < tol; });
           det = Object.assign({}, det, {ok: true, reason: '', quad: eq.quad, comp: null, compFilled: null, clipped, edge: true});
@@ -3185,12 +3194,20 @@ function processCanvas(src, opts){
   if(quick && TX){
     if(content.cutTop) issues.push({code:'cut', side:0});
     if(content.cutBot) issues.push({code:'cut', side:2});
+    // el/parmak yazının üstünde mi (kaynak karede, içerik dörtgeni çevresinde)
+    { const hq = contQ || tqSrc; if(hq){ const h = handOnPage(sd, W, H, hq, 1.12); dbg.push(`el %${(h.inner*100).toFixed(1)}`); if(h.inner > 0.025) issues.push({code:'finger', side:-1}); } }   // parmak silinir; yalnız sayfayı örten el beklenir
+    // canlı maske (kağıt tespiti ~20 ms): çağıran her denetimde istemez (opts.mask === false → son maske kullanılır)
+    let polyQ = null;
+    if(opts.mask !== false){
+      try{ const hq2 = contQ || tqSrc; if(hq2){ const dm = detectPage(src, 160, {fine: true}); polyQ = pagePolyMask(dm, hq2, W, H); } }catch(_){}
+      if(!polyQ) polyQ = pagePoly(P, content, W, H);
+    }
     const cplQ = tqSrc && content.pitch ? ((dist(tqSrc[0],tqSrc[1]) + dist(tqSrc[3],tqSrc[2]))/2)/Math.max(1e-6, content.pitch*P.srcPerPx) : 0;
     const metricsQ = {sharp: -1, crisp: -1, inkFrac: 0, ms: Date.now()-t0, mode, quick: true,
                       lines: P.tb ? P.tb.n : 0, tilt, room, side: side.side, srcPitch: content.pitch ? content.pitch*P.srcPerPx/qScale : 0,
                       extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut, leftover,
                       quadN: tqSrc ? tqSrc.map(q => [q[0]/W, q[1]/H]) : null, blockN: (blockQ || tqSrc) ? (blockQ || tqSrc).map(q => [q[0]/W, q[1]/H]) : null,
-                      contN: contQ ? contQ.map(q => [q[0]/W, q[1]/H]) : null, ang: TX.ang, cpl: cplQ};
+                      contN: contQ ? contQ.map(q => [q[0]/W, q[1]/H]) : null, ang: TX.ang, cpl: cplQ, polys: polyQ ? [polyQ] : null};
     dbg.push(tms.join(' ')); dbg.push(`hızlı ${W}x${H}, ${metricsQ.ms} ms`);
     return {canvas: null, issues, metrics: metricsQ, dbg: dbg.join(' | '), lineSig: lineSigs(P)};
   }
@@ -3278,6 +3295,7 @@ function processCanvas(src, opts){
     }
   }
   T('maske');
+  const skinT = TX && !quick && opts.smartCrop ? skinMaskTX(pageData, fw, fhR) : null;
   if(graphic) enhanceGraphic(pageData, fw, fhR, opts.mode);
   else enhanceRGBA(pageData, fw, fhR, opts.mode, mode === 'yazı');
   if(fillQ){
@@ -3308,6 +3326,25 @@ function processCanvas(src, opts){
         pageData[j] += (pc[0] - pageData[j])*a; pageData[j+1] += (pc[1] - pageData[j+1])*a; pageData[j+2] += (pc[2] - pageData[j+2])*a;
       }
     }
+  }
+  if(skinT && skinT.n){
+    // ten (parmak/el) kağıt rengine boyanır; yazı alanına taşıyorsa sayfa işaretlenir
+    const {m, qw: sw, qh: sh, Q: SQ} = skinT;
+    let dm = m; for(let k=0;k<2;k++) dm = dilate1(dm, sw, sh);
+    let onText = 0;
+    if(content.env){
+      for(let qy=0; qy<sh; qy++) for(let qx=0; qx<sw; qx++){
+        if(!m[qy*sw+qx]) continue;
+        const Y = content.y0 + (qy*SQ + SQ/2)/s, X = content.x0 + (qx*SQ + SQ/2)/s, e = content.env(Y);
+        if(X > e[0] && X < e[1] && Y > content.y0 && Y < content.y0 + content.h) onText++;
+      }
+    }
+    const a = new Float32Array(sw*sh); for(let i=0;i<sw*sh;i++) a[i] = dm[i];
+    const alpha = boxBlur(a, sw, sh, 1, 1); for(let i=0;i<sw*sh;i++) alpha[i] = Math.min(1, alpha[i]*1.6);
+    fillAlphaQ(pageData, fw, fhR, alpha, sw, sh, SQ, opts.mode === 'orig' ? paperColor(pageData, fw, fhR) : [255, 255, 255]);
+    dbg.push(`ten silindi ${skinT.n} hücre, yazıda ${onText}`);
+    // kenardaki parmak sessizce silinir; yazının belirgin kısmını örtmüşse (altındaki harfler hiç görünmedi) işaretlenir
+    if(onText > sw*sh*0.01) issues.push({code:'finger', side:-1});
   }
   T('iyileştir');
   const pageCanvas = quick ? null : putRGBA(pageData, fw, fh);
@@ -3346,7 +3383,13 @@ function processCanvas(src, opts){
   // satır genişliği / satır aralığı: çevrilmekte olan (yandan görülen) sayfada belirgin biçimde küçülür
   const cpl = tqSrc && content.pitch ? ((dist(tqSrc[0],tqSrc[1]) + dist(tqSrc[3],tqSrc[2]))/2)/Math.max(1e-6, content.pitch*(mode === 'yazı' ? P : A).srcPerPx) : 0;
   if(quick){
-    const metricsQ = {sharp: st.sharp, crisp: st.crisp, inkFrac: st.frac, ms: Date.now()-t0, mode, quick: true,
+    let polysNT = null;
+    if(!TX && det && det.ok){
+      polysNT = [det.quad.map(q => [q[0]/W, q[1]/H])];
+      const h = handOnPage(sd, W, H, det.quad, 1.08); dbg.push(`el %${(h.inner*100).toFixed(1)}`);
+      if(h.inner > 0.04) issues.push({code:'finger', side:-1});
+    }
+    const metricsQ = {sharp: st.sharp, crisp: st.crisp, inkFrac: st.frac, ms: Date.now()-t0, mode, quick: true, polys: polysNT || (tqSrc ? [tqSrc.map(q => [q[0]/W, q[1]/H])] : null),
                       lines: (mode === 'yazı' ? P : A).tb ? (mode === 'yazı' ? P : A).tb.n : 0, tilt, room, side: side.side,
                       srcPitch: content.pitch ? content.pitch*(mode === 'yazı' ? P : A).srcPerPx/qScale : 0,
                       extraTop: content.extraTop || 0, extraBot: content.extraBot || 0, pageCut, leftover,
@@ -3960,6 +4003,104 @@ async function handleProcess(m){
   return {blob, thumb, w:out.width, h:out.height, issues:r.issues, metrics:r.metrics, dbg:r.dbg, lineSig:r.lineSig || null, guard};
 }
 /* hızlı kontrol: m.bitmap (ImageBitmap) ya da m.blob */
+/* ---------- EL / PARMAK (kaynak karede, sayfa dörtgeni çevresinde) ----------
+   Ten rengi, kağıt rengine göre dengelenerek aranır (sarı ışıkta krem kağıt ten sanılmasın).
+   El her zaman sayfanın DIŞINDAN girer: yalnız genişletilmiş dörtgenin kenarına değen ten bileşenleri
+   sayılır (kapaktaki ten renkli resimler sayılmaz). Dönen: {inner: iç dörtgendeki ten oranı, any} */
+function handOnPage(sd, W, H, q, grow){
+  const cx = (q[0][0]+q[1][0]+q[2][0]+q[3][0])/4, cy = (q[0][1]+q[1][1]+q[2][1]+q[3][1])/4, g = grow || 1.1;
+  const qe = q.map(p => [cx + (p[0]-cx)*g, cy + (p[1]-cy)*g]);
+  let x0 = Math.max(0, Math.min(...qe.map(p => p[0]))), x1 = Math.min(W-1, Math.max(...qe.map(p => p[0])));
+  let y0 = Math.max(0, Math.min(...qe.map(p => p[1]))), y1 = Math.min(H-1, Math.max(...qe.map(p => p[1])));
+  // hücre ORTALAMASI: harfler kağıtla karışıp açık kalır (ten sayılmaz), el geniş ve düzgün olduğundan ten rengini korur
+  const st = Math.max(3, (x1 - x0)/70), gw = Math.max(4, Math.floor((x1 - x0)/st)), gh = Math.max(4, Math.floor((y1 - y0)/st));
+  const N = gw*gh, inE = new Uint8Array(N), inQ = new Uint8Array(N), col = new Float32Array(N*3), L = new Float32Array(N);
+  const Ls = [];
+  for(let j=0;j<gh;j++) for(let i=0;i<gw;i++){
+    const x = x0 + (i + 0.5)*st, y = y0 + (j + 0.5)*st, k = j*gw + i;
+    if(!inQuad(qe, x, y)) continue;
+    inE[k] = 1; inQ[k] = inQuad(q, x, y) ? 1 : 0;
+    let r = 0, g = 0, b = 0, n = 0; const hs = st/2;
+    for(let yy=Math.max(0, Math.round(y - hs)); yy<Math.min(H, Math.round(y + hs)); yy++) for(let xx=Math.max(0, Math.round(x - hs)); xx<Math.min(W, Math.round(x + hs)); xx++){
+      const o = (yy*W + xx)*4; r += sd[o]; g += sd[o+1]; b += sd[o+2]; n++;
+    }
+    n = n || 1; col[k*3] = r/n; col[k*3+1] = g/n; col[k*3+2] = b/n;
+    L[k] = 0.299*col[k*3] + 0.587*col[k*3+1] + 0.114*col[k*3+2]; if(inQ[k]) Ls.push(L[k]);
+  }
+  if(Ls.length < 50) return {inner: 0, any: false};
+  const lp = quantile(Ls, 0.75); let pr = 0, pg = 0, pb = 0, pn = 0;
+  for(let k=0;k<N;k++) if(inQ[k] && L[k] >= lp){ pr += col[k*3]; pg += col[k*3+1]; pb += col[k*3+2]; pn++; }
+  const ref = skinRef([pr/pn, pg/pn, pb/pn]);
+  const m = new Uint8Array(N);
+  // ten kağıttan koyudur ama koyu masa/gölge kadar değil
+  for(let k=0;k<N;k++) if(inE[k] && L[k] > ref.L*0.42 && isHandRef(col[k*3], col[k*3+1], col[k*3+2], ref)) m[k] = 1;
+  // satırların böldüğü parmak parçaları birleşsin (genişletilip gruplanır, sayım yine ten hücreleriyle)
+  const mg = dilate1(m, gw, gh);
+  const C = labelComponents(mg, gw, gh), edge = new Uint8Array(C.count + 1), cnt = new Int32Array(C.count + 1);
+  // genişletilmiş dörtgenin kenarına (dışarıya bitişik) değen bileşenler
+  for(let j=0;j<gh;j++) for(let i=0;i<gw;i++){
+    const k = j*gw + i, l = C.labels[k]; if(!l) continue;
+    if(m[k]) cnt[l]++;
+    if(i === 0 || j === 0 || i === gw-1 || j === gh-1 || !inE[k-1] || !inE[k+1] || !inE[k-gw] || !inE[k+gw]) edge[l] = 1;
+  }
+  let nq = 0, sq = 0, any = false; const minS = Math.max(4, N*0.002);
+  for(let k=0;k<N;k++){ if(!inQ[k]) continue; nq++; const l = C.labels[k]; if(m[k] && l && edge[l] && cnt[l] >= minS){ sq++; any = true; } }
+  if(G.__handDbg) G.__handDbg.push({m, labels: C.labels, edge, sizes: C.sizes, minS, gw, gh, x0, y0, st, W, H, col, L, ref});
+  return {inner: nq ? sq/nq : 0, any};
+}
+/* yazı sayfası düzleminde (iyileştirmeden önce) kenardan giren ten bölgeleri: 1/4 çözünürlük.
+   Yalnız düzlemin kenarına değen bileşenler (parmak/el dışarıdan girer; renkli resimler sayılmaz) */
+function skinMaskTX(d, w, h){
+  const Q = 8, qw = Math.ceil(w/Q), qh = Math.ceil(h/Q), q = shrinkRGB(d, w, h, Q);
+  const lp = localPaperGrid(q, qw, qh), cand = new Uint8Array(qw*qh);
+  for(let y=0;y<qh;y++) for(let x=0;x<qw;x++){
+    const i = y*qw+x, j = i*3, ref = skinRef(lp(x+0.5, y+0.5)), l = 0.299*q[j] + 0.587*q[j+1] + 0.114*q[j+2];
+    if(l > ref.L*0.42 && isHandRef(q[j], q[j+1], q[j+2], ref)) cand[i] = 1;
+  }
+  // satırların böldüğü parmak parçaları birleşsin: adaylar genişletilip gruplanır, sonuç yine adaylarla sınırlı
+  let grown = cand; for(let k=0;k<2;k++) grown = dilate1(grown, qw, qh);
+  const C = labelComponents(grown, qw, qh), edge = new Uint8Array(C.count+1);
+  for(let x=0;x<qw;x++){ for(const y of [0, 1, qh-2, qh-1]) if(y >= 0 && y < qh) edge[C.labels[y*qw+x]] = 1; }
+  for(let y=0;y<qh;y++){ for(const x of [0, 1, qw-2, qw-1]) if(x >= 0 && x < qw) edge[C.labels[y*qw+x]] = 1; }
+  const cnt = new Int32Array(C.count+1); for(let i=0;i<qw*qh;i++) if(cand[i]) cnt[C.labels[i]]++;
+  const minS = Math.max(4, qw*qh*0.002), m = new Uint8Array(qw*qh); let n = 0;
+  for(let i=0;i<qw*qh;i++){ const l = C.labels[i]; if(l && edge[l] && cnt[l] >= minS && (cand[i] || grown[i])){ m[i] = cand[i] ? 1 : 0; if(cand[i]) n++; } }
+  return {m, n, qw, qh, Q};
+}
+/* canlı maske: yazı bloğunun sütunlarında kağıt maskesinin (dantele dayanıklı sayfa tespiti) üst ve alt sınırı →
+   başlık ve sayfa numarası da kapsanır, kıvrık sayfada üst/alt kenar eğri çıkar. hq: yazı dörtgeni (kaynak) */
+function pagePolyMask(det, hq, W, H){
+  if(!det || !det.ok || !det.compFilled) return null;
+  const m = det.compFilled, sw = det.sw, sh = det.sh, k = sw/W;
+  const at = (x, y) => { const X = Math.round(x*k), Y = Math.round(y*k); return X >= 0 && Y >= 0 && X < sw && Y < sh && m[Y*sw+X]; };
+  const [TL, TR, BR, BL] = hq, ex = 0.07, K = 16, top = [], bot = [];
+  const lerp = (a, b, t) => [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t];
+  const hT = (Math.hypot(BL[0]-TL[0], BL[1]-TL[1]) + Math.hypot(BR[0]-TR[0], BR[1]-TR[1]))/2, lim = hT*0.45, step = Math.max(1, 1/k);
+  for(let i=0;i<=K;i++){
+    const t = -ex + (1 + 2*ex)*i/K, a = lerp(TL, TR, t), b = lerp(BL, BR, t);
+    const dx = a[0] - b[0], dy = a[1] - b[1], L = Math.hypot(dx, dy) || 1, ux = dx/L, uy = dy/L;   // yukarı yön
+    // yazının (başlık, sayfa no) maskede açtığı kısa boşluklar atlanır; uzun boşluk = kağıt bitti
+    const gapMax = hT*0.08;
+    const walk = (o, sgn) => { let last = o, gap = 0; for(let d=0; d<lim; d+=step){ const p = [o[0] + sgn*ux*d, o[1] + sgn*uy*d]; if(at(p[0], p[1])){ last = p; gap = 0; } else if((gap += step) > gapMax) break; } return last; };
+    const pa = walk(a, 1), pb = walk(b, -1);
+    top.push([pa[0]/W, pa[1]/H]); bot.push([pb[0]/W, pb[1]/H]);
+  }
+  return top.concat(bot.reverse()).map(p => [Math.max(0, Math.min(1, p[0])), Math.max(0, Math.min(1, p[1]))]);
+}
+/* canlı çerçeve için eğri sayfa çokgeni: içerik kutusu (sayfa payıyla genişletilmiş) düz-satır düzleminden
+   kaynağa eşlenir → kıvrık sayfada kenarlar da eğri çizilir. 0-1 koordinatlı nokta dizisi */
+function pagePoly(P, c, W, H){
+  const mx = c.w*0.09, my = c.h*0.05, bw = P.bw || 1e9, bh = P.bh || 1e9;
+  const X0 = Math.max(0, c.x0 - mx), X1 = Math.min(bw, c.x0 + c.w + mx), Y0 = Math.max(0, c.y0 - my), Y1 = Math.min(bh, c.y0 + c.h + my);
+  const K = 10, pts = [];
+  const add = (x, y) => { const p = P.toSrc(x, y); if(isFinite(p[0]) && isFinite(p[1])) pts.push([Math.max(0, Math.min(1, p[0]/W)), Math.max(0, Math.min(1, p[1]/H))]); };
+  for(let i=0;i<K;i++) add(X0 + (X1-X0)*i/K, Y0);
+  for(let i=0;i<K;i++) add(X1, Y0 + (Y1-Y0)*i/K);
+  for(let i=0;i<K;i++) add(X1 - (X1-X0)*i/K, Y1);
+  for(let i=0;i<K;i++) add(X0, Y1 - (Y1-Y0)*i/K);
+  return pts.length >= 12 ? pts : null;
+}
+
 /* ---------- ÇİFT SAYFA (telefon yan tutulunca) ----------
    Yazı satırları kadrajın UZUN ekseni boyuncaysa telefon yan tutuluyordur → açık kitabın iki sayfası
    birden kadrajdadır. Yazı yönünden 90°'nin katı kadar döndürme bulunur, iki yazı bloğu arasındaki
@@ -4042,7 +4183,8 @@ function quickSpread(c, opts){
     quadN: join('quadN'), blockN: join('blockN'), contN: join('contN'),
     sharp: Math.min(ms[0].sharp != null ? ms[0].sharp : 1e9, ms[1].sharp != null ? ms[1].sharp : 1e9),
     cpl: both ? Math.min(ms[0].cpl || 0, ms[1].cpl || 0) : (ms[0].cpl || ms[1].cpl || 0),
-    ms: ms[0].ms + ms[1].ms, split: g, ang: f.st.ang
+    ms: ms[0].ms + ms[1].ms, split: g, ang: f.st.ang,
+    polys: [0, 1].flatMap(k => (ms[k].polys || []).map(p => p.map(spreadMapN(g, k, c.width, c.height))))
   });
   const lineSig = (rs[0].lineSig || []).concat(rs[1].lineSig || []);
   return {issues, metrics: m, dbg: 'ÇİFT SAYFA rot ' + g.rot + ' sırt ' + g.spineN.toFixed(2) + ' || ' + rs.map(r => r.dbg).join(' || '), lineSig: lineSig.length ? lineSig : null};

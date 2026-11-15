@@ -1,4 +1,4 @@
-const CACHE = 'instant-scanner-deneme-v25';
+const CACHE = 'instant-scanner-deneme-v26';
 const CORE = ['./', './index.html', './core.js', './i18n.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {

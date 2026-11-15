@@ -193,9 +193,182 @@
   .ver{color:var(--dim); font-size:12px; text-align:center; margin:6px 0 0; opacity:.7}
   #pdfInfo{color:var(--dim); font-size:14px; line-height:1.5; margin:4px 0 14px; word-break:break-word}
   .sub{color:var(--dim); font-size:13px; margin:0}
+  /* ---------- TANITIM (ilk açılış) ---------- */
+  body.noscroll{overflow:hidden}
+  #onb{position:fixed; inset:0; z-index:200; display:flex; flex-direction:column;
+    background:radial-gradient(120% 70% at 50% 0%, #1d2b4f 0%, #0f1420 60%); color:var(--text)}
+  #onb[hidden]{display:none}
+  #onb .onb-top{display:flex; justify-content:space-between; align-items:center;
+    padding:max(14px, calc(env(safe-area-inset-top) + 6px)) 18px 0; min-height:44px}
+  #onb .onb-brand{font-weight:700; font-size:15px; letter-spacing:.4px; color:var(--dim)}
+  #onb .onb-skip{background:none; border:0; color:var(--dim); font-size:15px; padding:8px 4px; cursor:pointer}
+  #onbTrack{flex:1; display:flex; overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory;
+    scrollbar-width:none; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain}
+  #onbTrack::-webkit-scrollbar{display:none}
+  .onb-s{flex:0 0 100%; width:100%; scroll-snap-align:center; scroll-snap-stop:always;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px 26px 0; text-align:center}
+  .onb-art{width:min(82vw, 340px); height:min(46vh, 300px); display:flex; align-items:center; justify-content:center}
+  .onb-art svg{width:100%; height:100%; overflow:visible}
+  .onb-s h2{font-size:clamp(23px, 6.4vw, 30px); line-height:1.18; margin:22px 0 10px; max-width:420px}
+  .onb-s h2 em{font-style:normal; color:var(--accent2)}
+  .onb-s p{font-size:15.5px; line-height:1.55; color:var(--dim); margin:0; max-width:400px}
+  .onb-s p b{color:var(--text); font-weight:600}
+  .onb-bot{padding:14px 22px calc(18px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; align-items:center; gap:16px}
+  .onb-dots{display:flex; gap:7px}
+  .onb-dots i{width:7px; height:7px; border-radius:4px; background:#3a4766; transition:width .25s, background .25s}
+  .onb-dots i.on{width:22px; background:var(--accent2)}
+  #onbNext{width:100%; max-width:420px; border:0; border-radius:14px; padding:16px; font-size:17px; font-weight:700;
+    color:#06210f; background:linear-gradient(135deg,#46e39a,#2bc47c); cursor:pointer; transition:transform .1s}
+  #onbNext:active{transform:scale(.98)}
+  /* çizim parçaları */
+  .o-pg{fill:#f4f1e8} .o-ln{stroke:#9aa3b5; stroke-width:3; stroke-linecap:round; fill:none}
+  .o-phone{fill:none; stroke:#cfd8ea; stroke-width:3}
+  .o-ok{fill:var(--accent2)} .o-bad{fill:var(--danger)}
+  /* 1: sayfa çevirme + bip */
+  .o-flip{transform-box:view-box; transform-origin:150px 160px}
+  .onb-s.on .o-flip{animation:oFlip 2.6s ease-in-out infinite}
+  @keyframes oFlip{0%,15%{transform:scaleX(1); opacity:1} 46%,62%{transform:scaleX(-1); opacity:1} 72%,100%{transform:scaleX(-1); opacity:0}}
+  .onb-s.on .o-beep{animation:oBeep 2.6s ease-out infinite; transform-box:fill-box; transform-origin:center}
+  @keyframes oBeep{0%,46%{opacity:0; transform:scale(.4)} 55%{opacity:1; transform:scale(1.12)} 62%,88%{opacity:1; transform:scale(1)} 100%{opacity:0; transform:scale(1)}}
+  .onb-s.on .o-cnt{animation:oCnt 7.8s steps(1) infinite}
+  .o-cnt{opacity:0}
+  .onb-s.on .o-cnt.c1{animation-delay:0s} .onb-s.on .o-cnt.c2{animation-delay:2.6s} .onb-s.on .o-cnt.c3{animation-delay:5.2s}
+  @keyframes oCnt{0%{opacity:1} 33.3%,100%{opacity:0}}
+  /* 3: tarama çizgisi */
+  .onb-s.on .o-scanln{animation:oScan 3.2s ease-in-out infinite}
+  @keyframes oScan{0%{transform:translateX(0)} 55%,80%{transform:translateX(200px)} 100%{transform:translateX(0)}}
+  .onb-s.on .o-clean{animation:oClean 3.2s ease-in-out infinite}
+  @keyframes oClean{0%{clip-path:inset(0 100% 0 0)} 55%,80%{clip-path:inset(0 0 0 0)} 100%{clip-path:inset(0 100% 0 0)}}
+  /* 4: küçük resimler sırayla */
+  .o-th{opacity:0}
+  .onb-s.on .o-th{animation:oTh .45s ease-out forwards; transform-box:fill-box; transform-origin:center}
+  @keyframes oTh{from{opacity:0; transform:translateY(14px) scale(.85)} to{opacity:1; transform:none}}
+  /* 5: tutuş */
+  .onb-s.on .o-hover{animation:oHover 2.4s ease-in-out infinite}
+  @keyframes oHover{0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)}}
+  /* 6: kalkan */
+  .onb-s.on .o-pulse{animation:oPulse 2.2s ease-in-out infinite; transform-box:fill-box; transform-origin:center}
+  @keyframes oPulse{0%,100%{transform:scale(1)} 50%{transform:scale(1.05)}}
+  @media (prefers-reduced-motion: reduce){ #onb *{animation:none !important} .o-th{opacity:1} .o-cnt.c3{opacity:1} }
 </style>
 </head>
 <body>
+<!-- TANITIM (ilk açılışta bir kez) -->
+<div id="onb" hidden role="dialog" aria-label="Tanıtım">
+  <div class="onb-top"><span class="onb-brand">⚡ INSTANT SCANNER</span><button class="onb-skip" id="onbSkip">Geç</button></div>
+  <div id="onbTrack">
+    <!-- 1 · otomatik çekim -->
+    <section class="onb-s">
+      <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
+        <rect x="92" y="14" width="116" height="36" rx="18" fill="#1f2942" stroke="#2b3654"/>
+        <text class="o-cnt c1" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700">1 sayfa ✓</text>
+        <text class="o-cnt c2" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700">2 sayfa ✓</text>
+        <text class="o-cnt c3" x="150" y="38" text-anchor="middle" fill="#e8edf7" font-size="16" font-weight="700">3 sayfa ✓</text>
+        <g stroke="#4f8cff" stroke-width="4" fill="none" stroke-linecap="round">
+          <path d="M22 92 V72 H42"/><path d="M258 72 H278 V92"/><path d="M278 232 V252 H258"/><path d="M42 252 H22 V232"/>
+        </g>
+        <polygon class="o-pg" points="40,98 150,88 150,236 40,228"/>
+        <polygon class="o-pg" points="150,88 260,98 260,228 150,236" style="fill:#ece8dc"/>
+        <g class="o-ln"><path d="M56 118 H134"/><path d="M56 132 H134"/><path d="M56 146 H134"/><path d="M56 160 H128"/><path d="M56 174 H134"/><path d="M56 188 H134"/><path d="M56 202 H110"/>
+          <path d="M166 118 H244"/><path d="M166 132 H244"/><path d="M166 146 H244"/><path d="M166 160 H240"/><path d="M166 174 H244"/><path d="M166 188 H244"/><path d="M166 202 H220"/></g>
+        <g class="o-flip"><polygon points="150,88 260,98 260,228 150,236" fill="#faf8f2" stroke="#d9d3c3"/>
+          <g class="o-ln" style="stroke:#b8bfcc"><path d="M166 122 H244"/><path d="M166 138 H244"/><path d="M166 154 H236"/><path d="M166 170 H244"/><path d="M166 186 H244"/></g></g>
+        <g class="o-beep"><circle cx="246" cy="76" r="24" class="o-ok"/><path d="M234 77 l8 8 l16 -17" stroke="#06210f" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <text x="246" y="42" text-anchor="middle" fill="#39d98a" font-size="15" font-weight="700">bip!</text></g>
+      </svg></div>
+      <h2>Sayfayı çevir, <em>o çeksin</em></h2>
+      <p>Deklanşöre basmak yok, beklemek yok. Her yeni sayfa <b>kendiliğinden</b> çekilir; <b>bip</b> sesi “tamam” demektir. Sen çevirmeye devam et.</p>
+    </section>
+    <!-- 2 · kıvrım düzeltme -->
+    <section class="onb-s">
+      <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
+        <path class="o-pg" d="M60 34 Q150 58 240 26 L240 246 Q150 262 60 240 Z">
+          <animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" calcMode="spline" keySplines=".4 0 .2 1;.4 0 .2 1;.4 0 .2 1;.4 0 .2 1"
+            values="M60 34 Q150 58 240 26 L240 246 Q150 262 60 240 Z;M60 34 Q150 58 240 26 L240 246 Q150 262 60 240 Z;M60 26 Q150 26 240 26 L240 246 Q150 246 60 246 Z;M60 26 Q150 26 240 26 L240 246 Q150 246 60 246 Z;M60 34 Q150 58 240 26 L240 246 Q150 262 60 240 Z"/></path>
+        <g class="o-ln" stroke-width="3.5">
+          <path d="M78 64 Q150 86 222 56"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 64 Q150 86 222 56;M78 64 Q150 86 222 56;M78 58 Q150 58 222 58;M78 58 Q150 58 222 58;M78 64 Q150 86 222 56"/></path>
+          <path d="M78 88 Q150 108 222 82"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 88 Q150 108 222 82;M78 88 Q150 108 222 82;M78 82 Q150 82 222 82;M78 82 Q150 82 222 82;M78 88 Q150 108 222 82"/></path>
+          <path d="M78 112 Q150 130 222 108"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 112 Q150 130 222 108;M78 112 Q150 130 222 108;M78 106 Q150 106 222 106;M78 106 Q150 106 222 106;M78 112 Q150 130 222 108"/></path>
+          <path d="M78 136 Q150 152 222 134"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 136 Q150 152 222 134;M78 136 Q150 152 222 134;M78 130 Q150 130 222 130;M78 130 Q150 130 222 130;M78 136 Q150 152 222 134"/></path>
+          <path d="M78 160 Q150 174 222 160"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 160 Q150 174 222 160;M78 160 Q150 174 222 160;M78 154 Q150 154 222 154;M78 154 Q150 154 222 154;M78 160 Q150 174 222 160"/></path>
+          <path d="M78 184 Q150 196 222 186"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 184 Q150 196 222 186;M78 184 Q150 196 222 186;M78 178 Q150 178 222 178;M78 178 Q150 178 222 178;M78 184 Q150 196 222 186"/></path>
+          <path d="M78 208 Q150 218 190 212"><animate attributeName="d" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.85;1" values="M78 208 Q150 218 190 212;M78 208 Q150 218 190 212;M78 202 Q134 202 190 202;M78 202 Q134 202 190 202;M78 208 Q150 218 190 212"/></path>
+        </g>
+      </svg></div>
+      <h2>Kıvrık sayfa <em>dümdüz</em></h2>
+      <p>Satırlar tek tek izlenir: sırt kıvrımı, eğik tutuş ve perspektif düzeltilir. Sayfa, düz bir tarayıcıdan çıkmış gibi olur.</p>
+    </section>
+    <!-- 3 · temizlik -->
+    <section class="onb-s">
+      <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
+        <defs>
+          <pattern id="oLace" width="18" height="18" patternUnits="userSpaceOnUse"><rect width="18" height="18" fill="#d9d4c6"/><circle cx="9" cy="9" r="5.5" fill="none" stroke="#a49c86" stroke-width="2"/><circle cx="0" cy="0" r="2.5" fill="#a49c86"/><circle cx="18" cy="18" r="2.5" fill="#a49c86"/></pattern>
+          <linearGradient id="oDirty" x1="0" x2="1"><stop offset="0" stop-color="#6b5124"/><stop offset=".18" stop-color="#c79a45"/><stop offset=".6" stop-color="#e6cf8f"/><stop offset="1" stop-color="#efe1b4"/></linearGradient>
+          <clipPath id="oClip"><rect x="30" y="8" width="0" height="248"><animate attributeName="width" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.15;0.6;0.85;1" values="0;0;240;240;0"/></rect></clipPath>
+        </defs>
+        <rect x="30" y="8" width="240" height="248" rx="10" fill="url(#oLace)"/>
+        <polygon points="62,30 250,24 248,238 66,246" fill="url(#oDirty)"/>
+        <g class="o-ln" style="stroke:#3a2f1c; stroke-width:5"><path d="M86 62 H228"/><path d="M86 86 H228"/><path d="M86 110 H228"/><path d="M86 134 H228"/><path d="M86 158 H228"/><path d="M86 182 H228"/><path d="M86 206 H190"/></g>
+        <g clip-path="url(#oClip)">
+          <rect x="30" y="8" width="240" height="248" rx="10" fill="#ffffff"/>
+          <g class="o-ln" style="stroke:#1d2433; stroke-width:3"><path d="M86 62 H228"/><path d="M86 86 H228"/><path d="M86 110 H228"/><path d="M86 134 H228"/><path d="M86 158 H228"/><path d="M86 182 H228"/><path d="M86 206 H190"/></g>
+        </g>
+        <rect x="28" y="2" width="4" height="260" rx="2" fill="#39d98a"><animate attributeName="x" dur="3.4s" repeatCount="indefinite" keyTimes="0;0.15;0.6;0.85;1" values="28;28;268;268;28"/></rect>
+      </svg></div>
+      <h2>Temiz, <em>bembeyaz</em> sayfa</h2>
+      <p>Sarı lamba ışığı, sırt gölgesi, masa örtüsü ve yandaki sayfa ayıklanır. Arkadan sızan silik yazı silinir; harfler net ve koyu kalır.</p>
+    </section>
+    <!-- 4 · hiçbir sayfa kaçmaz -->
+    <section class="onb-s">
+      <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
+        <g class="o-th" style="animation-delay:.05s"><rect x="24" y="14" width="72" height="100" rx="5" fill="#fff"/><g class="o-ln" style="stroke-width:2.5"><path d="M34 32 H86"/><path d="M34 44 H86"/><path d="M34 56 H86"/><path d="M34 68 H86"/><path d="M34 80 H74"/></g><circle cx="88" cy="20" r="11" class="o-ok"/><path d="M83 20 l4 4 l7 -8" stroke="#06210f" stroke-width="3" fill="none"/></g>
+        <g class="o-th" style="animation-delay:.3s"><rect x="114" y="14" width="72" height="100" rx="5" fill="#fff"/><g class="o-ln" style="stroke-width:2.5"><path d="M124 32 H176"/><path d="M124 44 H176"/><path d="M124 56 H176"/><path d="M124 68 H176"/><path d="M124 80 H166"/></g><circle cx="178" cy="20" r="11" class="o-ok"/><path d="M173 20 l4 4 l7 -8" stroke="#06210f" stroke-width="3" fill="none"/></g>
+        <g class="o-th" style="animation-delay:.55s"><rect x="204" y="14" width="72" height="100" rx="5" fill="#fff"/><g class="o-ln" style="stroke-width:2.5"><path d="M214 32 H266"/><path d="M214 44 H266"/><path d="M214 56 H266"/><path d="M214 68 H266"/><path d="M214 80 H250"/></g><circle cx="268" cy="20" r="11" class="o-ok"/><path d="M263 20 l4 4 l7 -8" stroke="#06210f" stroke-width="3" fill="none"/></g>
+        <g class="o-th" style="animation-delay:.8s"><rect x="24" y="134" width="72" height="100" rx="5" fill="#fff"/><g class="o-ln" style="stroke-width:2.5"><path d="M34 152 H86"/><path d="M34 164 H86"/><path d="M34 176 H86"/><path d="M34 188 H86"/><path d="M34 200 H70"/></g><circle cx="88" cy="140" r="11" class="o-ok"/><path d="M83 140 l4 4 l7 -8" stroke="#06210f" stroke-width="3" fill="none"/></g>
+        <g class="o-th" style="animation-delay:1.05s"><rect x="114" y="134" width="72" height="100" rx="5" fill="#fff" stroke="#ff5c7a" stroke-width="4"/><g class="o-ln" style="stroke-width:2.5"><path d="M124 152 H176"/><path d="M124 164 H176"/><path d="M124 176 H176"/></g><path d="M114 196 l12 -6 l12 6 l12 -6 l12 6 l12 -6 l12 6" stroke="#ff5c7a" stroke-width="2.5" fill="none" stroke-dasharray="4 3"/><rect x="122" y="208" width="56" height="20" rx="10" fill="#ff5c7a"/><text x="150" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">kesik</text></g>
+        <g class="o-th" style="animation-delay:1.3s"><rect x="204" y="134" width="72" height="100" rx="5" fill="#fff" stroke="#ffb020" stroke-width="4"/><g class="o-ln" style="stroke-width:2.5"><path d="M214 152 H266"/><path d="M214 164 H266"/><path d="M214 176 H266"/><path d="M214 188 H266"/><path d="M214 200 H250"/></g><rect x="208" y="208" width="64" height="20" rx="10" fill="#ffb020"/><text x="240" y="222" text-anchor="middle" font-size="11.5" font-weight="700" fill="#2a1c00">TEKRAR?</text></g>
+      </svg></div>
+      <h2>Hiçbir sayfa <em>kaçmaz</em></h2>
+      <p>Bulanık ya da yarım kare alınmaz. Kesik sayfa ve iki kez çekilen sayfa işaretlenir, <b>tek dokunuşla</b> yeniden çekilir.</p>
+    </section>
+    <!-- 5 · doğru tutuş -->
+    <section class="onb-s">
+      <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
+        <g opacity=".9">
+          <rect x="16" y="206" width="118" height="16" rx="3" fill="#f4f1e8"/>
+          <g transform="rotate(-42 70 110)"><rect x="30" y="102" width="80" height="14" rx="5" fill="#2b3654" stroke="#cfd8ea" stroke-width="2.5"/></g>
+          <path d="M84 132 L30 206 M84 132 L150 206" stroke="#ff5c7a" stroke-width="2" stroke-dasharray="5 5" fill="none"/>
+          <circle cx="75" cy="44" r="20" class="o-bad"/><path d="M67 36 l16 16 M83 36 l-16 16" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+          <text x="75" y="248" text-anchor="middle" fill="#93a0bd" font-size="14">eğik</text>
+        </g>
+        <rect x="166" y="206" width="118" height="16" rx="3" fill="#f4f1e8"/>
+        <g class="o-hover"><rect x="185" y="104" width="80" height="14" rx="5" fill="#2b3654" stroke="#cfd8ea" stroke-width="2.5"/>
+          <path d="M190 118 L170 204 M260 118 L280 204" stroke="#39d98a" stroke-width="2" stroke-dasharray="5 5" fill="none"/></g>
+        <circle cx="225" cy="44" r="20" class="o-ok"/><path d="M215 45 l7 7 l13 -14" stroke="#06210f" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="225" y="248" text-anchor="middle" fill="#e8edf7" font-size="14" font-weight="700">tam üstünde</text>
+      </svg></div>
+      <h2>Doğru tutuş = <em>en hızlı</em> tarama</h2>
+      <p>Telefonu sayfanın <b>tam üstünde</b>, kitaba paralel tut. Sayfa numarası dahil sayfanın <b>tamamı</b> ekranda görünsün.</p>
+    </section>
+    <!-- 6 · gizlilik -->
+    <section class="onb-s">
+      <div class="onb-art"><svg viewBox="0 0 300 260" aria-hidden="true">
+        <defs><linearGradient id="oShield" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4f8cff"/><stop offset="1" stop-color="#2a5bd6"/></linearGradient></defs>
+        <g class="o-pulse"><path d="M150 26 L226 54 V122 C226 174 193 210 150 230 C107 210 74 174 74 122 V54 Z" fill="url(#oShield)"/>
+          <rect x="122" y="112" width="56" height="46" rx="8" fill="#0f1420"/><path d="M132 112 V100 a18 18 0 0 1 36 0 V112" stroke="#0f1420" stroke-width="8" fill="none"/>
+          <circle cx="150" cy="132" r="6" fill="#39d98a"/><rect x="147" y="134" width="6" height="12" rx="3" fill="#39d98a"/></g>
+        <g transform="translate(232 18)"><path d="M14 40 a14 14 0 0 1 2 -28 a20 20 0 0 1 38 4 a12 12 0 0 1 2 24 Z" fill="#2b3654"/><path d="M6 48 L60 2" stroke="#ff5c7a" stroke-width="5" stroke-linecap="round"/></g>
+      </svg></div>
+      <h2>Sayfaların <em>sende kalır</em></h2>
+      <p>Tüm işlem telefonunda yapılır. Görüntülerin <b>hiçbir sunucuya</b> gönderilmez; internet olmadan da çalışır.</p>
+    </section>
+  </div>
+  <div class="onb-bot">
+    <div class="onb-dots" id="onbDots"></div>
+    <button id="onbNext">Devam</button>
+  </div>
+</div>
+
 <header>
   <div class="logo">⚡</div>
   <div>
@@ -298,7 +471,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 23</p>
+  <p class="ver">INSTANT SCANNER · sürüm 24 · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0">tanıtımı göster</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -2508,6 +2681,36 @@ window.__ready = (async () => {
   const n = await session.restore();
   if(n) toast(`Yarım kalan taraman geri yüklendi (${n} sayfa).`, 4000);
   await archive.render();
+})();
+
+/* ---------- TANITIM: ilk açılışta bir kez; altta "Tanıtımı göster" ile yeniden ---------- */
+const onb = (() => {
+  const KEY = 'is.onb1', el = $('onb'), track = $('onbTrack'), dots = $('onbDots'), next = $('onbNext');
+  const slides = [...track.querySelectorAll('.onb-s')];
+  slides.forEach(() => dots.appendChild(document.createElement('i')));
+  let cur = -1;
+  const mark = i => {
+    if(i === cur) return; cur = i;
+    slides.forEach((s, k) => s.classList.toggle('on', k === i));
+    [...dots.children].forEach((d, k) => d.classList.toggle('on', k === i));
+    next.textContent = i === slides.length - 1 ? '📷 Taramaya başla' : 'Devam';
+  };
+  track.addEventListener('scroll', () => mark(Math.max(0, Math.min(slides.length - 1, Math.round(track.scrollLeft / Math.max(1, track.clientWidth))))), {passive: true});
+  const close = () => { el.hidden = true; document.body.classList.remove('noscroll'); try{ localStorage.setItem(KEY, '1'); }catch(_){} };
+  const show = () => { el.hidden = false; document.body.classList.add('noscroll'); track.scrollLeft = 0; cur = -1; mark(0); };
+  // art arda hızlı dokunuş: kaydırma bitmeden gelen dokunuş da bir sonraki sayfaya geçer
+  let goal = 0, tGoal = 0;
+  next.onclick = () => {
+    const base = performance.now() - tGoal < 700 ? Math.max(goal, cur) : cur;
+    if(base >= slides.length - 1){ close(); $('btnLive').click(); return; }
+    goal = base + 1; tGoal = performance.now();
+    track.scrollTo({left: goal*track.clientWidth, behavior: 'smooth'});
+  };
+  $('onbSkip').onclick = close;
+  $('btnOnb').onclick = show;
+  let seen = false; try{ seen = localStorage.getItem(KEY) === '1'; }catch(_){}
+  if(!seen) show();
+  return {show, close};
 })();
 log('INSTANT SCANNER hazır');
 </script>

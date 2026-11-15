@@ -3009,7 +3009,7 @@ function processCanvas(src, opts){
     try{
       const f = txFind(src, {sd, maxSide: quick ? 760 : 1100, quick, angHint: opts.angHint});
       for(const d of f.dbg) dbg.push(d);
-      if(f.ok && Math.abs(Math.sin(f.st.ang)) > 0.77 && W < H && f.rows && f.rows.length < 8){ f.ok = false; dbg.push('yan dönmüş az satır (kapak harfleri?) → yazı sayılmadı'); }
+      if(f.ok && Math.abs(Math.sin(f.st.ang)) > 0.77 && W < H && f.rows && f.rows.length < 14){ f.ok = false; dbg.push('yan dönmüş az satır (kapak harfleri?) → yazı sayılmadı'); }
       if(f.ok){
         const Pn = txPlane(sd, W, H, f, quick, dbg);
         if(Pn){ const c = txContent(Pn, dbg); if(c && c.w > 8 && c.h > 8) TX = {P: Pn, content: c, tq: f.quad, f, ang: f.st.ang}; }
@@ -3257,7 +3257,7 @@ function processCanvas(src, opts){
       const i = qy*qw+qx, j = i*3;
       const r=qRaw[j], gg=qRaw[j+1], b=qRaw[j+2], l=0.299*r+0.587*gg+0.114*b;
       const ref = skinRef(localPaper(qx+0.5, qy+0.5));
-      const skin = isSkinRef(r,gg,b,ref);
+      const skin = isHandRef(r,gg,b,ref);
       const blueish = b*ref.wb - r*ref.wr > 18 && l < ref.L*0.85;
       const notPaper = skin || (comp && (l < paperL*0.5 || blueish));
       if(!notPaper) continue;
@@ -4195,7 +4195,7 @@ function quickSpread(c, opts){
     quadN: join('quadN'), blockN: join('blockN'), contN: join('contN'),
     sharp: Math.min(ms[0].sharp != null ? ms[0].sharp : 1e9, ms[1].sharp != null ? ms[1].sharp : 1e9),
     cpl: both ? Math.min(ms[0].cpl || 0, ms[1].cpl || 0) : (ms[0].cpl || ms[1].cpl || 0),
-    ms: ms[0].ms + ms[1].ms, split: g, ang: f.st.ang,
+    ms: ms[0].ms + ms[1].ms, split: g, ang: f.st.ang, halfSigs: [rs[0].lineSig || null, rs[1].lineSig || null],
     polys: [0, 1].flatMap(k => (ms[k].polys || []).map(p => p.map(spreadMapN(g, k, c.width, c.height))))
   });
   const lineSig = (rs[0].lineSig || []).concat(rs[1].lineSig || []);

@@ -519,7 +519,7 @@
     <p class="sub" id="histSub" data-t>Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 27</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 28</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -2131,10 +2131,17 @@ const cam = {
     // aynı sayfa mı? Son sayfalarla satır imzası; satırlar karşılaştırılamıyorsa son çekimden beri kayda değer hareket
     // yoksa ve görüntü aynıysa aynı sayfadır (sayfa çevrilmeden ikinci kez çekilmez)
     let dupK = -1, dupWhy = '';
+    let spreadNew = false;
     if(!this.retake){
-      if(res.lineSig) for(let k=0; k<S.recent.length; k++){ const q = S.recent[k]; if(!q.lineSig) continue;
+      if(m.spread && m.halfSigs){
+        // çift sayfa: ancak İKİ yarı da daha önce çekildiyse tekrar; tek yarı eşleşirse diğeri yeni sayfadır (accept ayıklar)
+        const h = m.halfSigs.map(sg => this.findRecent(sg));
+        if(h[0] && h[1]){ dupK = Math.min(h[0].k, h[1].k); dupWhy = `çift sayfa, iki yarı da çekilmiş (${h[0].mm.toFixed(2)}/${h[1].mm.toFixed(2)})`; }
+        // iki yarının da satır imzası dolu ve hiçbiri eşleşmiyor: kesinlikle yeni açılım (görüntü benzerliği kurallarına bakılmaz)
+        else if(!h[0] && !h[1] && m.halfSigs.every(sg => sg && sg.length >= 15)) spreadNew = true;
+      } else if(res.lineSig) for(let k=0; k<S.recent.length; k++){ const q = S.recent[k]; if(!q.lineSig) continue;
         const mm = C.lineMatch(res.lineSig, q.lineSig, k === 0); if(mm >= 0.5){ dupK = k; dupWhy = `satır imzası ${mm.toFixed(2)}`; break; } }
-      if(dupK < 0 && S.last && S.last.sig && S.recent[0] && S.recent[0].id === S.last.id){
+      if(dupK < 0 && !spreadNew && S.last && S.last.sig && S.recent[0] && S.recent[0].id === S.last.id){
         const dd = C.sigDiff(snap.sig, S.last.sig, 2);
         // satır imzası seyrek sayfada (içindekiler, kısa satırlar, yazısız) kararsızdır: orada son çekimden beri sayfa
         // çevirecek kadar hareket yoksa ve görüntü benzerse aynı sayfadır. Dolu yazı sayfasında imzaya güvenilir.
@@ -2277,6 +2284,14 @@ const cam = {
     if(!bl || bl.unknown) return 'ince -';
     return `ince ${bl.page.toFixed(2)} bant ${bl.bs.map(x => x < 0 ? '-' : x.toFixed(2)).join('/')} oran ${bl.wr.toFixed(2)}${bl.low ? ' düşük ' + bl.low + '/' + bl.n : ''}${bl.ref ? ' ref ' + bl.ref.toFixed(2) : ''}`;
   },
+  /* satır imzası son çekilen sayfalardan biriyle eşleşiyor mu: {k, id, mm} | null */
+  findRecent(sig){
+    const S = this.sess; if(!sig || !S) return null;
+    for(let k=0; k<S.recent.length; k++){ const q = S.recent[k]; if(!q.lineSig) continue;
+      const mm = Math.max(C.lineMatch(sig, q.lineSig, true), C.lineMatch(q.lineSig, sig, true));
+      if(mm >= 0.5 && state.pages.some(p => p.id === q.id)) return {k, id: q.id, mm}; }
+    return null;
+  },
   markDone(snap){
     const L = this.live;
     // hareket, kontrol edilen karenin anından itibaren sayılır (kontrol sürerken sonraki sayfaya geçilmiş olabilir)
@@ -2384,22 +2399,32 @@ const cam = {
       return;
     }
     if(m.spread && m.split){
-      // ÇİFT SAYFA: kare sırttan ikiye bölünür, iki ayrı sayfa eklenir (her biri tek sayfa gibi işlenir)
+      // ÇİFT SAYFA: kare sırttan ikiye bölünür, iki ayrı sayfa eklenir (her biri tek sayfa gibi işlenir).
+      // Bir yarı daha önce (tek sayfa olarak) çekildiyse o sayfanın görüntüsü yenilenir, yalnız diğer yarı eklenir
+      // ve doğru yanına konur (sol yarı önce, sağ yarı sonra)
+      const hs = m.halfSigs || [null, null], hit = hs.map(sg => this.findRecent(sg));
       const mk = k => ({id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:false, issues:[], status:'busy',
-                        lineSig:null, side:'', soft: flag, cap: S.id, noText:false, spreadHalf:k});
-      const pL = mk(0), pR = mk(1);
-      state.pages.push(pL, pR);
-      S.recent.unshift({id:pL.id, lineSig:res.lineSig || null, side:''}); if(S.recent.length > 12) S.recent.pop();
-      S.last = {id:pR.id, q:this.quality(m), ext:this.extent(m), soft: softV ? softV.code : (fr.busy ? 'busy' : null),
+                        lineSig: hs[k] || null, side:'', soft: flag, cap: S.id, noText:false, spreadHalf:k});
+      const old = hit.map(h => h ? state.pages.find(p => p.id === h.id) : null);
+      const newP = [old[0] ? null : mk(0), old[1] ? null : mk(1)];
+      if(old[0] || old[1]) this.note(`  çift sayfa: ${old[0] ? 'sol' : 'sağ'} yarı zaten çekilmiş (${state.pages.indexOf(old[0] || old[1]) + 1}. sayfa) → yenilendi`);
+      if(newP[0] && newP[1]) state.pages.push(newP[0], newP[1]);
+      else if(newP[0]) state.pages.splice(state.pages.indexOf(old[1]), 0, newP[0]);
+      else if(newP[1]) state.pages.splice(state.pages.indexOf(old[0]) + 1, 0, newP[1]);
+      const all = [newP[0] || old[0], newP[1] || old[1]];
+      all.forEach((p, k) => { if(!p) return; S.recent = S.recent.filter(r => r.id !== p.id); S.recent.unshift({id:p.id, lineSig:hs[k] || p.lineSig || null, side:''}); });
+      while(S.recent.length > 12) S.recent.pop();
+      const lastP = all[1] || all[0];
+      S.last = {id:lastP.id, q:this.quality(m), ext:this.extent(m), soft: softV ? softV.code : (fr.busy ? 'busy' : null),
                 flag, fine: bl && !bl.unknown ? bl.page : 0, ups:0, sig:fr.sig, lined:!!res.lineSig, rows: res.lineSig ? res.lineSig.length : 0,
                 noText:false, at: now, spread:true};
       L.cap = null;                                   // çift sayfada "daha net kareyle değiştir" yok
-      this.count += 2; this.updateCounter();
+      const nNew = newP.filter(Boolean).length;
+      this.count += nNew; this.updateCounter();
       const blob = await fr.blob(); fr.release();
       const hv = blob ? await splitBlob(blob, m.split).catch(() => null) : null;
-      if(!hv || !hv[0] || !hv[1]){ for(const q of [pL, pR]){ const i = state.pages.indexOf(q); if(i >= 0) state.pages.splice(i, 1); } this.count -= 2; this.updateCounter(); return; }
-      pL.origBlob = hv[0]; pR.origBlob = hv[1];
-      processPage(pL); processPage(pR);
+      if(!hv || !hv[0] || !hv[1]){ for(const q of newP) if(q){ const i = state.pages.indexOf(q); if(i >= 0) state.pages.splice(i, 1); } this.count -= nNew; this.updateCounter(); return; }
+      all.forEach((p, k) => { if(!p || !state.pages.includes(p)) return; p.origBlob = hv[k]; if(old[k]){ p.issues = []; p.soft = flag; p.maybeDup = false; p.lineSig = hs[k] || p.lineSig; } processPage(p); });
       return;
     }
     const noText = !!softV && softV.code === 'notext';

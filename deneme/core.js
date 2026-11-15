@@ -2339,8 +2339,10 @@ function txQuad(st, dbg){
   let L = txEdge(Lp, tol, -1), R = txEdge(Rp, tol, 1);
   const okL = L && L.inl >= 0.4 && L.n >= 3, okR = R && R.inl >= 0.4 && R.n >= 3;
   const par = (ref, pts, q) => { const offs = pts.map(t => t[1] - (ref.a + ref.b*t[0])); return {a: ref.a + quantile(offs, q), b: ref.b, inl: 0, n: 0, vio: 0, par: true}; };
-  if(okL && !okR) R = par(L, Rp, 0.92);
-  else if(!okL && okR) L = par(R, Lp, 0.08);
+  // tek kenar hizalı ve zayıfsa (girintili liste, içindekiler: inl < 0.6) eğimi güvenilmez → dikliğe doğru çekilir
+  const damp = E => { const f = Math.max(0, Math.min(1, (E.inl - 0.45)/0.25)); if(f < 1){ const ym = (Lp.concat(Rp).reduce((a, t) => a + t[0], 0))/Math.max(1, Lp.length + Rp.length); E.a += E.b*(1 - f)*ym; E.b *= f; } };
+  if(okL && !okR){ damp(L); R = par(L, Rp, 0.92); }
+  else if(!okL && okR){ damp(R); L = par(R, Lp, 0.08); }
   else if(!okL && !okR){ const z = {a: 0, b: 0}; L = par(z, Lp, 0.08); R = par(z, Rp, 0.92); }
   const Lf = y => L.a + L.b*y, Rf = y => R.a + R.b*y;
   // tam satırlar: iki kenara da (ya da genişliğin çoğuna) uzanan
@@ -2653,6 +2655,15 @@ function txPlane(sd, W, H, f, quick, dbg){
     return {f, inl: nIn/pts.length, n: nIn, lineB: ln.b};
   };
   let eL = fitEdge(mr.map(r => [r.yref, r.X0]), -1), eR = fitEdge(mr.map(r => [r.yref, r.X1]), 1);
+  // yalnız TEK kenar hizalıysa (sağı serbest: içindekiler, şiir, liste) satır başları girintili/numaralı olabilir:
+  // satır satır hizalama (yerel artık) yazıyı yamultur → yalnız düzgün eğri, o da kenar çok tutarlıysa
+  const oneEdge = (eL && !eR) || (!eL && eR);
+  if(oneEdge){
+    const e = eL || eR;
+    if(e.inl < 0.9){ const ln = txEdge(mr.map(r => [r.yref, eL ? r.X0 : r.X1]), tol, eL ? -1 : 1); const a = ln ? ln.a : 0, b = 0;
+      const ym = quantile(mr.map(r => r.yref), 0.5), c0 = ln ? a + ln.b*ym : quantile(mr.map(r => eL ? r.X0 : r.X1), eL ? 0.08 : 0.92);
+      e.f = y => c0 + b*(y - ym); dbg.push(`tek kenar (inl ${e.inl.toFixed(2)}): satır hizalaması yok`); }
+  }
   const yA = mr[0].yref, yB = mr[mr.length-1].yref;
   const cl = y => Math.max(yA, Math.min(yB, y));
   const offQ = (ref, key, q) => quantile(mr.map(r => r[key] - ref(r.yref)), q);
@@ -4159,11 +4170,12 @@ function spreadMapN(g, k, srcW, srcH){
 /* hızlı kontrol: yan tutuşta iki yarı ayrı denetlenir, sonuç birleştirilir */
 function quickSpread(c, opts){
   let f = null;
-  try{ f = txFind(c, {quick: true, maxSide: 760}); }catch(_){ f = null; }
+  try{ f = txFind(c, {quick: true, maxSide: 760, angHint: opts.angHint}); }catch(_){ f = null; }
   const g = spreadGeometry(c, f);
   if(!g) return null;
   const hv = spreadHalves(c, g);
-  const rs = hv.map(h => processCanvas(h, Object.assign({}, opts, {quick: true})));
+  // yarılarda yazı dik (döndürüldü): açı ipucu 0 → yön araması kısa sürer
+  const rs = hv.map(h => processCanvas(h, Object.assign({}, opts, {quick: true, angHint: 0})));
   const ms = rs.map(r => r.metrics || {});
   const mapQ = (q, k) => q ? q.map(spreadMapN(g, k, c.width, c.height)) : null;
   // birleşik dörtgen: sol yarının sol kenarı + sağ yarının sağ kenarı
@@ -4201,14 +4213,15 @@ async function handleQuick(m){
   }
   // işçide tuval okunamıyorsa (boş veri) çağıran ana iş parçacığına geçer
   if(detailStat(c, 0.2, 0.2, 0.8, 0.8).alpha < 8) throw new Error('kaynak görüntü okunamadı (boş tuval verisi)');
+  // yan tutuş: yazı kadrajın UZUN ekseni boyuncaysa çift sayfa denetimi. Önceki denetimin açısı yan tutuşu
+  // gösteriyorsa doğrudan çift sayfa denenir (gereksiz tek sayfa denetimi yapılmaz); dik tutuşta ek maliyet yok
+  const along = a => c.width >= c.height ? Math.abs(Math.cos(a)) : Math.abs(Math.sin(a));
+  const spreadOn = !!(m.opts && m.opts.spread);
+  const hintSide = spreadOn && m.opts.angHint != null && along(m.opts.angHint) > 0.7;
+  if(hintSide){ const sp = quickSpread(c, m.opts); if(sp) return sp; }
   const r = processCanvas(c, Object.assign({}, m.opts, {quick:true}));
-  // yan tutuş: tek sayfa denetimi yazıyı kadrajın UZUN ekseni boyunca bulduysa çift sayfa denetimi
-  // (dik tutuşta ek maliyet yok)
   const ang = r.metrics && r.metrics.ang;
-  if(m.opts && m.opts.spread && ang != null){
-    const along = c.width >= c.height ? Math.abs(Math.cos(ang)) : Math.abs(Math.sin(ang));
-    if(along > 0.7){ const sp = quickSpread(c, m.opts); if(sp) return sp; }
-  }
+  if(spreadOn && !hintSide && ang != null && along(ang) > 0.7){ const sp = quickSpread(c, Object.assign({}, m.opts, {angHint: ang})); if(sp) return sp; }
   return {issues: r.issues, metrics: r.metrics, dbg: r.dbg, lineSig: r.lineSig || null};
 }
 if(IN_WORKER){

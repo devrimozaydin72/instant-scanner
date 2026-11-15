@@ -519,7 +519,7 @@
     <p class="sub" id="histSub" data-t>Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 26</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 27</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -2478,7 +2478,17 @@ const cam = {
       x.strokeStyle = `rgba(${rgb},${(0.95*fade).toFixed(3)})`; x.lineWidth = 3; x.stroke();
     }
   },
-  onPageDone(p){ if(!this.retake && p.thumbUrl && state.pages[state.pages.length-1] === p) this.setThumb(p.thumbUrl); },
+  onPageDone(p){
+    if(!this.retake && p.thumbUrl && state.pages[state.pages.length-1] === p) this.setThumb(p.thumbUrl);
+    // hızlı denetim yazıyı göremediyse (uzaktan, küçük yazı) tam işlemenin bulduğu satır imzası oturuma eklenir:
+    // aynı sayfa yeniden gösterilirse tekrar olarak tanınır
+    const S = this.sess;
+    if(S && p.fullSig && p.fullSig.length >= 5){
+      const e = S.recent.find(r => r.id === p.id);
+      if(e && !e.lineSig) e.lineSig = p.fullSig;
+      if(S.last && S.last.id === p.id && !S.last.lined){ S.last.lined = true; S.last.rows = p.fullSig.length; S.last.noText = false; }
+    }
+  },
   /* güvenlik ağı aynı sayfanın ikinci çekimini attı: oturum kayıtları kalan sayfaya bağlanır */
   pageDropped(drop, keep, k, m){
     const S = this.sess;

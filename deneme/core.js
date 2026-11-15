@@ -1144,7 +1144,7 @@ function spineBox(d, w, h, box){
    ortalama rengi (tek tük parlama/gürültü referansı bozmaz), koyu bloklar
    (fotoğraf, yoğun yazı) komşudaki kağıttan alınır, sonra yumuşatılır.
    Döner: {R,G,B: Float32Array, bw, bh, bs} */
-function bgGridRGBA(d, w, h){
+function bgGridRGBA(d, w, h, textPage){
   const bs = Math.max(8, Math.round(Math.max(w,h)/60));
   const bw = Math.max(2, Math.ceil(w/bs)), bh = Math.max(2, Math.ceil(h/bs));
   const R = new Float32Array(bw*bh), Gc = new Float32Array(bw*bh), B = new Float32Array(bw*bh), L = new Float32Array(bw*bh), Sd = new Float32Array(bw*bh);
@@ -1183,7 +1183,12 @@ function bgGridRGBA(d, w, h){
       // rengine bölünür → hem gölge hem renk lekesi beyaza döner (eskiden sarı/turuncu şerit kalıyordu)
       // yalnız gerçekten koyu bloklar (fotoğraf, koyu kutu: komşu kağıdın %45'inden koyu) komşunun rengini alır;
       // sırt/kıvrım gölgesi (yazılı ya da yazısız) kendi rengine bölünür → beyaz olur, sarı/gri şerit kalmaz
-      const shade = (Sd[k] < 7 || L[k] > L[bk]*0.55) && L[k] > L[bk]*0.45 && L[k] > 55;
+      // yazı sayfasında (kitap): parlak pikselleri düzgün olan blok ne kadar karanlık olursa olsun gölgedeki
+      // kağıttır (loş/sarı ışıkta sırt ve el gölgesi). Eskiden komşunun rengine bölünüp sarı kalıyor, harfler
+      // kalınlaşıyordu. Fotoğraf ancak parlak pikselleri de dokulu olursa koyu kalır
+      const shade = textPage
+        ? L[k] > 18 && (Sd[k] < Math.max(7, L[k]*0.1) || L[k] > L[bk]*0.45)
+        : (Sd[k] < 7 || L[k] > L[bk]*0.55) && L[k] > L[bk]*0.45 && L[k] > 55;
       if(!shade){ R2[k]=R[bk]; G2[k]=Gc[bk]; B2[k]=B[bk]; }
     }
   }
@@ -1209,10 +1214,10 @@ function sharpenRGB(data, w, h, amt){
    Her kanal kendi yerel kağıt rengine bölünür → kağıt her yerde nötr beyaz
    (sarı lamba, gölge gider). Beyaz noktası kağıdın ~%88'i: arka sayfadan
    sızan silik yazı ve hafif lekeler tamamen beyaza gider, yazı koyu ve net kalır. */
-function enhanceRGBA(d, w, h, mode){
+function enhanceRGBA(d, w, h, mode, textPage){
   if(mode === 'orig') return;
   const color = mode === 'color', gray = mode === 'gray';
-  const Gd = bgGridRGBA(d, w, h);
+  const Gd = bgGridRGBA(d, w, h, textPage);
   const gw = Gd.bw, gh = Gd.bh, bs = Gd.bs, BR = Gd.R, BG = Gd.G, BB = Gd.B;
   const curve = new Uint8ClampedArray(1024);   // girdi: kağıt ≈ 240
   for(let i=0;i<1024;i++){
@@ -1224,7 +1229,9 @@ function enhanceRGBA(d, w, h, mode){
   for(let i=0;i<1024;i++){ const t=Math.max(0, Math.min(1, (i-115)/(200-115))); docLut[i] = 255*t*t*(3-2*t); }
   const xi = new Int32Array(w), xt = new Float32Array(w);
   for(let x=0;x<w;x++){ const fx=Math.max(0, Math.min(gw-1.001, (x+0.5)/bs-0.5)); xi[x]=fx|0; xt[x]=fx-(fx|0); }
-  const fOf = v => v > 60 ? 240/v : 4;
+  // loş/sıcak ışıkta gölgedeki kağıdın mavi kanalı 60'ın altına düşer; eski 4× tavan maviyi yetersiz
+  // yükseltiyor, gölge SARI kalıyordu → tavan 15×
+  const fOf = v => v > 16 ? 240/v : 15;
   for(let y=0;y<h;y++){
     const fy=Math.max(0, Math.min(gh-1.001, (y+0.5)/bs-0.5)), y0=fy|0, ty=fy-y0;
     const r0=y0*gw, r1=r0+gw;
@@ -3063,7 +3070,7 @@ function processCanvas(src, opts){
     }
   }
   T('maske');
-  enhanceRGBA(pageData, fw, fhR, opts.mode);
+  enhanceRGBA(pageData, fw, fhR, opts.mode, mode === 'yazı');
   if(fillQ){
     let m = dilate1(fillQ, qw, qh);
     if(fingerQ) for(let k=0;k<2;k++) m = dilate1(m, qw, qh);

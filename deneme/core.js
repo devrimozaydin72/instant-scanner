@@ -1805,7 +1805,42 @@ function txTrace(ink, w, h, p){
     c.x0 = Math.min(e[0], c.xa + p); c.x1 = Math.max(e[1], c.xb - p);
     if(c.x0 > c.x1){ c.x0 = c.xa; c.x1 = c.xb; }
   }
-  return {chains: chains.filter(c => c.x1 - c.x0 >= p*1.5), S, dx};
+  const out = chains.filter(c => c.x1 - c.x0 >= p*1.5);
+  // yazılık, izin GERÇEK komşularına göre ölçülür (aralık tahmini 2 kat şaşsa da satır arası doğru yerde aranır)
+  for(const c of out){
+    let du = 0, dd = 0;
+    for(const o of out){
+      if(o === c) continue;
+      const o0 = Math.max(c.xa, o.xa), o1 = Math.min(c.xb, o.xb), ov = o1 - o0;
+      if(ov < Math.min(c.xb - c.xa, o.xb - o.xa)*0.5) continue;
+      let d = 0; for(let k=0;k<3;k++){ const x = o0 + ov*(k+0.5)/3; d += o.yAt(x) - c.yAt(x); } d /= 3;
+      const a = Math.abs(d);
+      if(a < p*0.3 || a > p*1.6) continue;
+      if(d < 0){ if(!du || a < du) du = a; } else { if(!dd || a < dd) dd = a; }
+    }
+    c.tf = txTextness(ink, w, h, p, c, du, dd);
+  }
+  return {chains: out, S, dx};
+}
+/* izin yazılığı: iz boyunca sütunların kaçı yazıya benziyor (satır bandında mürekkep var, satır
+   arasında yok — txEnds ile aynı ölçüt). Yazı satırı ≈0.6-0.9; dantel örtü, halı, sayfa kenarı yığını
+   gibi her yönde mürekkepli dokular ≈0.0-0.45 (satır arası da dolu) */
+function txTextness(ink, w, h, p, c, du, dd){
+  du = du || p; dd = dd || p;
+  const band = Math.max(1, Math.round(0.3*Math.min(du, dd)));
+  const win = d => [Math.max(band+1, Math.round(d*0.42)), Math.max(band+2, Math.round(d*0.58))];
+  const [u0, u1] = win(du), [d0, d1] = win(dd);
+  const thr = Math.max(0.6, band*0.25), nb = 2*band + 1, no = (u1 - u0 + 1) + (d1 - d0 + 1);
+  let n = 0, k = 0;
+  for(let x=Math.max(0, Math.round(c.xa)); x<=Math.min(w-1, c.xb); x++){
+    const yc = Math.round(c.yAt(x)); let b = 0, o = 0; k++;
+    for(let d=-band; d<=band; d++){ const y = yc+d; if(y >= 0 && y < h) b += ink[y*w+x]; }
+    if(b <= thr) continue;
+    for(let d=u0; d<=u1; d++){ const y = yc-d; if(y >= 0) o += ink[y*w+x]; }
+    for(let d=d0; d<=d1; d++){ const y = yc+d; if(y < h) o += ink[y*w+x]; }
+    if(o/no < 0.5*b/nb) n++;
+  }
+  return k ? n/k : 0;
 }
 /* satır uçları: iz boyunca, ortadan dışa doğru yazıya benzeyen mürekkebin bittiği sütun.
    Yazı sütunu: satır bandında (±0.3p) mürekkep var, satır ARASINDA (±0.42-0.58p) yok. Sırt gölgesi,
@@ -1926,14 +1961,24 @@ function txBlocks(chains, p, w, h){
   for(let i=0;i<n;i++){ par[i] = i; rowPar[i] = i; }
   const find = (P, i) => { while(P[i] !== i){ P[i] = P[P[i]]; i = P[i]; } return i; };
   const uni = (P, a, b) => { a = find(P, a); b = find(P, b); if(a !== b) P[a] = b; };
+  // zayıf iz (yazılığı düşük: dantel, doku, sayfa kenarı yığını): iki zayıf iz düşeyde birbirine bağlanmaz,
+  // zayıf iz ancak gerçek bir yazı satırının yanına eklenir → doku kendi içinde zincirlenip yazı bloğuna yapışamaz.
+  // Eşik görece: bulanık karede tüm satırların yazılığı düşer, yine de birbirine bağlanırlar
+  const tfs = chains.filter(c => c.tf != null && (c.x1 - c.x0) >= p*3).map(c => c.tf);
+  const tfRef = tfs.length >= 5 ? quantile(tfs, 0.8) : 0.8;
+  const tfWeak = Math.min(0.45, tfRef*0.6);
+  const weak = chains.map(c => c.tf != null && c.tf < tfWeak);
   for(let i=0;i<n;i++) for(let j=i+1;j<n;j++){
     const A = chains[i], B = chains[j];
     const o0 = Math.max(A.x0, B.x0), o1 = Math.min(A.x1, B.x1), ov = o1 - o0;
     const lenA = A.x1 - A.x0, lenB = B.x1 - B.x0;
     if(ov > Math.min(lenA, lenB)*0.5 && ov > p*1.5){
-      let d = 0; for(let k=0;k<5;k++){ const x = o0 + ov*(k+0.5)/5; d += Math.abs(A.yAt(x) - B.yAt(x)); } d /= 5;
-      if(d < p*0.45){ dead[lenA < lenB ? i : j] = 1; uni(par, i, j); }
-      else if(d <= p*2.6) uni(par, i, j);
+      let d = 0, dmn = 1e9, dmx = -1e9;
+      for(let k=0;k<5;k++){ const x = o0 + ov*(k+0.5)/5, e = B.yAt(x) - A.yAt(x); d += Math.abs(e); if(e < dmn) dmn = e; if(e > dmx) dmx = e; } d /= 5;
+      // yazı satırları birbirine paraleldir; dalgalı, birbirini kesen doku izleri değildir
+      const para = dmx - dmn < p*0.5;
+      if(d < p*0.45){ dead[lenA < lenB ? i : j] = 1; if(!(weak[i] && weak[j])) uni(par, i, j); }
+      else if(d <= p*2.6 && para && !(weak[i] && weak[j])) uni(par, i, j);
     } else if(ov <= p*0.5){
       const Lc = A.x0 < B.x0 ? A : B, Rc = Lc === A ? B : A, gap = Rc.x0 - Lc.x1;
       if(gap < p*1.0){
@@ -1949,16 +1994,18 @@ function txBlocks(chains, p, w, h){
     const rowsM = new Map();
     for(const i of idx){ const r = find(rowPar, i); if(!rowsM.has(r)) rowsM.set(r, []); rowsM.get(r).push(chains[i]); }
     const rows = [];
-    let len = 0, sx = 0, sy = 0;
+    let len = 0, sx = 0, sy = 0, tl = 0;
     for(const cs of rowsM.values()){
       const r = txMkRow(cs, p);
       rows.push(r);
       len += r.len; sx += r.len*r.xm; sy += r.len*r.ym;
+      for(const c of cs) tl += (c.x1 - c.x0)*(c.tf != null ? Math.min(1, c.tf/(tfRef*0.8)) : 1);
     }
     rows.sort((a, b) => a.ym - b.ym);
     const cx = sx/len, cy = sy/len;
     const cw = 1 - 0.45*Math.min(1, Math.hypot((cx - w/2)/(w/2), (cy - h/2)/(h/2)));
-    out.push({rows, len, cx, cy, score: len*cw});
+    // puan yazılıkla ağırlıklı: doku kümesi uzun olsa da yazı bloğunun önüne geçmez
+    out.push({rows, len, cx, cy, score: tl*cw, tf: len ? tl/len : 0});
   }
   out.sort((a, b) => b.score - a.score);
   return out;

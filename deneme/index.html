@@ -298,7 +298,7 @@
     <p class="sub" id="histSub">Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · sürüm 20</p>
+  <p class="ver">INSTANT SCANNER · sürüm 21</p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -2101,8 +2101,13 @@ const cam = {
       else { this.newScanner(); this.updateRetakeUi(); }
       return;
     }
-    const p = {id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:false, issues:[], status:'busy',
-               lineSig:res.lineSig || null, side, soft: flag, cap: S.id, noText: !!softV && softV.code === 'notext'};
+    const noText = !!softV && softV.code === 'notext';
+    // yazısız sayfa (kapak, resim) kısa süre önce çekilmiş başka bir yazısız sayfanın hemen ardından: satır imzası
+    // olmadığından aynı sayfa olduğu (telefon/kitap döndürüldü, yeniden kadrajlandı) anlaşılamaz → "TEKRAR?" işareti
+    const ntDup = noText && !this.retake && !!S.last && S.last.noText && now - S.last.at < 10000;
+    if(ntDup) this.note(`  yazısız sayfa yazısız sayfanın ardından (${((now - S.last.at)/1000).toFixed(1)} sn) → TEKRAR? işareti`);
+    const p = {id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:ntDup, issues:[], status:'busy',
+               lineSig:res.lineSig || null, side, soft: flag, cap: S.id, noText};
     // sayfa sırası (bekletmeden): çevirince kamera sağ sayfada kalır ve önce o çekilirse, ardından gelen
     // sol sayfa onun ÖNÜNE yerleştirilir. Kanıt: art arda iki sağ sayfa (önceki açılımın sağı + yeni
     // açılımın sağı), sonra bir sol sayfa.
@@ -2114,7 +2119,8 @@ const cam = {
     pages.splice(at, 0, p);
     S.recent.unshift({id:p.id, lineSig:p.lineSig, side}); if(S.recent.length > 12) S.recent.pop();
     S.last = {id:p.id, q:this.quality(m), ext:this.extent(m), soft: softV ? softV.code : (fr.busy ? 'busy' : null),
-              flag, fine: bl && !bl.unknown ? bl.page : 0, ups:0, sig:fr.sig, lined:!!res.lineSig, rows: res.lineSig ? res.lineSig.length : 0};
+              flag, fine: bl && !bl.unknown ? bl.page : 0, ups:0, sig:fr.sig, lined:!!res.lineSig, rows: res.lineSig ? res.lineSig.length : 0,
+              noText, at: now};
     // çekimden sonra aynı duruşta daha net kare gelirse değiştirilir (swapIfSharper)
     L.cap = {pid:p.id, s:fr.s, run:fr.run, moveSum:fr.moveSum, at:now, swaps:0, blur: flag === 'blur', busy: fr.busy, quadN: m.contN || m.blockN || m.quadN || null};
     this.count++; this.updateCounter();

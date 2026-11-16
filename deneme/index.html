@@ -532,7 +532,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 31</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 32</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1834,6 +1834,7 @@ const cam = {
     v.srcObject = this.stream;
     $('camModal').hidden = false;
     this.active = true; this.paused = false; this.count = 0; this.torch = false;
+    if(typeof ocr !== 'undefined') ocr.abort('kamera açıldı');
     this.keepAwake(true);
     this.retake = opts.retake ? {ids:opts.retake.slice(), i:0} : null;
     // oturum: yeniden çekimde sıra/tekrar kuralları uygulanmaz
@@ -2051,7 +2052,7 @@ const cam = {
     if(L.phase !== 'done' && !L.tries){ L.firstTryT = performance.now(); L.tryMove = fr.moveSum; }
     const t0 = performance.now();
     fr.hold();
-    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: this.sess.ang, spread: true, mask: (this.maskN = (this.maskN || 0) + 1) % 3 === 1 || !L.polys})).then(res => {
+    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: (this.sess.hintMiss || 0) % 2 ? undefined : this.sess.ang, angRetry: false, spread: true, mask: (this.maskN = (this.maskN || 0) + 1) % 3 === 1 || !L.polys})).then(res => {
       L.inflight = false; L.chkMove = null;
       if(this.live !== L || !this.active){ fr.release(); this.dropKeep(L); return; }
       res.ms = performance.now() - t0;
@@ -2145,7 +2146,8 @@ const cam = {
   /* denetim sonucu (snap = denetlenen kare) */
   verdict(res, snap){
     const L = this.live, S = this.sess, now = performance.now(), m = res.metrics || {};
-    if(m.ang != null) S.ang = m.ang;
+    // yazı bulunamadıysa bir sonraki denetim açı ipucusuz yapılır (telefon yan çevrilmiş / geri döndürülmüş olabilir)
+    if(m.ang != null){ S.ang = m.ang; S.hintMiss = 0; } else S.hintMiss = (S.hintMiss || 0) + 1;
     this.spreadOn = !!m.spread;
     snap.fine0 = this.blurOf(snap, (m.contN || m.blockN || m.quadN));       // denetlenen karenin ince netliği
     let v = this.judge(res, snap);
@@ -2636,6 +2638,7 @@ const cam = {
   close(){
     this.active = false;
     proc.pump();                      // bekleyen sayfalar artık tüm işleyicilerle işlenir
+    if(typeof ocr !== 'undefined') ocr.kick(300);   // metin tanıma kamera kapanınca başlar
     this.keepAwake(false);
     cancelAnimationFrame(this.raf);
     if(this.stream){ this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
@@ -2686,7 +2689,8 @@ $('camPause').onclick = () => {
   $('camPause').textContent = cam.paused ? '▶' : '⏸';
   $('camHint').textContent = T(cam.paused ? 'Duraklatıldı' : 'Sayfayı kadraja al');
   $('camHint').className = 'camhint';
-  if(!cam.paused) cam.newScanner();
+  if(!cam.paused){ if(typeof ocr !== 'undefined') ocr.abort('çekim sürdü'); cam.newScanner(); }
+  else if(typeof ocr !== 'undefined') ocr.kick(0);
 };
 $('camThumb').onclick = () => cam.finish();
 

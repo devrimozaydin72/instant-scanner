@@ -9,11 +9,19 @@ const OCR_BY_UI = {tr:'tur', en:'eng', es:'spa', pt:'por', fr:'fra', ru:'rus', a
 const ocr = {
   mode: 'auto',              // 'auto' (uygulama dili) | dil kodu | 'off'
   worker: null, wLangs: '', loading: null, failed: false,
-  queue: [], busy: false, timer: 0, listeners: new Set(),
+  queue: [], busy: false, cur: null, gen: 0, timer: 0, listeners: new Set(),
   get on(){ return this.mode !== 'off' && !this.failed; },
+  /* auto: telefonun dili (ör. Türkçe telefon + İngilizce arayüz → tur), uygulama dili ve İngilizce */
   langs(){
-    const l = this.mode === 'auto' ? (OCR_BY_UI[I18N.lang] || 'eng') : this.mode;
-    return l === 'eng' ? ['eng'] : [l, 'eng'];
+    const l = [];
+    if(this.mode === 'auto'){
+      for(const n of (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ''])){
+        const c = OCR_BY_UI[String(n).slice(0, 2).toLowerCase()]; if(c){ l.push(c); break; }
+      }
+      l.push(OCR_BY_UI[I18N.lang] || 'eng');
+    } else l.push(this.mode);
+    l.push('eng');
+    return [...new Set(l)];
   },
   key(){ return this.langs().join('+'); },
   done(p){ return !!(p.ocr && p.ocr.ver === p.ver && p.ocr.lang === this.key()); },
@@ -44,34 +52,50 @@ const ocr = {
   },
   enqueueAll(){ for(const p of state.pages) if(p.status === 'done') this.enqueue(p); this.emit(); },
   kick(ms){ clearTimeout(this.timer); this.timer = setTimeout(() => this.pump(), ms); },
-  /* canlı çekim önceliklidir: kamera açıkken yalnız sayfa çekildikten hemen sonra (sayfa çevrilirken) başlanır;
-     görüntü işleme kuyruğu da önce boşalır */
+  /* canlı çekim her zaman önceliklidir: kamera açıkken (duraklatılmadıkça) metin tanıma hiç çalışmaz, motor bile
+     yüklenmez — telefonda sayfa başına 5-7 sn işlemci kullanır ve denetimleri birkaç kat yavaşlatıyordu (sürüm 31).
+     Kamera kapanınca / duraklatılınca, görüntü işleme kuyruğu boşaldıktan sonra başlar. */
   idleForOcr(){
+    if(typeof cam !== 'undefined' && cam.active && !cam.paused) return false;
     if(typeof proc !== 'undefined' && proc.pending()) return false;
-    if(typeof cam !== 'undefined' && cam.active && !cam.paused && !(cam.live && cam.live.phase === 'done')) return false;
     return true;
+  },
+  /* kamera yeniden açıldı: süren tanıma işçiyle birlikte durdurulur, sayfa kuyruğun başına döner */
+  abort(why){
+    if(!this.busy) return;
+    this.gen++;
+    if(this.cur && !this.queue.includes(this.cur)) this.queue.unshift(this.cur);
+    const w = this.worker; this.worker = null; this.wLangs = '';
+    if(w) try{ w.terminate(); }catch(_){}
+    this.busy = false; this.cur = null;
+    diagLog.push('ocr durduruldu (' + (why || '') + ')');
+    this.emit();
   },
   async pump(){
     if(this.busy || !this.on) return;
+    const gen = this.gen;
     while(this.queue.length){
       if(!this.idleForOcr()){ this.kick(400); return; }
       const id = this.queue.shift();
       const p = state.pages.find(x => x.id === id);
       if(!p || p.status !== 'done' || !p.procBlob || this.done(p)) continue;
-      this.busy = true; this.emit();
-      try{ await this.run(p); }
+      this.busy = true; this.cur = id; this.emit();
+      try{ await this.run(p, gen); }
       catch(e){
+        if(gen !== this.gen) return;                               // durduruldu: yeni pump devralır
         log('metin tanıma hatası:', e && e.message);
         if(!this.worker){ this.failed = true; this.queue = []; toast(T('Metin tanıma başlatılamadı: {e}', {e: e && e.message || e}), 4000); }
       }
-      this.busy = false; this.emit();
+      if(gen !== this.gen) return;
+      this.busy = false; this.cur = null; this.emit();
     }
   },
-  async run(p){
+  async run(p, gen){
     const w = await this.ensureWorker();
+    if(gen !== this.gen) return;
     const ver = p.ver, lang = this.key(), t0 = performance.now();
     const res = await w.recognize(p.procBlob, {}, {text: true, blocks: true});
-    if(p.ver !== ver) return;                                   // sayfa bu arada yeniden işlendi
+    if(gen !== this.gen || p.ver !== ver) return;               // durduruldu / sayfa bu arada yeniden işlendi
     const d = res.data, words = [], paras = [];
     for(const bl of d.blocks || []) for(const pa of bl.paragraphs || []){
       // dantel, desen, resim kenarından okunan anlamsız harfler: güveni düşük paragraf atlanır

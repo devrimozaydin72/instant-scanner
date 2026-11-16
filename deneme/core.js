@@ -4354,7 +4354,8 @@ async function handleQuick(m){
   let r = processCanvas(c, Object.assign({}, m.opts, {quick:true}));
   // önceki sayfalardan kalan açı ipucu yanlışsa (telefon yan çevrildi / geri döndü) yazı bulunamaz:
   // ipucusuz tam yön aramasıyla bir kez daha denenir
-  if(m.opts && m.opts.angHint != null && !(r.metrics && r.metrics.ang != null && r.metrics.lines >= 3)){
+  // (canlı kamera angRetry:false gönderir: ikinci deneme aynı karede değil, bir sonraki denetimde ipucusuz yapılır → denetim süresi iki katına çıkmaz)
+  if(m.opts && m.opts.angHint != null && m.opts.angRetry !== false && !(r.metrics && r.metrics.ang != null && r.metrics.lines >= 3)){
     const r2 = processCanvas(c, Object.assign({}, m.opts, {quick:true, angHint: undefined}));
     if(r2.metrics && r2.metrics.ang != null && r2.metrics.lines >= 3){ r = r2; r.dbg = 'açı ipucu tutmadı → tam yön araması | ' + r.dbg; }
   }

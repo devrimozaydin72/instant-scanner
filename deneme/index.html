@@ -519,7 +519,7 @@
     <p class="sub" id="histSub" data-t>Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 29</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 30</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -2135,7 +2135,7 @@ const cam = {
     if(!this.retake){
       if(m.spread && m.halfSigs){
         // çift sayfa: ancak İKİ yarı da daha önce çekildiyse tekrar; tek yarı eşleşirse diğeri yeni sayfadır (accept ayıklar)
-        const h = m.halfSigs.map(sg => this.findRecent(sg));
+        const h = this.spreadHits(m.halfSigs);
         if(h[0] && h[1]){ dupK = Math.min(h[0].k, h[1].k); dupWhy = `çift sayfa, iki yarı da çekilmiş (${h[0].mm.toFixed(2)}/${h[1].mm.toFixed(2)})`; }
         // iki yarının da satır imzası dolu ve hiçbiri eşleşmiyor: kesinlikle yeni açılım (görüntü benzerliği kurallarına bakılmaz)
         else if(!h[0] && !h[1] && m.halfSigs.every(sg => sg && sg.length >= 15)) spreadNew = true;
@@ -2292,6 +2292,19 @@ const cam = {
       if(mm >= 0.5 && state.pages.some(p => p.id === q.id)) return {k, id: q.id, mm}; }
     return null;
   },
+  /* çift sayfa yarı eşleşmeleri: bir yarı eşleşiyorsa ve o sayfa daha önce bir açılımın yarısı olarak çekildiyse,
+     eşleşmeyen yarı (az satırlı şekil sayfası olabilir) o açılımın diğer yarısıdır */
+  spreadHits(sigs){
+    const hit = sigs.map(sg => this.findRecent(sg));
+    for(const k of [0, 1]){
+      if(hit[k] || !hit[1-k]) continue;
+      const p = state.pages.find(x => x.id === hit[1-k].id);
+      if(!p || p.spreadHalf !== 1-k) continue;
+      const i = state.pages.indexOf(p), j = k === 0 ? i - 1 : i + 1, q = state.pages[j];
+      if(q && q.spreadHalf === k && q.cap === p.cap) hit[k] = {k: hit[1-k].k, id: q.id, mm: 0, pair: true};
+    }
+    return hit;
+  },
   markDone(snap){
     const L = this.live;
     // hareket, kontrol edilen karenin anından itibaren sayılır (kontrol sürerken sonraki sayfaya geçilmiş olabilir)
@@ -2402,7 +2415,7 @@ const cam = {
       // ÇİFT SAYFA: kare sırttan ikiye bölünür, iki ayrı sayfa eklenir (her biri tek sayfa gibi işlenir).
       // Bir yarı daha önce (tek sayfa olarak) çekildiyse o sayfanın görüntüsü yenilenir, yalnız diğer yarı eklenir
       // ve doğru yanına konur (sol yarı önce, sağ yarı sonra)
-      const hs = m.halfSigs || [null, null], hit = hs.map(sg => this.findRecent(sg));
+      const hs = m.halfSigs || [null, null], hit = this.spreadHits(hs);
       const mk = k => ({id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:false, issues:[], status:'busy',
                         lineSig: hs[k] || null, side:'', soft: flag, cap: S.id, noText:false, spreadHalf:k});
       const old = hit.map(h => h ? state.pages.find(p => p.id === h.id) : null);
@@ -2485,7 +2498,9 @@ const cam = {
     x.clearRect(0, 0, W, H);
     if(!L || !L.polys || !v.videoWidth) { if(L) L.disp = null; return; }
     const age = performance.now() - L.polyAt;
-    if(age > 1500){ L.disp = null; return; }
+    // kadraj oynuyorsa (sayfa çevriliyor) eski maske hemen kaldırılır: yeni sayfaya yanlış yerde kalmasın
+    if(age > 1500 || (st === 'moving' && performance.now() - (L.movingSince || (L.movingSince = performance.now())) > 200)){ L.disp = null; return; }
+    if(st !== 'moving') L.movingSince = 0;
     // yumuşak geçiş: aynı yapıdaki çokgenlerde noktalar hedefe kayar
     const tgt = L.polys;
     if(!L.disp || L.disp.length !== tgt.length || L.disp.some((p, i) => p.length !== tgt[i].length)) L.disp = tgt.map(p => p.map(q => q.slice()));

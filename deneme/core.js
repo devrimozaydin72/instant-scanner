@@ -2216,6 +2216,35 @@ function txBlocks(chains, p, w, h){
   out.sort((a, b) => b.score - a.score);
   return out;
 }
+/* aynı sütunda alt alta duran yazı blokları (arada şekil, grafik, tablo, resim) tek sayfa içeriğidir:
+   ana bloğun sütunuyla yatayda örtüşen, benzer genişlikte ve yazılığı yeterli bloklar ana bloğa katılır */
+function txMergeColumn(blocks, p){
+  if(blocks.length < 2) return blocks;
+  const span = b => {
+    const x0 = quantile(b.rows.map(r => r.x0), 0.1), x1 = quantile(b.rows.map(r => r.x1), 0.9);
+    return {x0, x1, y0: Math.min(...b.rows.map(r => r.ym)), y1: Math.max(...b.rows.map(r => r.ym))};
+  };
+  const m = blocks[0];
+  let merged = true;
+  while(merged){
+    merged = false;
+    const A = span(m);
+    for(let i=1;i<blocks.length;i++){
+      const b = blocks[i]; if(!b || b.merged || b.rows.length < 4) continue;
+      if(m.tf && b.tf != null && b.tf < m.tf*0.85) continue;
+      const B = span(b);
+      // iki kenarı da ana sütuna hizalı (aynı sütunun devamı); başlık, dantel, komşu sayfa bu koşulu sağlamaz
+      const tolX = p*2 + 0.1*Math.abs((B.y0 + B.y1)/2 - (A.y0 + A.y1)/2);    // perspektifte sütun yukarı doğru daralır
+      if(Math.abs(B.x0 - A.x0) > tolX || Math.abs(B.x1 - A.x1) > tolX) continue;
+      const medW = bb => quantile(bb.rows.map(r => r.x1 - r.x0), 0.5);
+      if(medW(b) < medW(m)*0.7) continue;
+      const gap = B.y0 > A.y1 ? B.y0 - A.y1 : A.y0 > B.y1 ? A.y0 - B.y1 : -1;
+      if(gap < p*3 || gap > p*32) continue;
+      m.rows = m.rows.concat(b.rows).sort((u, v) => u.ym - v.ym); m.len += b.len; b.merged = true; merged = true; m.mergedN = (m.mergedN || 0) + 1;
+    }
+  }
+  return blocks.filter(b => !b.merged);
+}
 /* kenar hizası: x = a + b·y. Nokta çiftlerinden geçen doğrulardan en çok noktayı ±tol içinde
    tutan; dışına (dir yönünde) taşan nokta cezalıdır (yazı kenarın dışında olamaz) */
 function txEdge(pts, tol, dir){
@@ -2278,7 +2307,7 @@ function txFind(src, opts){
     const p = or.pitch/s0*rot.sc;
     const tr = txTrace(ink, rot.w, rot.h, p);
     TT('iz');
-    const blocks = txBlocks(tr.chains, p, rot.w, rot.h);
+    const blocks = txMergeColumn(txBlocks(tr.chains, p, rot.w, rot.h), p);
     TT('küme');
     if(blocks.length && opts.follow !== false){
       const mb = blocks[0], nr = [];
@@ -2691,15 +2720,23 @@ function txPlane(sd, W, H, f, quick, dbg){
   let gd = mr.filter(r => Math.abs(r.X0 - Lref) < pitch*1.3 || Math.abs(r.X1 - Rref) < pitch*1.3);
   if(gd.length < 3) gd = mr;
   for(const r of gd) r.good = true;
-  let best = null, cur = [gd[0]];
-  for(let i=1;i<gd.length;i++){
-    if(gd[i].yref - gd[i-1].yref <= pitch*3.5) cur.push(gd[i]);
-    else { if(!best || cur.length > best.length) best = cur; cur = [gd[i]]; }
-  }
-  if(!best || cur.length > best.length) best = cur;
+  const groups = []; { let cur = [gd[0]];
+    for(let i=1;i<gd.length;i++){ if(gd[i].yref - gd[i-1].yref <= pitch*3.5) cur.push(gd[i]); else { groups.push(cur); cur = [gd[i]]; } }
+    groups.push(cur); }
+  // aynı sütunda (kenar hizalarına oturan) gruplar arasındaki büyük boşluk şekil/grafik/tablodur: ≥3 satırlı
+  // komşu gruplar birleştirilir, aradaki alan sayfanın parçası olarak kalır
+  const chains = []; { let cur = null;
+    for(const g of groups){
+      if(cur && g.length >= 3 && cur.tail >= 3 && g[0].yref - cur.rows[cur.rows.length-1].yref <= pitch*32){ cur.rows = cur.rows.concat(g); cur.tail = g.length; cur.joined = true; }
+      else { if(cur) chains.push(cur); cur = {rows: g.slice(), tail: g.length, joined: false}; }
+    }
+    chains.push(cur); }
+  let bestC = chains[0]; for(const c of chains) if(c.rows.length > bestC.rows.length) bestC = c;
+  const best = bestC.rows;
+  if(bestC.joined) dbg.push('arada şekil/boşluk: satır grupları birleştirildi');
   if(best.length < 3) return null;
   // geçerlilik: gerçek bir yazı bloğu mu? (kapak, afiş, resim üstü yazı gibi sayfalar eski yola bırakılır)
-  { const gaps = []; for(let i=1;i<best.length;i++) gaps.push((best[i].yref - best[i-1].yref)/pitch);
+  { const gaps = []; for(let i=1;i<best.length;i++){ const g = (best[i].yref - best[i-1].yref)/pitch; if(g <= 3.5) gaps.push(g); }
     const reg = gaps.length ? gaps.filter(g => (g > 0.75 && g < 1.3) || (g > 1.75 && g < 2.3)).length/gaps.length : 0;
     const lens = best.map(r => (r.X1 - r.X0)/pitch), medLen = quantile(lens, 0.5);
     const inl = Math.max(eL ? eL.inl : 0, eR ? eR.inl : 0);
@@ -2707,7 +2744,9 @@ function txPlane(sd, W, H, f, quick, dbg){
       dbg.push(`yazı bloğu sayılmadı (satır ${best.length}, düzenli aralık %${(reg*100)|0}, ortanca uzunluk ${medLen.toFixed(1)} aralık, hiza ${inl.toFixed(2)})`);
       return null;
     } }
-  const tb = {Lf, Rf, yTop: best[0].yref - pitch*0.65, yBot: best[best.length-1].yref + pitch*0.65, n: best.length};
+  const tb = {Lf, Rf, yTop: best[0].yref - pitch*0.65, yBot: best[best.length-1].yref + pitch*0.65, n: best.length, figs: []};
+  // satır grupları arasındaki şekil alanları (çıktıda korunur)
+  for(let i=1;i<best.length;i++) if(best[i].yref - best[i-1].yref > pitch*3.5) tb.figs.push([best[i-1].yref + pitch*0.6, best[i].yref - pitch*0.6]);
   const bands = rows.map(r => ({ym: r.yref, l: r.X0, r: r.X1, main: r.main}));
   const margins = {L, R, bands, xa: Lref, xb: Rref, n: bands.length};
   const toSrc = (x, y) => { const X = hx(x, y); return applyH(hm, X, y + Dat(X, y)); };
@@ -2953,7 +2992,9 @@ function txContent(P, dbg){
   const n = items.length, eL = new Float32Array(n), eR = new Float32Array(n);
   for(let i=0;i<n;i++){ eL[i] = items[i].l; eR[i] = items[i].r; }
   // zarf: y'ye en yakın öğelerin (±0.8 satır aralığı + öğenin yarı yüksekliği) kapsamı; arada kalan yerde komşuların birleşimi
+  const inFig = y => tb.figs && tb.figs.some(([fa, fb]) => y >= fa - p*0.5 && y <= fb + p*0.5);
   const env = y => {
+    if(inFig(y)) return [xlB - p*2, xrB + p*2];               // şekil alanı: tüm sütun
     let l = 1e9, r = -1e9, lo = 0, hi = n-1;
     while(hi - lo > 1){ const m = (lo+hi)>>1; if(items[m].y <= y) lo = m; else hi = m; }
     for(let i=Math.max(0, lo-3); i<=Math.min(n-1, hi+3); i++){ const d = Math.abs(items[i].y - y) - (items[i].hh || 0); if(d <= p*0.8){ if(eL[i] < l) l = eL[i]; if(eR[i] > r) r = eR[i]; } }
@@ -2968,6 +3009,9 @@ function txContent(P, dbg){
   for(const r of rows){ if(!(r.X1 > r.X0) || !inBand(r.yref)) continue; const ya = Math.max(0, Math.round(r.yref - p*0.5)), yb = Math.min(h-1, Math.round(r.yref + p*0.5)), xa2 = Math.max(0, Math.round(r.X0 - 2)), xb2 = Math.min(w-1, Math.round(r.X1 + 2));
     if(r.X0 < xlB - p*1.6 || r.X1 > xrB + p*1.6) continue;
     for(let y=ya; y<=yb; y++) prot.fill(1, y*w + xa2, y*w + xb2 + 1); }
+  // şekil/grafik alanı (aynı sütunda iki yazı grubu arası): içindeki çizgi ve izler silinmez
+  if(tb.figs) for(const [fa, fb] of tb.figs){ const xa2 = Math.max(0, xlB - Math.round(p)), xb2 = Math.min(w-1, xrB + Math.round(p));
+    for(let y=Math.max(0, Math.round(fa)); y<=Math.min(h-1, Math.round(fb)); y++) prot.fill(1, y*w + xa2, y*w + xb2 + 1); }
   let er = new Uint8Array(N), nEr = 0;
   for(let y=Y0; y<Y1; y++){ const r = y*w; for(let x=x0; x<x1; x++){ const l = LC.labels[r+x]; if(l > 0 && isJunk[l] && !prot[r+x]){ er[r+x] = 1; nEr++; } } }
   for(const q of lineRects) for(let y=Math.max(Y0, q.a - 1); y<=Math.min(Y1 - 1, q.b + 1); y++){ const r = y*w; for(let x=Math.max(x0, q.x0 - 1); x<=Math.min(x1 - 1, q.x1 + 1); x++) if(LC.labels[r+x] > 0 && !prot[r+x]){ er[r+x] = 1; nEr++; } }
@@ -4202,6 +4246,17 @@ function quickSpread(c, opts){
   return {issues, metrics: m, dbg: 'ÇİFT SAYFA rot ' + g.rot + ' sırt ' + g.spineN.toFixed(2) + ' || ' + rs.map(r => r.dbg).join(' || '), lineSig: lineSig.length ? lineSig : null};
 }
 
+/* canlı maske (vFlat gibi): kağıt tespitinin (dantele dayanıklı) bulduğu kitap/sayfa dörtgeni. Yazı bloğunu
+   içermiyorsa ya da kareyi neredeyse tamamen kaplıyorsa kullanılmaz. 0-1 noktalar */
+function bookPoly(c, met){
+  let det; try{ det = detectPage(c, 160, {fine: true}); }catch(_){ return null; }
+  if(!det || !det.ok || !det.quad) return null;
+  const W = c.width, H = c.height, q = det.quad.map(p => [p[0]/W, p[1]/H]);
+  const a = quadArea(q); if(a < 0.12 || a > 0.97) return null;
+  const ref = met.contN || met.blockN || met.quadN;
+  if(ref){ const cx = ref.reduce((s, p) => s + p[0], 0)/ref.length, cy = ref.reduce((s, p) => s + p[1], 0)/ref.length; if(!inQuad(q, cx, cy)) return null; }
+  return q;
+}
 async function handleQuick(m){
   let c = m.canvas || null;
   if(!c && m.buf){ c = mkCanvas(m.w, m.h); ctx2d(c).putImageData(new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h), 0, 0); }
@@ -4215,14 +4270,18 @@ async function handleQuick(m){
   if(detailStat(c, 0.2, 0.2, 0.8, 0.8).alpha < 8) throw new Error('kaynak görüntü okunamadı (boş tuval verisi)');
   // yan tutuş: yazı kadrajın UZUN ekseni boyuncaysa çift sayfa denetimi. Önceki denetimin açısı yan tutuşu
   // gösteriyorsa doğrudan çift sayfa denenir (gereksiz tek sayfa denetimi yapılmaz); dik tutuşta ek maliyet yok
+  // canlı maske bir kez, tüm kare için hesaplanır (kitabın kağıt sınırı); alt denetimler maske hesaplamaz
+  const wantMask = !(m.opts && m.opts.mask === false);
+  m = Object.assign({}, m, {opts: Object.assign({}, m.opts, {mask: false})});
+  const withMask = res => { if(wantMask && res && res.metrics){ const bp = bookPoly(c, res.metrics); res.metrics.polys = bp ? [bp] : (res.metrics.polys || null); } return res; };
   const along = a => c.width >= c.height ? Math.abs(Math.cos(a)) : Math.abs(Math.sin(a));
   const spreadOn = !!(m.opts && m.opts.spread);
   const hintSide = spreadOn && m.opts.angHint != null && along(m.opts.angHint) > 0.7;
-  if(hintSide){ const sp = quickSpread(c, m.opts); if(sp) return sp; }
+  if(hintSide){ const sp = quickSpread(c, m.opts); if(sp) return withMask(sp); }
   const r = processCanvas(c, Object.assign({}, m.opts, {quick:true}));
   const ang = r.metrics && r.metrics.ang;
-  if(spreadOn && !hintSide && ang != null && along(ang) > 0.7){ const sp = quickSpread(c, Object.assign({}, m.opts, {angHint: ang})); if(sp) return sp; }
-  return {issues: r.issues, metrics: r.metrics, dbg: r.dbg, lineSig: r.lineSig || null};
+  if(spreadOn && !hintSide && ang != null && along(ang) > 0.7){ const sp = quickSpread(c, Object.assign({}, m.opts, {angHint: ang})); if(sp) return withMask(sp); }
+  return withMask({issues: r.issues, metrics: r.metrics, dbg: r.dbg, lineSig: r.lineSig || null});
 }
 if(IN_WORKER){
   self.onmessage = async e => {

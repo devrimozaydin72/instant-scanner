@@ -141,6 +141,9 @@
   #camStage{position:relative; flex:1; min-height:0}
   #camView{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000}
   #camOverlay{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
+  /* önizleme kendimiz çizilir: iPhone 4K akışta <video>'yu küçük ve kaymış gösterebiliyor (döndürme hatası);
+     tuvale çizilen kare, analiz edilen kareyle birebir aynı koordinatta → maske tam sayfanın üstüne oturur */
+  #camPrev{position:absolute; inset:0; width:100%; height:100%; pointer-events:none; background:#000; visibility:hidden}
   #camOk{position:absolute; inset:0; pointer-events:none; opacity:0; display:flex; align-items:center; justify-content:center;
     box-shadow:inset 0 0 0 10px #39d98a; z-index:3}
   #camOk span{width:110px; height:110px; border-radius:50%; background:#1d9e63e6; color:#fff; font-size:70px; font-weight:900;
@@ -532,7 +535,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 32</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 33</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -589,6 +592,7 @@
 <div id="camModal" hidden>
   <div id="camStage">
     <video id="camView" autoplay playsinline muted></video>
+    <canvas id="camPrev"></canvas>
     <canvas id="camOverlay"></canvas>
     <div id="camOk"><span>✓</span></div>
     <div class="camhint" id="camHint">Sayfayı kadraja al</div>
@@ -1875,6 +1879,7 @@ const cam = {
     const v = $('camView');
     const step = (now) => {
       if(!this.active) return;
+      if(v.readyState >= 2) this.paint(v);
       // her kare incelenir (30 kare/sn'ye kadar); kare analizi yavaş kalan cihazda seyreltilir
       if(!this.paused && v.readyState >= 2 && now - this.lastFeed >= (this.scanner.cost > 14 ? 60 : 30)){
         this.lastFeed = now;
@@ -2052,7 +2057,7 @@ const cam = {
     if(L.phase !== 'done' && !L.tries){ L.firstTryT = performance.now(); L.tryMove = fr.moveSum; }
     const t0 = performance.now();
     fr.hold();
-    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: (this.sess.hintMiss || 0) % 2 ? undefined : this.sess.ang, angRetry: false, spread: true, mask: (this.maskN = (this.maskN || 0) + 1) % 3 === 1 || !L.polys})).then(res => {
+    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: (this.sess.hintMiss || 0) % 2 ? undefined : this.sess.ang, angRetry: false, spread: true, mask: (this.maskN = (this.maskN || 0) + 1) % 2 === 1 || !L.polys})).then(res => {
       L.inflight = false; L.chkMove = null;
       if(this.live !== L || !this.active){ fr.release(); this.dropKeep(L); return; }
       res.ms = performance.now() - t0;
@@ -2520,6 +2525,20 @@ const cam = {
     }
     this.draw(r, st);
   },
+  /* kamera önizlemesi: kare, maskeyle aynı "contain" yerleşimiyle tuvale çizilir */
+  paint(v){
+    if(this.prevBroken || !v.videoWidth) return;
+    const c = $('camPrev'), W = c.clientWidth, H = c.clientHeight; if(!W || !H) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1), cw = Math.round(W*dpr), chh = Math.round(H*dpr);
+    if(c.width !== cw || c.height !== chh){ c.width = cw; c.height = chh; this.prevCtx = null; }
+    const x = this.prevCtx || (this.prevCtx = c.getContext('2d', {alpha: false}));
+    const s = Math.min(W/v.videoWidth, H/v.videoHeight), dw = v.videoWidth*s, dh = v.videoHeight*s;
+    try{
+      x.fillStyle = '#000'; x.fillRect(0, 0, cw, chh);
+      x.drawImage(v, (W - dw)/2*dpr, (H - dh)/2*dpr, dw*dpr, dh*dpr);
+      if(c.style.visibility !== 'visible') c.style.visibility = 'visible';
+    }catch(e){ this.prevBroken = true; c.style.visibility = 'hidden'; log('önizleme çizilemedi:', e && e.message); }
+  },
   /* canlı sayfa maskesi: son denetimin bulduğu (kıvrık sayfada eğri) sayfa alanı yarı saydam boyanır.
      Kare kıpırdarken de görünür, yeni sonuca yumuşakça kayar, ~1.5 sn'de söner */
   draw(r, st){
@@ -2535,7 +2554,9 @@ const cam = {
     if(st !== 'moving') L.movingSince = 0;
     // yumuşak geçiş: aynı yapıdaki çokgenlerde noktalar hedefe kayar
     const tgt = L.polys;
-    if(!L.disp || L.disp.length !== tgt.length || L.disp.some((p, i) => p.length !== tgt[i].length)) L.disp = tgt.map(p => p.map(q => q.slice()));
+    // yeni sayfa / büyük sıçrama: kaydırılmaz, doğrudan yeni yerinde çizilir (ara şekiller yamuk görünüyordu)
+    const far = L.disp && L.disp.length === tgt.length && L.disp.some((p, i) => p.length !== tgt[i].length || p.some((q, j) => Math.abs(q[0] - tgt[i][j][0]) + Math.abs(q[1] - tgt[i][j][1]) > 0.12));
+    if(far || !L.disp || L.disp.length !== tgt.length || L.disp.some((p, i) => p.length !== tgt[i].length)) L.disp = tgt.map(p => p.map(q => q.slice()));
     else L.disp.forEach((p, i) => p.forEach((q, j) => { q[0] += (tgt[i][j][0] - q[0])*0.35; q[1] += (tgt[i][j][1] - q[1])*0.35; }));
     const s = Math.min(W/v.videoWidth, H/v.videoHeight), ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
     const fade = age < 800 ? 1 : Math.max(0, 1 - (age - 800)/700);
@@ -2643,6 +2664,7 @@ const cam = {
     cancelAnimationFrame(this.raf);
     if(this.stream){ this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
     $('camView').srcObject = null;
+    $('camPrev').style.visibility = 'hidden';
     $('camModal').hidden = true;
   },
   async finish(){

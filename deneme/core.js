@@ -666,7 +666,10 @@ function edgeQuad(src, maxSide){
     for(let i=0;i<acc.length;i++) if(!used[i] && acc[i] > bv){ bv = acc[i]; bi = i; }
     if(bi < 0 || bv < Math.min(w, h)*0.15) break;
     const t = (bi/NR)|0, r = bi % NR - RM;
-    lines.push({t, r, v: bv});
+    // kare kenarına yapışık eksen çizgisi (kırpma/siyah şerit artığı) sayfa kenarı sayılmaz
+    const atBorder = (t <= 2 || t >= 178) ? (Math.abs(r) < w*0.012 || Math.abs(Math.abs(r) - w) < w*0.012)
+                   : (Math.abs(t - 90) <= 2) ? (r < h*0.012 || r > h*0.988) : false;
+    if(!atBorder) lines.push({t, r, v: bv});
     for(let dt=-6; dt<=6; dt++) for(let dr=-10; dr<=10; dr++){
       let tt = t + dt, rr = r + dr;
       if(tt < 0){ tt += NT; rr = -rr; } else if(tt >= NT){ tt -= NT; rr = -rr; }
@@ -701,11 +704,34 @@ function edgeQuad(src, maxSide){
     }
     return n ? ok/n : 0;
   };
+  /* karşıtlık: kenarın hemen içi ile hemen dışı arasındaki renk farkı (ortanca). Kapağın sırt kıvrımı ya da
+     kapak üstündeki resim çizgisi iki yanında aynı kapak rengini görür (düşük); gerçek kitap kenarı kapak / örtü
+     sınırıdır (yüksek). Dışı kare dışında kalan kenar ölçülemez (null) */
+  const off = Math.max(3, Math.round(Math.min(w, h)*0.025));
+  const contrast = q => {
+    const cx = (q[0][0]+q[1][0]+q[2][0]+q[3][0])/4, cy = (q[0][1]+q[1][1]+q[2][1]+q[3][1])/4;
+    const out = [];
+    for(let e=0;e<4;e++){
+      const A = q[e], B = q[(e+1)%4], L = Math.hypot(B[0]-A[0], B[1]-A[1]) || 1;
+      let nx = -(B[1]-A[1])/L, ny = (B[0]-A[0])/L;
+      if(nx*(cx - (A[0]+B[0])/2) + ny*(cy - (A[1]+B[1])/2) < 0){ nx = -nx; ny = -ny; }
+      const ds = [], K = 24;
+      for(let k=2;k<K-1;k++){
+        const u = k/K, px = A[0] + (B[0]-A[0])*u, py = A[1] + (B[1]-A[1])*u;
+        const ix = Math.round(px + nx*off), iy = Math.round(py + ny*off), ox = Math.round(px - nx*off), oy = Math.round(py - ny*off);
+        if(ox < 0 || oy < 0 || ox >= w || oy >= h || ix < 0 || iy < 0 || ix >= w || iy >= h) continue;
+        const a = iy*w + ix, b = oy*w + ox;
+        ds.push(Math.abs(ch[0][a]-ch[0][b]) + Math.abs(ch[1][a]-ch[1][b]) + Math.abs(ch[2][a]-ch[2][b]));
+      }
+      out.push(ds.length >= (K-3)*0.4 ? quantile(ds, 0.5) : null);
+    }
+    return out;
+  };
   let best = null;
   const P = [];
   for(let i=0;i<lines.length;i++) for(let j=i+1;j<lines.length;j++){
     const A = lines[i], B = lines[j];
-    if(angD(A.t, B.t) > 30) continue;
+    if(angD(A.t, B.t) > 14) continue;                      // karşılıklı kenarlar neredeyse paralel (telefon kitaba bakıyor)
     // aynı yönde (θ farkı küçük) ama ρ ayrık: karşılıklı kenarlar
     const pB = B.t - A.t > 90 ? -B.r : B.t - A.t < -90 ? -B.r : B.r;
     if(Math.abs(A.r - pB) < Math.min(w, h)*0.2) continue;
@@ -713,7 +739,7 @@ function edgeQuad(src, maxSide){
   }
   for(let i=0;i<P.length;i++) for(let j=i+1;j<P.length;j++){
     const [A, B] = P[i], [C, D] = P[j];
-    if(angD(A.t, C.t) < 55) continue;
+    if(angD(A.t, C.t) < 66) continue;
     const pts = [inter(A, C), inter(A, D), inter(B, C), inter(B, D)];
     if(pts.some(p => !p || p[0] < -w*0.05 || p[1] < -h*0.05 || p[0] > w*1.05 || p[1] > h*1.05)) continue;
     // köşe sırası: merkez etrafında açıya göre, sol üstten saat yönünde
@@ -727,11 +753,68 @@ function edgeQuad(src, maxSide){
     const tw = (dist(q[0], q[1]) + dist(q[3], q[2]))/2, th = (dist(q[0], q[3]) + dist(q[1], q[2]))/2;
     if(tw/th < 0.3 || tw/th > 3) continue;
     const cov = support(q);
-    const score = cov*cov*(0.6 + 0.4*Math.sqrt(area));
-    if(!best || score > best.score) best = {q, cov, area, score};
+    let score = cov*cov*(0.6 + 0.4*Math.sqrt(area));
+    if(score < (best ? best.score*0.3 : 0)) continue;
+    const con = contrast(q), cv = con.filter(v => v != null);
+    const cmin = cv.length ? Math.min(...cv) : 0;
+    score *= (cv.length ? Math.max(0.15, Math.min(1, cmin/70)) : 0.3) * Math.pow(0.85, 4 - cv.length);
+    if(!best || score > best.score) best = {q, cov, area, score, cmin};
   }
   if(!best) return null;
-  return {quad: best.q.map(p => [Math.max(0, Math.min(W-1, p[0]/sc)), Math.max(0, Math.min(H-1, p[1]/sc))]), cov: best.cov, area: best.area, support: q => support(q.map(p => [p[0]*sc, p[1]*sc]))};
+  /* kenar iyileştirme: her kenar, iki yanındaki şeritlerin renk farkının en büyük olduğu yere (±%40 kaydırma,
+     ±3° dönme) taşınır. Kapağın sırt kıvrımı (iki yanı da kapak) gerçek kitap kenarına (kapak / örtü) kayar;
+     yazı satırı ya da dantel deseni boyunca fark sürekli olmadığı için seçilmez */
+  const lineOf = (A, B) => { const nx = -(B[1]-A[1]), ny = B[0]-A[0], L = Math.hypot(nx, ny) || 1; return {nx: nx/L, ny: ny/L, c: (nx*A[0] + ny*A[1])/L}; };
+  const meet = (l1, l2) => { const den = l1.nx*l2.ny - l2.nx*l1.ny; if(Math.abs(den) < 1e-6) return null; return [(l1.c*l2.ny - l2.c*l1.ny)/den, (l1.nx*l2.c - l2.nx*l1.c)/den]; };
+  const o2 = Math.max(2, Math.round(Math.min(w, h)*0.012));
+  const edgeScore = (A, B, cx, cy) => {
+    const L = Math.hypot(B[0]-A[0], B[1]-A[1]) || 1;
+    let nx = -(B[1]-A[1])/L, ny = (B[0]-A[0])/L;
+    if(nx*(cx - (A[0]+B[0])/2) + ny*(cy - (A[1]+B[1])/2) < 0){ nx = -nx; ny = -ny; }
+    const K = 28; let sum = 0, n = 0, strong = 0;
+    for(let k=2;k<K-1;k++){
+      const u = k/K, px = A[0] + (B[0]-A[0])*u, py = A[1] + (B[1]-A[1])*u;
+      let d = 0, ok = true;
+      for(const f of [1, 2]){
+        const ix = Math.round(px + nx*o2*f), iy = Math.round(py + ny*o2*f), ox = Math.round(px - nx*o2*f), oy = Math.round(py - ny*o2*f);
+        if(ox < 0 || oy < 0 || ox >= w || oy >= h || ix < 0 || iy < 0 || ix >= w || iy >= h){ ok = false; break; }
+        const a = iy*w + ix, b = oy*w + ox;
+        d += Math.abs(ch[0][a]-ch[0][b]) + Math.abs(ch[1][a]-ch[1][b]) + Math.abs(ch[2][a]-ch[2][b]);
+      }
+      if(!ok) continue;
+      d /= 2; sum += Math.min(d, 150); n++; if(d > 45) strong++;
+    }
+    return n >= (K-3)*0.35 ? (sum/n)*(0.5 + 0.5*strong/n) : 0;
+  };
+  let Q = best.q.map(p => p.slice());
+  for(let pass=0; pass<2; pass++){
+    for(let e=0;e<4;e++){
+      const cx = (Q[0][0]+Q[1][0]+Q[2][0]+Q[3][0])/4, cy = (Q[0][1]+Q[1][1]+Q[2][1]+Q[3][1])/4;
+      const A = Q[e], B = Q[(e+1)%4], lp = lineOf(Q[(e+3)%4], Q[e]), ln = lineOf(Q[(e+1)%4], Q[(e+2)%4]);
+      const base = lineOf(A, B), mx = (A[0]+B[0])/2, my = (A[1]+B[1])/2;
+      const opp = lineOf(Q[(e+2)%4], Q[(e+3)%4]);
+      const span = Math.abs(opp.nx*mx + opp.ny*my - opp.c) || Math.min(w, h)*0.5;
+      const cur = edgeScore(A, B, cx, cy);
+      let bestE = null, bestS = cur;
+      const a0 = Math.atan2(base.ny, base.nx);
+      for(const da of [-3, -1.5, 0, 1.5, 3]){
+        const a = a0 + da*Math.PI/180, nx = Math.cos(a), ny = Math.sin(a);
+        for(let sh = -span*0.4; sh <= span*0.4; sh += 1){
+          const ln2 = {nx, ny, c: nx*mx + ny*my + sh};
+          const P0 = meet(lp, ln2), P1 = meet(ln2, ln); if(!P0 || !P1) continue;
+          if(P0[0] < -w*0.05 || P0[1] < -h*0.05 || P0[0] > w*1.05 || P0[1] > h*1.05 || P1[0] < -w*0.05 || P1[1] < -h*0.05 || P1[0] > w*1.05 || P1[1] > h*1.05) continue;
+          const sc2 = edgeScore(P0, P1, cx, cy);
+          if(sc2 > bestS){ bestS = sc2; bestE = [P0, P1]; }
+        }
+      }
+      if(bestE && bestS > cur*1.25 && bestS > 35){
+        const nq = Q.map(p => p.slice()); nq[e] = bestE[0]; nq[(e+1)%4] = bestE[1];
+        if(isConvex(nq) && quadArea(nq)/(w*h) >= 0.12) Q = nq;
+      }
+    }
+  }
+  if(Q.some((p, i) => Math.abs(p[0] - best.q[i][0]) + Math.abs(p[1] - best.q[i][1]) > 0.5)){ best.q = Q; best.cov = Math.max(best.cov*0.9, support(Q)); best.area = quadArea(Q)/(w*h); best.refined = true; }
+  return {quad: best.q.map(p => [Math.max(0, Math.min(W-1, p[0]/sc)), Math.max(0, Math.min(H-1, p[1]/sc))]), cov: best.cov, area: best.area, con: best.cmin, refined: !!best.refined, support: q => support(q.map(p => [p[0]*sc, p[1]*sc]))};
 }
 
 /* ---------- sayfa imzası (tekrar tespiti) ----------

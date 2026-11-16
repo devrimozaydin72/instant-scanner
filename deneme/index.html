@@ -474,6 +474,15 @@
           <option value="500" data-t>½ saniye (en net)</option>
         </select>
       </label>
+      <label class="setting"><span data-t>Metin tanıma (aranabilir PDF, Word)</span>
+        <select id="selOcr">
+          <option value="auto" data-t>🔤 Uygulama dilinde</option>
+          <option value="tur">Türkçe</option><option value="eng">English</option><option value="spa">Español</option>
+          <option value="por">Português</option><option value="fra">Français</option><option value="rus">Русский</option>
+          <option value="ara">العربية</option><option value="chi_sim">中文</option><option value="hin">हिन्दी</option>
+          <option value="off" data-t>Kapalı</option>
+        </select>
+      </label>
       <label class="setting"><span data-t>Akıllı temizlik</span>
         <label class="switch"><input type="checkbox" id="chkCrop" checked>
           <span data-t>🤖 Düzleştir · kırp · parmak sil</span></label>
@@ -502,10 +511,13 @@
       <div class="txt" id="issueText"></div>
       <button class="btn warn" id="btnRetakeAll" data-t>📷 Yeniden çek</button>
     </div>
+    <div id="ocrStatus" class="sub" hidden></div>
     <div id="grid"></div>
     <div class="exportbar">
       <input type="text" id="fname" value="tarama" placeholder="dosya adı" data-t-ph="dosya adı">
       <button class="btn green" id="btnPdf" data-t>📄 PDF İndir</button>
+      <button class="btn gray" id="btnTxt" data-t>📝 Metin (TXT)</button>
+      <button class="btn gray" id="btnDocx" data-t>📃 Word</button>
       <button class="btn gray" id="btnMoreLive" data-t>📷 Sayfa Ekle</button>
       <button class="btn gray" id="btnMore" data-t>➕ Dosya Ekle</button>
       <button class="btn gray" id="btnReset" data-t>🔁 Baştan</button>
@@ -517,9 +529,10 @@
   <section class="card" id="histCard" hidden>
     <h2 data-t>📚 Önceki taramalar</h2>
     <p class="sub" id="histSub" data-t>Oluşturduğun PDF'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.</p>
+    <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 30</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 31</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -595,6 +608,7 @@
 <div class="overlay" id="overlay" hidden>
   <div class="spin"></div>
   <div id="overlayText">İşleniyor…</div>
+  <button class="btn gray" id="overlaySkip" hidden data-t>Beklemeden devam et</button>
 </div>
 
 <video id="vid" muted playsinline preload="auto" hidden></video>
@@ -604,6 +618,7 @@
 
 <script src="i18n.js"></script>
 <script src="core.js"></script>
+<script src="ocr.js"></script>
 <script>
 'use strict';
 /* ---------- ÇOK DİLLİLİK ----------
@@ -736,7 +751,7 @@ const session = {
         const ver = p.ver;
         await store.put('pages', {id:p.id, ver, orig: await toAB(p.origBlob), proc: await toAB(p.procBlob),
           thumb: await toAB(p.thumbBlob), outW:p.outW, outH:p.outH, rot:p.rot||0, mode:p.mode||null, time:p.time||0,
-          maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}, side:p.side||'', lineSig:p.lineSig||null, soft:p.soft||null, noText:!!p.noText});
+          maybeDup:!!p.maybeDup, issues:p.issues||[], metrics:p.metrics||{}, side:p.side||'', lineSig:p.lineSig||null, soft:p.soft||null, noText:!!p.noText, ocr:p.ocr||null});
         this.saved.set(p.id, ver);
         askPersist();
       }
@@ -757,7 +772,7 @@ const session = {
         const procBlob = fromAB(r.proc, 'image/jpeg'), thumbBlob = fromAB(r.thumb, 'image/jpeg') || procBlob;
         pages.push({id:r.id, ver:r.ver, status:'done', mode:r.mode||null, origBlob: fromAB(r.orig, 'image/jpeg'), procBlob, thumbBlob,
           thumbUrl: URL.createObjectURL(thumbBlob), outW:r.outW, outH:r.outH, rot:r.rot, time:r.time,
-          maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}, side:r.side||'', lineSig:r.lineSig||null, soft:r.soft||null, noText:!!r.noText});
+          maybeDup:r.maybeDup, issues:r.issues||[], metrics:r.metrics||{}, side:r.side||'', lineSig:r.lineSig||null, soft:r.soft||null, noText:!!r.noText, ocr:r.ocr||null});
         this.saved.set(r.id, r.ver);
       }
       for(const r of recs) if(!this.saved.has(r.id)) store.del('pages', r.id).catch(()=>{});
@@ -775,10 +790,10 @@ const session = {
 /* oluşturulan PDF'ler: "Önceki taramalar" listesi */
 const archive = {
   urls: [],
-  async add(blob, name, pages, thumb){
+  async add(blob, name, pages, thumb, text){
     const id = Date.now();
     await store.put('pdfs', {id, pdf: await toAB(blob)});
-    await store.put('docs', {id, name, created:id, pages, size:blob.size, thumb: await toAB(thumb)});
+    await store.put('docs', {id, name, created:id, pages, size:blob.size, thumb: await toAB(thumb), text: (text || '').slice(0, 3000000)});
     askPersist();
     return id;
   },
@@ -798,15 +813,29 @@ const archive = {
     this.urls.forEach(u => URL.revokeObjectURL(u)); this.urls = [];
     $('histCard').hidden = !docs.length;
     const list = $('histList'); list.innerHTML = '';
+    // kelime arama: dosya adı ve tanınan metin içinde (Türkçe büyük/küçük harf uyumlu)
+    const hs = $('histSearch'); hs.hidden = !docs.some(d => d.text);
+    const lc = t => String(t || '').toLocaleLowerCase(I18N.lang === 'tr' ? 'tr' : undefined);
+    const q = lc(hs.value.trim());
+    let shown = 0;
     for(const d of docs){
+      let snip = '';
+      if(q){
+        const nm = lc(d.name).includes(q), tx = lc(d.text), k = tx.indexOf(q);
+        if(!nm && k < 0) continue;
+        if(k >= 0){ const a = Math.max(0, k - 40), raw = d.text.slice(a, k + q.length + 60).replace(/\s+/g, ' ');
+          const kk = lc(raw).indexOf(q); snip = `<div class="s">…${esc(raw.slice(0, kk))}<b>${esc(raw.slice(kk, kk + q.length))}</b>${esc(raw.slice(kk + q.length))}…</div>`; }
+      }
+      shown++;
       const b = document.createElement('button'); b.className = 'hist';
       const tb = fromAB(d.thumb, 'image/jpeg');
       let src = ''; if(tb){ src = URL.createObjectURL(tb); this.urls.push(src); }
       b.innerHTML = `<img ${src ? `src="${src}"` : ''} alt=""><div><div class="t">${esc(d.name)}</div>` +
-        `<div class="s">${T('{n} sayfa', {n: d.pages})} · ${fmtMB(d.size)} · ${fmtDate(d.created)}</div></div>`;
+        `<div class="s">${T('{n} sayfa', {n: d.pages})} · ${fmtMB(d.size)} · ${fmtDate(d.created)}${d.text ? ' · 🔤' : ''}</div>${snip}</div>`;
       b.onclick = () => this.open(d.id);
       list.appendChild(b);
     }
+    if(q && !shown) list.innerHTML = `<div class="sub">${T('Bulunamadı.')}</div>`;
     // iOS'ta Safari sekmesindeki site verisi uzun süre kullanılmazsa silinebilir; ana ekran uygulamasında kalıcıdır
     const tip = isIOS && !native.on && !navigator.standalone;
     $('histSub').innerHTML = T('Oluşturduğun PDF\'ler bu cihazda saklanır. Açmak, kaydetmek ya da paylaşmak için dokun.') +
@@ -1062,6 +1091,7 @@ function dedupeAfter(p){
 let renderTimer = null;
 function onPageProcessed(p){
   session.schedule();
+  if(p.status === 'done' && typeof ocr !== 'undefined') ocr.enqueue(p);
   if(cam.active) cam.onPageDone(p);
   if(!$('resultCard').hidden){
     clearTimeout(renderTimer);
@@ -2716,7 +2746,10 @@ async function buildPdf(pages){
   pushStr('%PDF-1.4\n');
   push(new Uint8Array([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]));
   const n = pages.length;
-  const total = 2 + n*3;
+  // aranabilir PDF: metni tanınmış sayfalar için görünmez metin katmanı + gömülü GlyphLess yazı tipi
+  const withText = typeof ocrPdfText === 'function' && pages.some(p => p.ocr && p.ocr.words && p.ocr.words.length);
+  const font = withText ? ocrFontObjects(3 + n*3) : null;
+  const total = 2 + n*3 + (font ? font.count : 0);
   const kids = pages.map((_,i)=>`${3+i*3} 0 R`).join(' ');
   offsets[1] = off;
   pushStr(`1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n`);
@@ -2730,9 +2763,9 @@ async function buildPdf(pages){
     const po = 3+i*3, co = po+1, io = po+2;
     offsets[po] = off;
     pushStr(`${po} 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] `+
-      `/Resources <</XObject <</I${i} ${io} 0 R>> /ProcSet [/PDF /ImageC]>> `+
+      `/Resources <</XObject <</I${i} ${io} 0 R>>${font ? ` /Font <</FOCR ${font.fontRef} 0 R>>` : ''} /ProcSet [/PDF /ImageC${font ? ' /Text' : ''}]>> `+
       `/Contents ${co} 0 R>>\nendobj\n`);
-    const content = `q ${pw} 0 0 ${ph} 0 0 cm /I${i} Do Q\n`;
+    const content = `q ${pw} 0 0 ${ph} 0 0 cm /I${i} Do Q\n` + (font && p.ocr && !p.ocr.stale ? ocrPdfText(p.ocr, pw, ph) : '');
     offsets[co] = off;
     pushStr(`${co} 0 obj\n<</Length ${content.length}>>\nstream\n${content}endstream\nendobj\n`);
     offsets[io] = off;
@@ -2740,6 +2773,11 @@ async function buildPdf(pages){
       `/ColorSpace /${info.comps === 1 ? 'DeviceGray' : 'DeviceRGB'} /BitsPerComponent 8 /Filter /DCTDecode /Length ${buf.length}>>\nstream\n`);
     push(buf);
     pushStr(`\nendstream\nendobj\n`);
+  }
+  if(font) for(const [no, v] of font.objs){
+    offsets[no] = off;
+    if(typeof v === 'string') pushStr(`${no} 0 obj\n${v}\nendobj\n`);
+    else { pushStr(`${no} 0 obj\n${v.dict}\nstream\n`); push(v.data); pushStr(`\nendstream\nendobj\n`); }
   }
   const xrefOff = off;
   let xref = `xref\n0 ${total+1}\n0000000000 65535 f \n`;
@@ -2787,6 +2825,7 @@ async function exportPdf(force){
   }
   const ready = state.pages.filter(p => p.procBlob);
   if(!ready.length) return;
+  await ocrWait(ready);
   showOverlay(T('PDF oluşturuluyor…'));
   try{
     const blob = await buildPdf(ready);
@@ -2795,7 +2834,7 @@ async function exportPdf(force){
     log('PDF hazır:', name, (blob.size/1024/1024).toFixed(2)+' MB', ready.length + ' sayfa');
     $('overlayText').textContent = T('PDF kaydediliyor…');
     let docId = null;
-    try{ docId = await archive.add(blob, name, ready.length, ready[0].thumbBlob || null); }
+    try{ docId = await archive.add(blob, name, ready.length, ready[0].thumbBlob || null, ocrDocText(ready)); }
     catch(e){ log('PDF cihaza kaydedilemedi:', e && e.message); }
     hideOverlay();
     pdfDlg.show({blob, name, pages: ready.length, size: blob.size, docId, created: docId, fresh: true});
@@ -2912,6 +2951,7 @@ const langPick = (() => {
     try{ renderGrid(); }catch(_){}
     try{ archive.render(); }catch(_){}
     try{ if(cam.active) cam.updateCounter(); }catch(_){}
+    try{ if(ocr.mode === 'auto') ocr.enqueueAll(); }catch(_){}
     el.hidden = true; document.body.classList.remove('noscroll');
     const f = after; after = null; if(f) f();
   };
@@ -2922,6 +2962,49 @@ const langPick = (() => {
 applyLang();
 if(!savedLang()) langPick.show(() => { if(!onb.seen()) onb.show(); });
 else if(!onb.seen()) onb.show();
+/* ---------- METİN TANIMA: ayar, durum, TXT / Word ---------- */
+try{ const v = localStorage.getItem('is.ocr'); if(v && $('selOcr').querySelector(`option[value="${v}"]`)) ocr.mode = v; }catch(_){}
+$('selOcr').value = ocr.mode;
+$('selOcr').onchange = e => { ocr.mode = e.target.value; ocr.failed = false; try{ localStorage.setItem('is.ocr', ocr.mode); }catch(_){} ocr.enqueueAll(); updateOcrStatus(); };
+function updateOcrStatus(){
+  const el = $('ocrStatus');
+  if(!ocr.on || !state.pages.length){ el.hidden = true; $('btnTxt').hidden = $('btnDocx').hidden = !ocr.on; return; }
+  const {done, total} = ocr.progress();
+  el.hidden = !total;
+  el.textContent = done >= total ? T('🔤 Metin tanındı: PDF aranabilir, metin kopyalanabilir.') : T('🔤 Metin tanınıyor… {a}/{b}', {a: done, b: total});
+  $('btnTxt').hidden = $('btnDocx').hidden = false;
+}
+ocr.listeners.add(updateOcrStatus);
+setInterval(() => { if(!$('resultCard').hidden) updateOcrStatus(); }, 1500);
+/* dışa aktarmadan önce: metin tanıması bitmemiş sayfaları bekle (atlanabilir) */
+async function ocrWait(pages){
+  if(!ocr.on || pages.every(p => ocr.done(p))) return;
+  let skip = false;
+  $('overlaySkip').hidden = false; $('overlaySkip').onclick = () => { skip = true; };
+  showOverlay(T('Metin tanınıyor… {a}/{b}', {a: 0, b: pages.length}));
+  try{ await ocr.waitFor(pages, (a, b) => { $('overlayText').textContent = T('Metin tanınıyor… {a}/{b}', {a, b}); }, () => skip); }
+  finally{ $('overlaySkip').hidden = true; hideOverlay(); }
+}
+async function shareOrDownload(blob, name, type){
+  const file = new File([blob], name, {type});
+  if(native.on){ try{ const data = await blobToBase64(blob); const uri = (await native.call('Filesystem', 'writeFile', {path:name, data, directory:'CACHE'})).uri; await native.call('Share', 'share', {title:name, files:[uri]}); }catch(e){ if(!/cancel/i.test(e && e.message || '')) toast(String(e && e.message || e)); } return; }
+  try{ if(isIOS && navigator.share && navigator.canShare && navigator.canShare({files:[file]})){ await navigator.share({files:[file], title:name}); return; } }catch(e){ if(/abort|cancel/i.test(e && (e.name + e.message) || '')) return; }
+  downloadBlob(blob, name);
+}
+async function exportText(kind){
+  const ready = state.pages.filter(p => p.procBlob);
+  if(!ready.length) return;
+  if(!ocr.on){ toast(T('Metin tanıma kapalı (ayarlardan aç).')); return; }
+  await ocrWait(ready);
+  const base = ($('fname').value.trim() || 'tarama').replace(/[\\/:*?"<>|]+/g, '-');
+  if(!ready.some(p => p.ocr && p.ocr.paras && p.ocr.paras.length)){ toast(T('Bu sayfalarda metin bulunamadı.')); return; }
+  if(kind === 'txt') await shareOrDownload(new Blob([ocrDocText(ready)], {type:'text/plain;charset=utf-8'}), base + '.txt', 'text/plain');
+  else await shareOrDownload(ocrDocx(ready, base), base + '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+}
+$('btnTxt').onclick = () => exportText('txt');
+$('btnDocx').onclick = () => exportText('docx');
+$('histSearch').addEventListener('input', () => { clearTimeout(window.__hsT); window.__hsT = setTimeout(() => archive.render(), 200); });
+
 log('INSTANT SCANNER hazır');
 </script>
 </body>

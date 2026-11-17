@@ -535,7 +535,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 33</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 34</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1779,6 +1779,47 @@ const quick = {
 };
 quick.init();
 
+/* canlı sayfa takibi: önizlemedeki yeşil dörtgen her ~70 ms'de, denetimden bağımsız ayrı bir işçide bulunur
+   (küçük kare: kağıt bölgesi + kenar dörtgeni, core.js trackFrame). Yeni bir dörtgen ancak üst üste iki kez
+   görülünce gösterilir (tek karelik yanlış tespit titretmez); ~0.4 sn güncellenmezse gizlenir. */
+const trk = {
+  w: null, busy: false, seq: 0, dead: false, c: null, lastAt: 0, ms: 0, fails: 0,
+  quad: null, at: 0, pend: null, miss: 0,
+  init(){
+    if(proc.fallback){ this.dead = true; return; }
+    try{
+      this.w = new Worker('core.js');
+      this.w.onmessage = e => this.onRes(e.data);
+      this.w.onerror = e => { log('takip işçisi hatası', e.message); this.dead = true; this.busy = false; };
+    }catch(_){ this.dead = true; }
+  },
+  reset(){ this.quad = null; this.pend = null; this.miss = 0; this.at = 0; },
+  feed(src, now, anchor){
+    // işlemciyi denetimle paylaşır: takip süresinin ~1.2 katı aralık (denetim sürerken 2.5 katı), en az 66 ms
+    if(this.dead || !this.w || !src || now - this.lastAt < Math.max(66, this.ms*(cam.live && cam.live.inflight ? 2.5 : 1.2))) return;
+    if(this.busy && now - this.sent < 1500) return;
+    const W = src.width, H = src.height;
+    if(!this.c || this.c.width !== W || this.c.height !== H) this.c = mk(W, H, true);
+    const x = this.c.getContext('2d', {willReadFrequently:true});
+    x.drawImage(src, 0, 0);
+    const im = x.getImageData(0, 0, W, H);
+    this.busy = true; this.lastAt = now; this.sent = now;
+    this.w.postMessage({id: ++this.seq, kind:'track', w:W, h:H, buf:im.data.buffer, prev:this.quad, anchor:anchor || null}, [im.data.buffer]);
+  },
+  onRes(d){
+    this.busy = false;
+    if(!d.ok){ if(++this.fails > 5){ this.dead = true; log('takip kapatıldı:', d.error); } return; }
+    this.ms = this.ms ? this.ms*0.8 + d.ms*0.2 : d.ms;
+    const q = d.r && d.r.quad, now = performance.now();
+    if(!q){ if(++this.miss >= 3){ this.quad = null; this.pend = null; } return; }
+    this.miss = 0;
+    const near = (a, b) => !!(a && b) && a.every((p, i) => Math.abs(p[0] - b[i][0]) + Math.abs(p[1] - b[i][1]) < 0.07);
+    if(near(q, this.quad) || near(q, this.pend)){ this.quad = q; this.at = now; this.pend = null; }
+    else this.pend = q;
+  },
+};
+trk.init();
+
 const median = a => { if(!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; };
 const otherSide = s => s === 'L' ? 'R' : s === 'R' ? 'L' : null;
 
@@ -1839,6 +1880,7 @@ const cam = {
     $('camModal').hidden = false;
     this.active = true; this.paused = false; this.count = 0; this.torch = false;
     if(typeof ocr !== 'undefined') ocr.abort('kamera açıldı');
+    trk.reset();
     this.keepAwake(true);
     this.retake = opts.retake ? {ids:opts.retake.slice(), i:0} : null;
     // oturum: yeniden çekimde sıra/tekrar kuralları uygulanmaz
@@ -1888,7 +1930,13 @@ const cam = {
           this.note(`kamera ${v.videoWidth}x${v.videoHeight} çekirdek ${navigator.hardwareConcurrency || '?'} hızlı-işçi ${quick.dead ? 'yok' : 'var'}`);
         }
         const r = this.scanner.feed(v, now/1000);
-        if(r) this.step(r);
+        if(r){
+          const L = this.live, sc = this.scanner;
+          // son denetimin sayfası (kare o zamandan beri oynamadıysa) takipçiye yol gösterir
+          const anc = L && L.polys && L.polys.length === 1 && L.polys[0].length === 4 && now - L.polyAt < 1200 && sc.moveSum - (L.polyMove || 0) < MOVE_CHECK/2 ? L.polys[0] : null;
+          trk.feed(sc.mid, now, anc);
+          this.step(r);
+        }
       }
       if('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(step);
       else this.raf = requestAnimationFrame(step);
@@ -2161,7 +2209,7 @@ const cam = {
     if(v.ok && lm > Math.max(6, snap.thr*2.5)) v = {ok:false, soft:true, slow:true, code:'moving', hint:''};
     L.quad = (m.blockN || m.quadN) || null; L.quadAt = now; L.quadOk = v.ok;
     if(m.polys) L.polys = m.polys; else if(!L.polys && L.quad) L.polys = [L.quad];
-    L.polyAt = now; L.polyOk = v.ok; L.polyHard = !!(v.hard);
+    L.polyAt = now; L.polyOk = v.ok; L.polyHard = !!(v.hard); L.polyMove = snap.moveSum;
     const moved = snap.moveSum - L.moveAt;
     this.ev('kontrol', L.phase, v.ok ? 'tamam' : v.code, m.side || '', Math.round(res.ms || 0),
             [m.room, +(m.crisp||0).toFixed(2), Math.round(m.sharp||0), Math.round(moved), +lm.toFixed(1)]);
@@ -2539,36 +2587,40 @@ const cam = {
       if(c.style.visibility !== 'visible') c.style.visibility = 'visible';
     }catch(e){ this.prevBroken = true; c.style.visibility = 'hidden'; log('önizleme çizilemedi:', e && e.message); }
   },
-  /* canlı sayfa maskesi: son denetimin bulduğu (kıvrık sayfada eğri) sayfa alanı yarı saydam boyanır.
-     Kare kıpırdarken de görünür, yeni sonuca yumuşakça kayar, ~1.5 sn'de söner */
+  /* canlı sayfa maskesi (vFlat gibi): takipçinin her ~70 ms'de bulduğu sayfa dörtgeni yarı saydam boyanır; kadraj
+     oynarken de sayfayı izler. Çift sayfa modunda, kare oynamadıysa denetimin bulduğu iki yarım gösterilir.
+     Renk: denetim sonucu taze ise (kare o zamandan beri oynamadı) yeşil = tamam, turuncu = bekle, kırmızı = olmaz */
   draw(r, st){
     const ov = $('camOverlay'), v = $('camView'), L = this.live;
     const W = ov.clientWidth, H = ov.clientHeight;
     if(ov.width !== W || ov.height !== H){ ov.width = W; ov.height = H; }
     const x = ov.getContext('2d');
     x.clearRect(0, 0, W, H);
-    if(!L || !L.polys || !v.videoWidth) { if(L) L.disp = null; return; }
-    const age = performance.now() - L.polyAt;
-    // kadraj oynuyorsa (sayfa çevriliyor) eski maske hemen kaldırılır: yeni sayfaya yanlış yerde kalmasın
-    if(age > 1500 || (st === 'moving' && performance.now() - (L.movingSince || (L.movingSince = performance.now())) > 200)){ L.disp = null; return; }
-    if(st !== 'moving') L.movingSince = 0;
-    // yumuşak geçiş: aynı yapıdaki çokgenlerde noktalar hedefe kayar
-    const tgt = L.polys;
-    // yeni sayfa / büyük sıçrama: kaydırılmaz, doğrudan yeni yerinde çizilir (ara şekiller yamuk görünüyordu)
-    const far = L.disp && L.disp.length === tgt.length && L.disp.some((p, i) => p.length !== tgt[i].length || p.some((q, j) => Math.abs(q[0] - tgt[i][j][0]) + Math.abs(q[1] - tgt[i][j][1]) > 0.12));
-    if(far || !L.disp || L.disp.length !== tgt.length || L.disp.some((p, i) => p.length !== tgt[i].length)) L.disp = tgt.map(p => p.map(q => q.slice()));
-    else L.disp.forEach((p, i) => p.forEach((q, j) => { q[0] += (tgt[i][j][0] - q[0])*0.35; q[1] += (tgt[i][j][1] - q[1])*0.35; }));
+    if(!L || !v.videoWidth){ if(L) L.disp = null; return; }
+    const now = performance.now(), sc = this.scanner;
+    const fresh = !!L.polys && now - L.polyAt < 1500 && sc.moveSum - (L.polyMove || 0) < MOVE_CHECK/2;
+    let tgt = null;
+    if(this.spreadOn && fresh && L.polys.length === 2) tgt = L.polys;
+    else if(trk.quad && now - trk.at < 400) tgt = [trk.quad];
+    else if(trk.dead && fresh) tgt = L.polys;            // takip işçisi yoksa: yalnız denetim sonucu
+    if(!tgt){ L.disp = null; return; }
+    // yumuşak geçiş; yeni sayfa / büyük sıçrama kaydırılmaz, doğrudan yeni yerinde çizilir
+    const same = L.disp && L.disp.length === tgt.length && L.disp.every((p, i) => p.length === tgt[i].length);
+    const far = same && L.disp.some((p, i) => p.some((q, j) => Math.abs(q[0] - tgt[i][j][0]) + Math.abs(q[1] - tgt[i][j][1]) > 0.15));
+    if(!same || far) L.disp = tgt.map(p => p.map(q => q.slice()));
+    else L.disp.forEach((p, i) => p.forEach((q, j) => { q[0] += (tgt[i][j][0] - q[0])*0.5; q[1] += (tgt[i][j][1] - q[1])*0.5; }));
     const s = Math.min(W/v.videoWidth, H/v.videoHeight), ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
-    const fade = age < 800 ? 1 : Math.max(0, 1 - (age - 800)/700);
-    const done = st === 'done';
-    const ok = done || L.polyOk;
+    const done = st === 'done' && fresh;
+    const judged = fresh && st !== 'moving';
+    const ok = done || !judged || L.polyOk;
     const rgb = ok ? '47,224,176' : L.polyHard ? '255,92,122' : '255,176,32';
+    const fa = done ? 0.45 : judged ? (ok ? 0.36 : 0.24) : 0.26;
     x.lineJoin = 'round';
     for(const poly of L.disp){
       const P = poly.map(p => [ox + p[0]*v.videoWidth*s, oy + p[1]*v.videoHeight*s]);
       x.beginPath(); P.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath();
-      x.fillStyle = `rgba(${rgb},${((done ? 0.5 : ok ? 0.38 : 0.22)*fade).toFixed(3)})`; x.fill();
-      x.strokeStyle = `rgba(${rgb},${(0.95*fade).toFixed(3)})`; x.lineWidth = 3; x.stroke();
+      x.fillStyle = `rgba(${rgb},${fa})`; x.fill();
+      x.strokeStyle = `rgba(${rgb},0.95)`; x.lineWidth = 3; x.stroke();
     }
   },
   onPageDone(p){
@@ -2660,6 +2712,8 @@ const cam = {
     this.active = false;
     proc.pump();                      // bekleyen sayfalar artık tüm işleyicilerle işlenir
     if(typeof ocr !== 'undefined') ocr.kick(300);   // metin tanıma kamera kapanınca başlar
+    this.note('sayfa takibi ' + (trk.dead ? 'yok' : 'ort ' + Math.round(trk.ms) + ' ms'));
+    window.__trkMs = trk.ms;
     this.keepAwake(false);
     cancelAnimationFrame(this.raf);
     if(this.stream){ this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }

@@ -817,6 +817,103 @@ function edgeQuad(src, maxSide){
   return {quad: best.q.map(p => [Math.max(0, Math.min(W-1, p[0]/sc)), Math.max(0, Math.min(H-1, p[1]/sc))]), cov: best.cov, area: best.area, con: best.cmin, refined: !!best.refined, support: q => support(q.map(p => [p[0]*sc, p[1]*sc]))};
 }
 
+
+/* ---------- canlı sayfa takibi (önizleme maskesi) ----------
+   Her ~70 ms'de küçük bir karede (uzun kenar ~200) iki aday: kağıt maskesi (detectPage — yazılı sayfa, dantel örtü)
+   ve kenar dörtgeni (edgeQuad — kapak, koyu zemin). İkisi de aynı ölçüyle puanlanır: dörtgenin her kenarı boyunca
+   hemen içi ile hemen dışının renk farkı (gerçek sayfa kenarı = kağıt / zemin sınırı). Önceki karede bulunan dörtgene
+   yakın aday yeğlenir (titreme olmaz); son denetimin bulduğu sayfa (anchor — kare o zamandan beri oynamadıysa) hem aday
+   olur hem de ona yakın adaylar öne geçer: yazı bloğu ile sayfa karışmaz. Dönen: null | {quad (0-1), score, src} */
+function trackFrame(src, prev, anchor){
+  const W = src.width, H = src.height, MS = 200, sc = Math.min(1, MS/Math.max(W, H));
+  const w = Math.max(24, Math.round(W*sc)), h = Math.max(24, Math.round(H*sc));
+  const small = downscale(src, w, h), id = ctx2d(small).getImageData(0, 0, w, h).data;
+  const ch = [new Float32Array(w*h), new Float32Array(w*h), new Float32Array(w*h)];
+  for(let i=0;i<w*h;i++){ ch[0][i] = id[i*4]; ch[1][i] = id[i*4+1]; ch[2][i] = id[i*4+2]; }
+  for(const c of ch) boxBlur(c, w, h, 1, 1);
+  const o2 = Math.max(2, Math.round(Math.min(w, h)*0.015));
+  // kenar puanı: içi/dışı renk farkı (ortalama, 150'de kırpılır) × güçlü örnek oranı; dışı kare dışındaysa null
+  const edgeS = (A, B, cx, cy) => {
+    const L = Math.hypot(B[0]-A[0], B[1]-A[1]) || 1;
+    let nx = -(B[1]-A[1])/L, ny = (B[0]-A[0])/L;
+    if(nx*(cx - (A[0]+B[0])/2) + ny*(cy - (A[1]+B[1])/2) < 0){ nx = -nx; ny = -ny; }
+    const K = 24; let sum = 0, n = 0, strong = 0;
+    for(let k=2;k<K-1;k++){
+      const u = k/K, px = A[0] + (B[0]-A[0])*u, py = A[1] + (B[1]-A[1])*u;
+      let d = 0, ok = true;
+      for(const f of [1, 2]){
+        const ix = Math.round(px + nx*o2*f), iy = Math.round(py + ny*o2*f), ox = Math.round(px - nx*o2*f), oy = Math.round(py - ny*o2*f);
+        if(ox < 0 || oy < 0 || ox >= w || oy >= h || ix < 0 || iy < 0 || ix >= w || iy >= h){ ok = false; break; }
+        const a = iy*w + ix, b = oy*w + ox;
+        d += Math.abs(ch[0][a]-ch[0][b]) + Math.abs(ch[1][a]-ch[1][b]) + Math.abs(ch[2][a]-ch[2][b]);
+      }
+      if(!ok) continue;
+      d /= 2; sum += Math.min(d, 150); n++; if(d > 40) strong++;
+    }
+    return n >= (K-3)*0.4 ? (sum/n)*(0.4 + 0.6*strong/n) : null;
+  };
+  const quadS = q => {
+    const cx = (q[0][0]+q[1][0]+q[2][0]+q[3][0])/4, cy = (q[0][1]+q[1][1]+q[2][1]+q[3][1])/4;
+    const es = [0, 1, 2, 3].map(e => edgeS(q[e], q[(e+1)%4], cx, cy)), v = es.filter(x => x != null);
+    if(v.length < 2) return {s: 0, es};
+    const mn = Math.min(...v), av = v.reduce((a, b) => a + b, 0)/v.length;
+    return {s: (mn + av)/2 * Math.pow(0.92, 4 - v.length), es};
+  };
+  const cands = [];
+  let d = null, e = null;
+  try{ d = detectPage(src, MS); }catch(_){}
+  if(d && d.ok) cands.push({src: 'paper', q: d.quad.map(p => [p[0]*sc, p[1]*sc]), fill: d.fill});
+  try{ e = edgeQuad(src, MS); }catch(_){}
+  if(e && e.cov > 0.6) cands.push({src: 'edge', q: e.quad.map(p => [p[0]*sc, p[1]*sc]), cov: e.cov});
+  if(prev && prev.length === 4) cands.push({src: 'prev', q: prev.map(p => [p[0]*w, p[1]*h])});
+  const aq = anchor && anchor.length === 4 ? anchor.map(p => [p[0]*w, p[1]*h]) : null;
+  if(aq) cands.push({src: 'anchor', q: aq});
+  if(!cands.length) return null;
+  // biçim: kitap sayfası yukarıdan bakınca dikdörtgene yakındır (köşe açıları 55-125°, karşılıklı kenarlar en çok ~22° açık)
+  const shapeOk = q => {
+    const ang = (a, b) => Math.atan2(b[1]-a[1], b[0]-a[0]);
+    for(let i=0;i<4;i++){
+      const p = q[(i+3)%4], c = q[i], n = q[(i+1)%4];
+      const v1 = [p[0]-c[0], p[1]-c[1]], v2 = [n[0]-c[0], n[1]-c[1]];
+      const cs = (v1[0]*v2[0] + v1[1]*v2[1])/((Math.hypot(...v1)*Math.hypot(...v2)) || 1);
+      const a = Math.acos(Math.max(-1, Math.min(1, cs)))*180/Math.PI;
+      if(a < 55 || a > 125) return false;
+    }
+    for(const [i, j] of [[0, 2], [1, 3]]){
+      let d = Math.abs(ang(q[i], q[(i+1)%4]) - ang(q[(j+1)%4], q[j]))*180/Math.PI % 180; d = Math.min(d, 180 - d);
+      if(d > 22) return false;
+    }
+    return true;
+  };
+  // q'nun noktalarının ne kadarı r dörtgeninin içinde (kenar orta noktaları + köşeler + merkez)
+  const insideFrac = (q, r) => {
+    const pts = q.slice(); for(let i=0;i<4;i++) pts.push([(q[i][0]+q[(i+1)%4][0])/2, (q[i][1]+q[(i+1)%4][1])/2]);
+    let n = 0; for(const p of pts) if(inQuad(r, p[0], p[1])) n++;
+    return n/pts.length;
+  };
+  const paperC = cands.find(c => c.src === 'paper');
+  const near = (a, b) => { let m = 0; for(let i=0;i<4;i++) m = Math.max(m, Math.abs(a[i][0]-b[i][0])/w + Math.abs(a[i][1]-b[i][1])/h); return m; };
+  let best = null;
+  for(const c of cands){
+    const r = quadS(c.q); c.s = r.s; c.es = r.es;
+    let s = r.s;
+    if(!shapeOk(c.q)) s *= 0.4;
+    // kağıt bölgesinin içinde kalan kenar dörtgeni yazı bloğudur (kenar boşluğu dışarıda kalmış): sayfa değil
+    if(c.src === 'edge' && paperC && quadArea(c.q) < quadArea(paperC.q)*0.8 && insideFrac(c.q, paperC.q) > 0.85) s *= 0.4;
+    c.s2 = s;
+    if(c.src === 'paper') s *= 1.15;                         // kağıt bölgesi: anlam olarak sayfa
+    if(c.src === 'prev') s *= 0.9;                           // eski dörtgen ancak yenisi zayıfsa kalır
+    if(prev && c.src !== 'prev' && near(c.q, prev.map(p => [p[0]*w, p[1]*h])) < 0.08) s *= 1.15;   // süreklilik
+    if(aq && c.src !== 'anchor' && near(c.q, aq) < 0.08) s *= 1.4;
+    if(aq && c.src !== 'anchor' && c.src !== 'prev' && near(c.q, aq) > 0.2) s *= 0.6;
+    c.score = s;
+    if(!best || s > best.score) best = c;
+  }
+  if(!best || best.s2 < 18) return {quad: null, score: best ? best.s : 0, cands: cands.map(c => [c.src, Math.round(c.s2)])};
+  return {quad: best.q.map(p => [Math.max(0, Math.min(1, p[0]/w)), Math.max(0, Math.min(1, p[1]/h))]), score: best.s, src: best.src, es: best.es.map(x => x == null ? null : Math.round(x)),
+          cands: cands.map(c => [c.src, Math.round(c.s2)])};
+}
+
 /* ---------- sayfa imzası (tekrar tespiti) ----------
    Sayfa bulunduysa dörtgen içi düzleştirilip imzalanır → kamera
    kayması / yakınlaşma imzayı bozmaz. */
@@ -4451,6 +4548,7 @@ if(IN_WORKER){
     const m = e.data;
     try{
       if(m.kind === 'quick'){ self.postMessage(Object.assign({id:m.id, ok:true}, await handleQuick(m))); return; }
+      if(m.kind === 'track'){ const c = mkCanvas(m.w, m.h); ctx2d(c).putImageData(new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h), 0, 0); const t0 = Date.now(); const r = trackFrame(c, m.prev, m.anchor); self.postMessage({id:m.id, ok:true, r, ms: Date.now() - t0}); return; }
       const r = await handleProcess(m);
       self.postMessage(Object.assign({id:m.id, ok:true}, r));
     }catch(err){
@@ -4463,6 +4561,6 @@ G.ScanCore = {
   mkCanvas, ctx2d, canvasToBlob, downscale, grayOf, toGray, mean, lapVar, quantile,
   detectPage, detectPageData, pageSignature, sigDiff, processCanvas, handleProcess, handleQuick, lineMatch,
   txFind, txOrient, txWarp, txTrace, txBlocks, inkOf,
-  rotateCanvas, estimateTextField, edgeQuad, spreadGeometry, spreadHalves, spreadMapN, quickSpread, estimateAspect, homography, applyH, inQuad,
+  rotateCanvas, estimateTextField, edgeQuad, trackFrame, spreadGeometry, spreadHalves, spreadMapN, quickSpread, estimateAspect, homography, applyH, inQuad,
 };
 })(typeof self !== 'undefined' ? self : this);

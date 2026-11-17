@@ -824,7 +824,7 @@ function edgeQuad(src, maxSide){
    hemen içi ile hemen dışının renk farkı (gerçek sayfa kenarı = kağıt / zemin sınırı). Önceki karede bulunan dörtgene
    yakın aday yeğlenir (titreme olmaz); son denetimin bulduğu sayfa (anchor — kare o zamandan beri oynamadıysa) hem aday
    olur hem de ona yakın adaylar öne geçer: yazı bloğu ile sayfa karışmaz. Dönen: null | {quad (0-1), score, src} */
-function trackFrame(src, prev, anchor){
+function trackFrame(src, prev, anchor, extra){
   const W = src.width, H = src.height, MS = 200, sc = Math.min(1, MS/Math.max(W, H));
   const w = Math.max(24, Math.round(W*sc)), h = Math.max(24, Math.round(H*sc));
   const small = downscale(src, w, h), id = ctx2d(small).getImageData(0, 0, w, h).data;
@@ -868,6 +868,7 @@ function trackFrame(src, prev, anchor){
   if(prev && prev.length === 4) cands.push({src: 'prev', q: prev.map(p => [p[0]*w, p[1]*h])});
   const aq = anchor && anchor.length === 4 ? anchor.map(p => [p[0]*w, p[1]*h]) : null;
   if(aq) cands.push({src: 'anchor', q: aq});
+  for(const q of extra || []) if(q && q.length === 4) cands.push({src: 'det', q: q.map(p => [p[0]*w, p[1]*h])});
   if(!cands.length) return null;
   // biçim: kitap sayfası yukarıdan bakınca dikdörtgene yakındır (köşe açıları 55-125°, karşılıklı kenarlar en çok ~22° açık)
   const shapeOk = q => {
@@ -891,6 +892,58 @@ function trackFrame(src, prev, anchor){
     let n = 0; for(const p of pts) if(inQuad(r, p[0], p[1])) n++;
     return n/pts.length;
   };
+  /* kenar iyileştirme: her kenar ±%12 kaydırma, ±3° dönme içinde iç/dış farkının en büyük olduğu yere taşınır
+     (kağıt maskesi kenar boşluğunu yer, Hough çizgisi dantel desenine kayabilir; gerçek kenar kağıt / zemin sınırıdır) */
+  const lineOf = (A, B) => { const nx = -(B[1]-A[1]), ny = B[0]-A[0], L = Math.hypot(nx, ny) || 1; return {nx: nx/L, ny: ny/L, c: (nx*A[0] + ny*A[1])/L}; };
+  const meet = (l1, l2) => { const den = l1.nx*l2.ny - l2.nx*l1.ny; if(Math.abs(den) < 1e-6) return null; return [(l1.c*l2.ny - l2.c*l1.ny)/den, (l1.nx*l2.c - l2.nx*l1.c)/den]; };
+  const tex = new Float32Array(w*h);
+  { const g = new Float32Array(w*h); for(let i=0;i<w*h;i++) g[i] = Math.min(id[i*4], id[i*4+1], id[i*4+2]);
+    for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){ const i = y*w+x; tex[i] = Math.abs(4*g[i]-g[i-1]-g[i+1]-g[i-w]-g[i+w]); }
+    boxBlur(tex, w, h, 1, 1); }
+  // kenarın hemen içindeki şeridin dokusu (kenar dantele kaymasın)
+  const innerTex = (A, B, cx, cy) => {
+    const L = Math.hypot(B[0]-A[0], B[1]-A[1]) || 1;
+    let nx = -(B[1]-A[1])/L, ny = (B[0]-A[0])/L;
+    if(nx*(cx - (A[0]+B[0])/2) + ny*(cy - (A[1]+B[1])/2) < 0){ nx = -nx; ny = -ny; }
+    let s = 0, n = 0;
+    for(let k=2;k<19;k++){
+      const u = k/20, px = A[0] + (B[0]-A[0])*u, py = A[1] + (B[1]-A[1])*u;
+      for(const f of [2, 3]){ const x = Math.round(px + nx*o2*f), y = Math.round(py + ny*o2*f); if(x >= 0 && y >= 0 && x < w && y < h){ s += tex[y*w+x]; n++; } }
+    }
+    return n ? s/n : 0;
+  };
+  const refine = q0 => {
+    let Q = q0.map(p => p.slice());
+    for(let pass=0; pass<2; pass++) for(let e=0;e<4;e++){
+      const cx = (Q[0][0]+Q[1][0]+Q[2][0]+Q[3][0])/4, cy = (Q[0][1]+Q[1][1]+Q[2][1]+Q[3][1])/4;
+      const A = Q[e], B = Q[(e+1)%4], lp = lineOf(Q[(e+3)%4], Q[e]), ln = lineOf(Q[(e+1)%4], Q[(e+2)%4]);
+      const base = lineOf(A, B), mx = (A[0]+B[0])/2, my = (A[1]+B[1])/2, opp = lineOf(Q[(e+2)%4], Q[(e+3)%4]);
+      const span = Math.abs(opp.nx*mx + opp.ny*my - opp.c) || Math.min(w, h)*0.5;
+      const cur = edgeS(A, B, cx, cy) || 0, t0 = innerTex(A, B, cx, cy);
+      let bestE = null, bestS = cur;
+      const a0 = Math.atan2(base.ny, base.nx);
+      for(const da of [-3, -1.5, 0, 1.5, 3]){
+        const an = a0 + da*Math.PI/180, nx = Math.cos(an), ny = Math.sin(an);
+        for(let sh = -span*0.12; sh <= span*0.12; sh += 1){
+          const l2 = {nx, ny, c: nx*mx + ny*my + sh};
+          const P0 = meet(lp, l2), P1 = meet(l2, ln); if(!P0 || !P1) continue;
+          if(P0[0] < -w*0.02 || P0[1] < -h*0.02 || P0[0] > w*1.02 || P0[1] > h*1.02 || P1[0] < -w*0.02 || P1[1] < -h*0.02 || P1[0] > w*1.02 || P1[1] > h*1.02) continue;
+          const v = edgeS(P0, P1, cx, cy);
+          if(v != null && v > bestS && innerTex(P0, P1, cx, cy) <= Math.max(t0*1.3, t0 + 3)){ bestS = v; bestE = [P0, P1]; }
+        }
+      }
+      if(bestE && bestS > cur*1.15 + 3){
+        const nq = Q.map(p => p.slice()); nq[e] = bestE[0]; nq[(e+1)%4] = bestE[1];
+        if(isConvex(nq) && shapeOk(nq)) Q = nq;
+      }
+    }
+    return Q;
+  };
+  for(const c of cands) if(c.src === 'paper' || c.src === 'edge') c.q = refine(c.q);   // 'det' zaten ince çözünürlükte bulundu
+  // kenar şeridinin dokusu: gerçek sayfanın kenarının hemen içi düz kağıttır (kenar boşluğu, kapak); dörtgen örtüye
+  // taşmışsa şerit dantel dokuludur → doku belirgin biçimde en düz adayınkinden fazlaysa puan düşer
+  for(const c of cands) c.band = bandTex(c.q, tex, w, h);
+  const bandMin = Math.min(...cands.map(c => c.band));
   const paperC = cands.find(c => c.src === 'paper');
   const near = (a, b) => { let m = 0; for(let i=0;i<4;i++) m = Math.max(m, Math.abs(a[i][0]-b[i][0])/w + Math.abs(a[i][1]-b[i][1])/h); return m; };
   let best = null;
@@ -898,8 +951,9 @@ function trackFrame(src, prev, anchor){
     const r = quadS(c.q); c.s = r.s; c.es = r.es;
     let s = r.s;
     if(!shapeOk(c.q)) s *= 0.4;
+    { const tb = bandMin*1.4 + 3; if(c.band > tb) s *= Math.max(0.4, Math.pow(tb/c.band, 2)); }
     // kağıt bölgesinin içinde kalan kenar dörtgeni yazı bloğudur (kenar boşluğu dışarıda kalmış): sayfa değil
-    if(c.src === 'edge' && paperC && quadArea(c.q) < quadArea(paperC.q)*0.8 && insideFrac(c.q, paperC.q) > 0.85) s *= 0.4;
+    if((c.src === 'edge' || c.src === 'det') && paperC && quadArea(c.q) < quadArea(paperC.q)*0.8 && insideFrac(c.q, paperC.q) > 0.85) s *= 0.4;
     c.s2 = s;
     if(c.src === 'paper') s *= 1.15;                         // kağıt bölgesi: anlam olarak sayfa
     if(c.src === 'prev') s *= 0.9;                           // eski dörtgen ancak yenisi zayıfsa kalır
@@ -911,7 +965,7 @@ function trackFrame(src, prev, anchor){
   }
   if(!best || best.s2 < 18) return {quad: null, score: best ? best.s : 0, cands: cands.map(c => [c.src, Math.round(c.s2)])};
   return {quad: best.q.map(p => [Math.max(0, Math.min(1, p[0]/w)), Math.max(0, Math.min(1, p[1]/h))]), score: best.s, src: best.src, es: best.es.map(x => x == null ? null : Math.round(x)),
-          cands: cands.map(c => [c.src, Math.round(c.s2)])};
+          cands: cands.map(c => [c.src, Math.round(c.s2)]), all: cands.map(c => ({src: c.src, s: Math.round(c.s2), es: c.es, band: +c.band.toFixed(1), q: c.q.map(p => [p[0]/w, p[1]/h])}))};
 }
 
 /* ---------- sayfa imzası (tekrar tespiti) ----------
@@ -3263,6 +3317,24 @@ function processCanvas(src, opts){
         }
       }
     }catch(e){ dbg.push('kenar hata: ' + (e && e.message)); }
+    /* canlı maskeyle AYNI seçim (trackFrame: kağıt bölgesi / kenar dörtgeni, kenar karşıtlığıyla puanlanır): ekranda
+       yeşil görülen dörtgen kırpılır. Yukarıdaki iki tespitten biri ona yakınsa (daha ince çözünürlüklü) o kullanılır;
+       ikisi de uzaksa (dantel kağıt sanılmış, yazı bloğu, sırt kıvrımı) takip dörtgeni geçerlidir */
+    try{
+      const tf = trackFrame(src, null, opts.pageHint || null, det.ok ? [det.quad.map(p => [p[0]/(W-1), p[1]/(H-1)])] : null);
+      if(tf && tf.quad){
+        const tq = tf.quad.map(p => [p[0]*(W-1), p[1]*(H-1)]);
+        const dq = q => Math.max(...q.map((p, i) => Math.abs(p[0]-tq[i][0])/W + Math.abs(p[1]-tq[i][1])/H));
+        const dd = det.ok ? dq(det.quad) : 9;
+        dbg.push(`takip dörtgeni ${tf.src} puan ${Math.round(tf.score)} (tespit farkı ${dd < 9 ? dd.toFixed(3) : '-'})`);
+        if(tf.src !== 'det' && dd > 0.04){
+          const tol = 0.03*Math.min(W, H);
+          const clipped = [0,1,2,3].map(e => { const a = tq[e], b = tq[(e+1)%4], mx = (a[0]+b[0])/2, my = (a[1]+b[1])/2; return Math.min(mx, my, W-1-mx, H-1-my) < tol; });
+          det = Object.assign({}, det, {ok: true, reason: '', quad: tq, comp: null, compFilled: null, clipped, edge: true, track: tf.src});
+          dbg.push('takip dörtgeni seçildi');
+        }
+      }
+    }catch(e){ dbg.push('takip hata: ' + (e && e.message)); }
     if(det.ok) quad = det.quad;
     dbg.push('tespit:' + (det.ok ? 'ok' : det.reason));
   }

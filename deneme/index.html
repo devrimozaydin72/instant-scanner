@@ -535,7 +535,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 34</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 35</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1794,6 +1794,11 @@ const trk = {
     }catch(_){ this.dead = true; }
   },
   reset(){ this.quad = null; this.pend = null; this.miss = 0; this.at = 0; },
+  // takip dörtgeni kadraj kenarına dayanıyor mu (köşelerden biri dışarıda)
+  clipped(){
+    const q = this.quad; if(!q || performance.now() - this.at > 400) return false;
+    return q.some(p => p[0] < 0.012 || p[1] < 0.012 || p[0] > 0.988 || p[1] > 0.988);
+  },
   feed(src, now, anchor){
     // işlemciyi denetimle paylaşır: takip süresinin ~1.2 katı aralık (denetim sürerken 2.5 katı), en az 66 ms
     if(this.dead || !this.w || !src || now - this.lastAt < Math.max(66, this.ms*(cam.live && cam.live.inflight ? 2.5 : 1.2))) return;
@@ -2130,7 +2135,14 @@ const cam = {
     const has = c => iss.some(i => i.code === c);
     // yazı bulunamadı (kapak, resim sayfası — ya da masa, el, çevrilmekte olan sayfa)
     if(has('finger')) return {ok:false, hard:true, code:'finger', hint:T('Parmağını yazının üstünden çek')};
-    if(m.mode && m.mode !== 'yazı') return {ok:false, soft:true, slow:true, code:'notext', hint:T('Yazı bulunamadı — kapak ya da resim sayfasıysa sabit tut')};
+    // yazısız sayfa (kapak, resim): dörtgenin bir kenarı kadraj dışındaysa önce dört köşe istenir (vFlat gibi);
+    // kullanıcı ~2.5 sn içinde düzeltmezse eskisi gibi uyarıyla alınır (sayfa kadraja hiç sığmıyorsa takılıp kalmasın)
+    if(m.mode && m.mode !== 'yazı'){
+      const L = this.live;
+      if(iss.some(i => i.code === 'cut') && L && performance.now() - (L.firstTryT || performance.now()) < 2500)
+        return {ok:false, hard:true, code:'cut', hint:T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır')};
+      return {ok:false, soft:true, slow:true, code:'notext', hint:T('Yazı bulunamadı — kapak ya da resim sayfasıysa sabit tut')};
+    }
     const cut = iss.find(i => i.code === 'cut');
     // telefon eğik tutuluyor mu: yazı bloğu kadrajın alt kısmına sıkışmış (üstte masa) ya da üst kenarı alt kenarından
     // belirgin biçimde dar (perspektif). Bu duruşta "uzaklaş" işe yaramaz (sayfa daha da aşağı kayar): telefon sayfanın
@@ -2564,6 +2576,7 @@ const cam = {
       let txt, cls = '';
       if(st === 'done'){ txt = this.doneHint || T('✓ Tamam — sonraki sayfa'); cls = 'ok'; }
       else if(L.verdict && L.verdict.hint && now - Math.max(L.lastTryWall, L.verdictAt || 0) < 1600){ txt = L.verdict.hint; cls = 'warn'; }
+      else if(st !== 'done' && trk.clipped() && (!L.verdict || L.verdict.code === 'notext' || L.verdict.code === 'cut')){ txt = T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'); cls = 'warn'; }
       else if(st === 'moving') txt = T(this.retake ? 'Sayfayı göster…' : 'Sayfayı göster — kendiliğinden çekilir');
       else txt = T('Sayfa aranıyor…');
       if(this.spreadOn && st !== 'done') txt = '📖 ' + T('2 sayfa') + ' · ' + txt;
@@ -2612,8 +2625,9 @@ const cam = {
     const s = Math.min(W/v.videoWidth, H/v.videoHeight), ox = (W - v.videoWidth*s)/2, oy = (H - v.videoHeight*s)/2;
     const done = st === 'done' && fresh;
     const judged = fresh && st !== 'moving';
-    const ok = done || !judged || L.polyOk;
-    const rgb = ok ? '47,224,176' : L.polyHard ? '255,92,122' : '255,176,32';
+    const clip = !done && tgt.length === 1 && trk.clipped();
+    const ok = !clip && (done || !judged || L.polyOk);
+    const rgb = ok ? '47,224,176' : (L.polyHard && judged) ? '255,92,122' : '255,176,32';
     const fa = done ? 0.45 : judged ? (ok ? 0.36 : 0.24) : 0.26;
     x.lineJoin = 'round';
     for(const poly of L.disp){

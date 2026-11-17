@@ -4701,6 +4701,8 @@ if(IN_WORKER){
   self.onmessage = async e => {
     const m = e.data;
     try{
+      // ısınma: ilk gerçek denetim telefonda ~2 kat yavaştır (derleme) — kamera açılmadan önce sahte bir sayfayla bir kez çalıştırılır
+      if(m.kind === 'warm'){ const t0 = Date.now(); try{ await handleQuick(m); }catch(_){} self.postMessage({id:m.id, ok:true, warm:true, ms: Date.now() - t0}); return; }
       if(m.kind === 'quick'){ self.postMessage(Object.assign({id:m.id, ok:true}, await handleQuick(m))); return; }
       if(m.kind === 'track'){ const c = mkCanvas(m.w, m.h); ctx2d(c).putImageData(new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h), 0, 0); const t0 = Date.now(); const r = trackFrame(c, m.prev, m.anchor, null, {fast: !!m.fast, ms: m.ms || 200}); self.postMessage({id:m.id, ok:true, r, fast: !!m.fast, ms: Date.now() - t0}); return; }
       const r = await handleProcess(m);

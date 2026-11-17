@@ -535,7 +535,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 36</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 37</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1758,6 +1758,7 @@ const quick = {
     try{
       this.w = new Worker('core.js');
       this.w.onmessage = e => {
+        if(e.data.warm){ diagLog.push('ısınma (hızlı denetim) ' + e.data.ms + ' ms'); return; }
         const j = this.jobs.get(e.data.id); if(!j) return;
         this.jobs.delete(e.data.id);
         if(e.data.ok) j.res(e.data);
@@ -1778,6 +1779,19 @@ const quick = {
   },
 };
 quick.init();
+/* ısınma: hızlı denetim işçisi sahte bir sayfayla bir kez çalıştırılır (ilk gerçek denetim — kapak — beklemesin) */
+setTimeout(() => {
+  if(quick.dead || !quick.w) return;
+  try{
+    const W = 360, H = 640, c = document.createElement('canvas'); c.width = W; c.height = H;
+    const x = c.getContext('2d', {willReadFrequently:true});
+    x.fillStyle = '#8a7d6b'; x.fillRect(0, 0, W, H);
+    x.fillStyle = '#f4f1ea'; x.fillRect(50, 70, 260, 470);
+    x.fillStyle = '#222'; for(let y=100; y<500; y+=14) for(let xx=70; xx<290; xx+=26 + (y*7 % 11)) x.fillRect(xx, y, 18 + (xx*3 % 7), 6);
+    const im = x.getImageData(0, 0, W, H);
+    quick.w.postMessage({id: -1, kind:'warm', w:W, h:H, buf:im.data.buffer, opts: Object.assign(procOpts({rot:0}), {rot:0, angRetry:false, spread:true, mask:true})}, [im.data.buffer]);
+  }catch(_){}
+}, 1200);
 
 /* canlı sayfa takibi: önizlemedeki yeşil dörtgen her ~70 ms'de, denetimden bağımsız ayrı bir işçide bulunur
    (küçük kare: kağıt bölgesi + kenar dörtgeni, core.js trackFrame). Yeni bir dörtgen ancak üst üste iki kez
@@ -1796,6 +1810,8 @@ const trk = {
     }catch(_){ this.dead = true; }
   },
   reset(){ this.quad = null; this.pend = null; this.miss = 0; this.at = 0; this.n = 0; },
+  // takip dörtgeni taze ve dört köşesi kadrajın içinde
+  page(){ return !!this.quad && performance.now() - this.at < this.ttl() && !this.clipped(); },
   // takip dörtgeni kadraj kenarına dayanıyor mu (köşelerden biri dışarıda)
   clipped(){
     const q = this.quad; if(!q || performance.now() - this.at > this.ttl()) return false;
@@ -2301,7 +2317,7 @@ const cam = {
       // diğer belirsiz durumda ~1.5 sn sonra bu duruşun en net karesi alınır
       // yazısız sayfa ve canlı takip sayfanın dört köşesini kadrajın içinde görüyor: ilk denetimde çekilir (kapak hemen).
       // Denetim önceki sayfaların yazı açısıyla yapıldıysa (yan çevrilmiş çift sayfanın yazısını görmeyebilir) değil
-      const trkPage = v.code === 'notext' && !snap.hinted && !!trk.quad && now - trk.at < trk.ttl() && !trk.clipped();
+      const trkPage = v.code === 'notext' && !snap.hinted && trk.page();
       const waitMs = !v.slow ? 500 : v.code === 'notext' ? (trkPage ? 250 : 600) : 1500, needTries = trkPage ? 1 : !v.slow || v.code === 'notext' ? 2 : 3;
       if(now - L.firstTryT >= waitMs && L.tries >= needTries && same){
         L.pre = {res, at: now, soft: v, moveSum: snap.moveSum, s0: snap.s, sig: snap.sig};
@@ -2595,8 +2611,11 @@ const cam = {
     if(now >= this.stickyUntil){
       let txt, cls = '';
       if(st === 'done'){ txt = this.doneHint || T('✓ Tamam — sonraki sayfa'); cls = 'ok'; }
+      // kadraja sığmayan sayfa: önce dört köşe istenir (vFlat gibi)
+      else if(trk.clipped() && (!L.verdict || L.verdict.code === 'notext' || L.verdict.code === 'cut')){ txt = T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'); cls = 'warn'; }
+      // yazısız sayfa (kapak, iç kapak) ve takip sayfanın dört köşesini görüyor: uyarı değil, "sabit tut" (çekim birazdan)
+      else if(L.verdict && L.verdict.code === 'notext' && trk.page() && now - Math.max(L.lastTryWall, L.verdictAt || 0) < 1600){ txt = T('Sabit tut — çekiliyor…'); cls = 'ok'; }
       else if(L.verdict && L.verdict.hint && now - Math.max(L.lastTryWall, L.verdictAt || 0) < 1600){ txt = L.verdict.hint; cls = 'warn'; }
-      else if(st !== 'done' && trk.clipped() && (!L.verdict || L.verdict.code === 'notext' || L.verdict.code === 'cut')){ txt = T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'); cls = 'warn'; }
       else if(st === 'moving') txt = T(this.retake ? 'Sayfayı göster…' : 'Sayfayı göster — kendiliğinden çekilir');
       else txt = T('Sayfa aranıyor…');
       if(this.spreadOn && st !== 'done') txt = '📖 ' + T('2 sayfa') + ' · ' + txt;
@@ -2646,7 +2665,7 @@ const cam = {
     const done = st === 'done' && fresh;
     const judged = fresh && st !== 'moving';
     const clip = !done && tgt.length === 1 && trk.clipped();
-    const ok = !clip && (done || !judged || L.polyOk);
+    const ok = !clip && (done || !judged || L.polyOk || (L.verdict && L.verdict.code === 'notext' && tgt.length === 1 && trk.page()));
     const rgb = ok ? '47,224,176' : (L.polyHard && judged) ? '255,92,122' : '255,176,32';
     const fa = done ? 0.45 : judged ? (ok ? 0.36 : 0.24) : 0.26;
     x.lineJoin = 'round';

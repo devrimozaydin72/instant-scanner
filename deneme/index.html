@@ -535,7 +535,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 37</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 38</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1779,17 +1779,30 @@ const quick = {
   },
 };
 quick.init();
-/* ısınma: hızlı denetim işçisi sahte bir sayfayla bir kez çalıştırılır (ilk gerçek denetim — kapak — beklemesin) */
+/* ısınma: hızlı denetim işçisi gerçek boyutta (630×1120) iki sahte kareyle bir kez çalıştırılır — yazılı sayfa ve
+   yazısız kapak — ilk gerçek denetim (kapak) derleme yüzünden ~2 kat yavaş kalmasın */
 setTimeout(() => {
   if(quick.dead || !quick.w) return;
   try{
-    const W = 360, H = 640, c = document.createElement('canvas'); c.width = W; c.height = H;
-    const x = c.getContext('2d', {willReadFrequently:true});
-    x.fillStyle = '#8a7d6b'; x.fillRect(0, 0, W, H);
-    x.fillStyle = '#f4f1ea'; x.fillRect(50, 70, 260, 470);
-    x.fillStyle = '#222'; for(let y=100; y<500; y+=14) for(let xx=70; xx<290; xx+=26 + (y*7 % 11)) x.fillRect(xx, y, 18 + (xx*3 % 7), 6);
-    const im = x.getImageData(0, 0, W, H);
-    quick.w.postMessage({id: -1, kind:'warm', w:W, h:H, buf:im.data.buffer, opts: Object.assign(procOpts({rot:0}), {rot:0, angRetry:false, spread:true, mask:true})}, [im.data.buffer]);
+    const W = 630, H = 1120;
+    const mkWarm = cover => {
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const x = c.getContext('2d', {willReadFrequently:true});
+      x.fillStyle = '#8a7d6b'; x.fillRect(0, 0, W, H);
+      x.fillStyle = '#d8cfbf'; for(let y=0; y<H; y+=9) for(let xx=(y*3)%9; xx<W; xx+=9) x.fillRect(xx, y, 4, 4);
+      if(cover){
+        x.fillStyle = '#1d3f6e'; x.fillRect(90, 120, 450, 820);
+        x.fillStyle = '#f5f5f5'; x.font = 'bold 64px sans-serif'; x.fillText('MAVİ', 140, 420); x.fillText('OKYANUS', 140, 500);
+      } else {
+        x.fillStyle = '#f4f1ea'; x.fillRect(90, 120, 450, 820);
+        x.fillStyle = '#222'; for(let y=170; y<880; y+=22) for(let xx=120; xx<500; xx+=34 + (y*7 % 13)) x.fillRect(xx, y, 22 + (xx*3 % 9), 9);
+      }
+      return x.getImageData(0, 0, W, H);
+    };
+    for(const cover of [true, false]){
+      const im = mkWarm(cover);
+      quick.w.postMessage({id: -1, kind:'warm', w:W, h:H, buf:im.data.buffer, opts: Object.assign(procOpts({rot:0}), {rot:0, angRetry:false, spread:true, mask:true})}, [im.data.buffer]);
+    }
   }catch(_){}
 }, 1200);
 

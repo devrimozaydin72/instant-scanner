@@ -897,7 +897,9 @@ function trackFrame(src, prev, anchor, extra, opt){
   // q'nun noktalarının ne kadarı r dörtgeninin içinde (kenar orta noktaları + köşeler + merkez)
   const insideFrac = (q, r) => {
     const pts = q.slice(); for(let i=0;i<4;i++) pts.push([(q[i][0]+q[(i+1)%4][0])/2, (q[i][1]+q[(i+1)%4][1])/2]);
-    let n = 0; for(const p of pts) if(inQuad(r, p[0], p[1])) n++;
+    // noktalar q'nun merkezine %6 çekilir: r'nin kenarı üzerindeki (ortak kenarlı) noktalar içeride sayılsın
+    const mx = (q[0][0]+q[1][0]+q[2][0]+q[3][0])/4, my = (q[0][1]+q[1][1]+q[2][1]+q[3][1])/4;
+    let n = 0; for(const p of pts) if(inQuad(r, p[0] + (mx - p[0])*0.06, p[1] + (my - p[1])*0.06)) n++;
     return n/pts.length;
   };
   /* kenar iyileştirme: her kenar ±%12 kaydırma, ±3° dönme içinde iç/dış farkının en büyük olduğu yere taşınır
@@ -978,13 +980,17 @@ function trackFrame(src, prev, anchor, extra, opt){
     if(!shapeOk(c.q)) s *= 0.4;
     { const tb = bandMin*1.4 + 3; if(c.band > tb) s *= Math.max(0.4, Math.pow(tb/c.band, 2)); }
     // kağıt bölgesinin içinde kalan kenar dörtgeni yazı bloğudur (kenar boşluğu dışarıda kalmış): sayfa değil
-    if((c.src === 'edge' || c.src === 'det') && paperC && quadArea(c.q) < quadArea(paperC.q)*0.8 && insideFrac(c.q, paperC.q) > 0.85) s *= 0.4;
+    // önceki / denetimin dörtgeni de kağıt bölgesinin bir parçasıysa (çevrilen yaprakla ezilmiş, başlık satırına takılmış
+    // dörtgen; yazı bloğundan genişletilmiş maske) bütün sayfa yeğlenir
+    // (kağıt bölgesinin kenar şeridi temizse — örtüye taşmış kağıt bölgesi önceki doğru dörtgeni ezmesin)
+    if((c.src === 'edge' || c.src === 'det' || ((c.src === 'prev' || c.src === 'anchor') && paperC && paperC.band <= c.band*1.3 + 2)) && paperC && quadArea(c.q) < quadArea(paperC.q)*0.8 && insideFrac(c.q, paperC.q) > 0.85) s *= 0.4;
     c.s2 = s;
     if(c.src === 'paper') s *= 1.15;                         // kağıt bölgesi: anlam olarak sayfa
     if(c.src === 'prev') s *= 0.9;                           // eski dörtgen ancak yenisi zayıfsa kalır
     if(prev && c.src !== 'prev' && near(c.q, prev.map(p => [p[0]*w, p[1]*h])) < 0.08) s *= 1.15;   // süreklilik
     if(aq && c.src !== 'anchor' && near(c.q, aq) < 0.08) s *= 1.4;
-    if(aq && c.src !== 'anchor' && c.src !== 'prev' && near(c.q, aq) > 0.2) s *= 0.6;
+    // denetimin dörtgeninden uzak aday cezalanır — o dörtgeni içine alan (daha büyük) sayfa adayı hariç
+    if(aq && c.src !== 'anchor' && c.src !== 'prev' && near(c.q, aq) > 0.2 && !(quadArea(c.q) > quadArea(aq) && insideFrac(aq, c.q) > 0.85)) s *= 0.6;
     c.score = s;
     if(!best || s > best.score) best = c;
   }

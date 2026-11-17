@@ -535,7 +535,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 35</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 36</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1784,7 +1784,9 @@ quick.init();
    görülünce gösterilir (tek karelik yanlış tespit titretmez); ~0.4 sn güncellenmezse gizlenir. */
 const trk = {
   w: null, busy: false, seq: 0, dead: false, c: null, lastAt: 0, ms: 0, fails: 0,
-  quad: null, at: 0, pend: null, miss: 0,
+  quad: null, at: 0, pend: null, miss: 0, n: 0, last: 0,
+  // gösterilen dörtgen bu süre güncellenmezse gizlenir (yavaş telefonda takip aralığına göre uzar)
+  ttl(){ return Math.max(600, this.last*3); },
   init(){
     if(proc.fallback){ this.dead = true; return; }
     try{
@@ -1793,15 +1795,15 @@ const trk = {
       this.w.onerror = e => { log('takip işçisi hatası', e.message); this.dead = true; this.busy = false; };
     }catch(_){ this.dead = true; }
   },
-  reset(){ this.quad = null; this.pend = null; this.miss = 0; this.at = 0; },
+  reset(){ this.quad = null; this.pend = null; this.miss = 0; this.at = 0; this.n = 0; },
   // takip dörtgeni kadraj kenarına dayanıyor mu (köşelerden biri dışarıda)
   clipped(){
-    const q = this.quad; if(!q || performance.now() - this.at > 400) return false;
+    const q = this.quad; if(!q || performance.now() - this.at > this.ttl()) return false;
     return q.some(p => p[0] < 0.012 || p[1] < 0.012 || p[0] > 0.988 || p[1] > 0.988);
   },
   feed(src, now, anchor){
-    // işlemciyi denetimle paylaşır: takip süresinin ~1.2 katı aralık (denetim sürerken 2.5 katı), en az 66 ms
-    if(this.dead || !this.w || !src || now - this.lastAt < Math.max(66, this.ms*(cam.live && cam.live.inflight ? 2.5 : 1.2))) return;
+    // işlemciyi denetimle paylaşır: son takip süresinin ~1.1 katı aralık (denetim sürerken 1.6 katı), en az 50 ms
+    if(this.dead || !this.w || !src || now - this.lastAt < Math.max(50, this.last*(cam.live && cam.live.inflight ? 1.6 : 1.1))) return;
     if(this.busy && now - this.sent < 1500) return;
     const W = src.width, H = src.height;
     if(!this.c || this.c.width !== W || this.c.height !== H) this.c = mk(W, H, true);
@@ -1809,17 +1811,24 @@ const trk = {
     x.drawImage(src, 0, 0);
     const im = x.getImageData(0, 0, W, H);
     this.busy = true; this.lastAt = now; this.sent = now;
-    this.w.postMessage({id: ++this.seq, kind:'track', w:W, h:H, buf:im.data.buffer, prev:this.quad, anchor:anchor || null}, [im.data.buffer]);
+    // dörtgen tazeyse 3 karenin 2'sinde hızlı izleme (yalnız önceki dörtgen kaydırılıp kenarları oturtulur)
+    const fast = !!this.quad && now - this.at < 500 && (this.n++ % 3 !== 0);
+    this.w.postMessage({id: ++this.seq, kind:'track', w:W, h:H, buf:im.data.buffer, prev:this.quad, anchor:anchor || null, fast}, [im.data.buffer]);
   },
   onRes(d){
     this.busy = false;
     if(!d.ok){ if(++this.fails > 5){ this.dead = true; log('takip kapatıldı:', d.error); } return; }
-    this.ms = this.ms ? this.ms*0.8 + d.ms*0.2 : d.ms;
+    this.ms = this.ms ? this.ms*0.8 + d.ms*0.2 : d.ms; this.last = this.last ? this.last*0.6 + d.ms*0.4 : d.ms;
+    if(d.fast) this.msF = this.msF ? this.msF*0.8 + d.ms*0.2 : d.ms; else this.msT = this.msT ? this.msT*0.8 + d.ms*0.2 : d.ms;
     const q = d.r && d.r.quad, now = performance.now();
-    if(!q){ if(++this.miss >= 3){ this.quad = null; this.pend = null; } return; }
+    // hızlı izleme dörtgeni kaybettiyse bir sonraki tam aramaya geçilir; tam arama üst üste 2 kez bulamazsa gizlenir
+    if(!q){ if(d.fast){ this.n = 0; return; } if(++this.miss >= 2){ this.quad = null; this.pend = null; this.n = 0; } return; }
     this.miss = 0;
     const near = (a, b) => !!(a && b) && a.every((p, i) => Math.abs(p[0] - b[i][0]) + Math.abs(p[1] - b[i][1]) < 0.07);
-    if(near(q, this.quad) || near(q, this.pend)){ this.quad = q; this.at = now; this.pend = null; }
+    // ilk bulunan sayfa HEMEN gösterilir (vFlat gibi); gösterilen dörtgenden uzak yeni bir dörtgen ise ancak
+    // üst üste iki kez görülünce (tek karelik yanlış tespit titretmez)
+    const stale = !this.quad || now - this.at > this.ttl();
+    if(stale || d.fast || near(q, this.quad) || near(q, this.pend)){ this.quad = q; this.at = now; this.pend = null; }
     else this.pend = q;
   },
 };
@@ -2110,7 +2119,8 @@ const cam = {
     if(L.phase !== 'done' && !L.tries){ L.firstTryT = performance.now(); L.tryMove = fr.moveSum; }
     const t0 = performance.now();
     fr.hold();
-    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: (this.sess.hintMiss || 0) % 2 ? undefined : this.sess.ang, angRetry: false, spread: true, mask: (this.maskN = (this.maskN || 0) + 1) % 2 === 1 || !L.polys})).then(res => {
+    fr.hinted = !((this.sess.hintMiss || 0) % 2) && this.sess.ang != null;
+    quick.run(this.scanner.snapshot(fr), Object.assign(procOpts({rot:0}), {rot:0, angHint: (this.sess.hintMiss || 0) % 2 ? undefined : this.sess.ang, angRetry: false, spread: true, pageHint: trk.quad && performance.now() - trk.at < 700 ? trk.quad : null, mask: (this.maskN = (this.maskN || 0) + 1) % 2 === 1 || !L.polys})).then(res => {
       L.inflight = false; L.chkMove = null;
       if(this.live !== L || !this.active){ fr.release(); this.dropKeep(L); return; }
       res.ms = performance.now() - t0;
@@ -2243,7 +2253,12 @@ const cam = {
         // satır imzası seyrek sayfada (içindekiler, kısa satırlar, yazısız) kararsızdır: orada son çekimden beri sayfa
         // çevirecek kadar hareket yoksa ve görüntü benzerse aynı sayfadır. Dolu yazı sayfasında imzaya güvenilir.
         const sparse = !res.lineSig || !S.last.lined || res.lineSig.length < 20 || S.last.rows < 20;
-        if(sparse){ if((L.phase === 'done' && moved < TURN_MIN && dd < NEW_T) || ((!res.lineSig || !S.last.lined) && dd < DUP_T)){ dupK = 0; dupWhy = `görüntü farkı ${dd.toFixed(1)}, hareket ${Math.round(moved)}, imza ${res.lineSig ? res.lineSig.length : 'yok'}/${S.last.lined ? S.last.rows : 'yok'}`; } }
+        // sayfa içerik imzası (dörtgenin içi: yazı, imza, logo, resim): tüm karenin kaba imzası masa ve sayfanın yeri
+        // aynı kaldığında iki farklı yazısız sayfayı ayıramaz (iç kapak, imzalı sayfa → 40 sn "zaten çekildi")
+        const ink = sparse ? C.inkMatch(res.inkSig, S.last.ink) : null;
+        if(ink != null && ink >= 0.8){ dupK = 0; dupWhy = `içerik imzası ${ink.toFixed(2)}`; }
+        else if(ink != null && ink < 0.55 && snap.moveSum - (S.last.ms0 != null ? S.last.ms0 : L.moveAt) >= TURN_MIN){ if(L.phase !== 'done') this.note(`  içerik imzası farklı (${ink.toFixed(2)}) → yeni sayfa`); }
+        else if(sparse){ if((L.phase === 'done' && moved < TURN_MIN && dd < NEW_T) || ((!res.lineSig || !S.last.lined) && dd < DUP_T)){ dupK = 0; dupWhy = `görüntü farkı ${dd.toFixed(1)}, hareket ${Math.round(moved)}, imza ${res.lineSig ? res.lineSig.length : 'yok'}/${S.last.lined ? S.last.rows : 'yok'}`; } }
         // kadraj hiç oynamadıysa (aynı duruş) görülen sayfa da aynıdır — imza tutmasa bile
         if(dupK < 0 && L.phase === 'done' && ((L.cap && L.cap.run === snap.run) || moved < 5)){ dupK = 0; dupWhy = 'kadraj oynamadı'; }
       }
@@ -2253,6 +2268,7 @@ const cam = {
     if(dupK >= 0){
       const q = S.recent[dupK];
       if(L.phase !== 'done') this.note(`  → çekilmiş sayfa (${dupK + 1} önceki; ${dupWhy})`);
+      else if(now - (L.dupLogAt || 0) > 4000){ L.dupLogAt = now; this.note(`  (bekleme) görülen sayfa çekilmiş sayılıyor: ${dupWhy}`); }
       if(L.phase === 'done') L.upTries++;
       this.markDone(snap);
       if(dupK === 0){ if(v.ok) this.upgrade(res, snap); }   // son sayfa hâlâ kadrajda: daha iyi kare → sessizce değiştir
@@ -2283,7 +2299,10 @@ const cam = {
       // "mükemmeli bekleme": küçük kusurda (eğik, alt payı az) ~½ sn, yazısız sayfada (kapak) ~0.6 sn; sayfa no / alt kısım
       // kadraj dışında olabilecekse (slow room) ~1.5 sn talimat gösterilir, sonra UYARIYLA alınır;
       // diğer belirsiz durumda ~1.5 sn sonra bu duruşun en net karesi alınır
-      const waitMs = !v.slow ? 500 : v.code === 'notext' ? 600 : 1500, needTries = !v.slow || v.code === 'notext' ? 2 : 3;
+      // yazısız sayfa ve canlı takip sayfanın dört köşesini kadrajın içinde görüyor: ilk denetimde çekilir (kapak hemen).
+      // Denetim önceki sayfaların yazı açısıyla yapıldıysa (yan çevrilmiş çift sayfanın yazısını görmeyebilir) değil
+      const trkPage = v.code === 'notext' && !snap.hinted && !!trk.quad && now - trk.at < trk.ttl() && !trk.clipped();
+      const waitMs = !v.slow ? 500 : v.code === 'notext' ? (trkPage ? 250 : 600) : 1500, needTries = trkPage ? 1 : !v.slow || v.code === 'notext' ? 2 : 3;
       if(now - L.firstTryT >= waitMs && L.tries >= needTries && same){
         L.pre = {res, at: now, soft: v, moveSum: snap.moveSum, s0: snap.s, sig: snap.sig};
         this.tryCapture(now);
@@ -2458,7 +2477,7 @@ const cam = {
     if(!(flagged || (f0 && f1 > f0*1.08) || (last.soft && notWorse) || (ext >= last.ext + 0.8 && notWorse))) return false;
     const p = state.pages.find(x => x.id === last.id);
     if(!p) return false;
-    last.q = q; last.ext = ext; last.soft = calm ? null : 'busy'; last.flag = null; last.fine = f1 || f0; last.ups++; last.sig = snap.sig; last.lined = !!res.lineSig; last.rows = res.lineSig ? res.lineSig.length : 0;
+    last.q = q; last.ext = ext; last.soft = calm ? null : 'busy'; last.flag = null; last.fine = f1 || f0; last.ups++; last.sig = snap.sig; last.lined = !!res.lineSig; last.rows = res.lineSig ? res.lineSig.length : 0; if(res.inkSig) last.ink = res.inkSig;
     if(res.lineSig){ p.lineSig = res.lineSig; if(S.recent[0] && S.recent[0].id === p.id) S.recent[0].lineSig = res.lineSig; }
     if(this.live.cap && this.live.cap.pid === p.id){ const c = this.live.cap; c.blur = false; c.s = snap.s; c.run = snap.run; c.moveSum = snap.moveSum; c.quadN = m.contN || m.blockN || m.quadN || c.quadN; }
     if(flagged){ this.chime(); this.flash(); this.sticky(T('✓ Düzgün kare alındı — sonraki sayfa'), 'ok', 900); }
@@ -2540,8 +2559,9 @@ const cam = {
     const noText = !!softV && softV.code === 'notext';
     // yazısız sayfa (kapak, resim) kısa süre önce çekilmiş başka bir yazısız sayfanın hemen ardından: satır imzası
     // olmadığından aynı sayfa olduğu (telefon/kitap döndürüldü, yeniden kadrajlandı) anlaşılamaz → "TEKRAR?" işareti
-    const ntDup = noText && !this.retake && !!S.last && S.last.noText && now - S.last.at < 10000;
-    if(ntDup) this.note(`  yazısız sayfa yazısız sayfanın ardından (${((now - S.last.at)/1000).toFixed(1)} sn) → TEKRAR? işareti`);
+    const inkM = noText && S.last ? C.inkMatch(res.inkSig, S.last.ink) : null;
+    const ntDup = noText && !this.retake && !!S.last && S.last.noText && now - S.last.at < 10000 && !(inkM != null && inkM < 0.8);
+    if(ntDup) this.note(`  yazısız sayfa yazısız sayfanın ardından (${((now - S.last.at)/1000).toFixed(1)} sn, içerik ${inkM == null ? '-' : inkM.toFixed(2)}) → TEKRAR? işareti`);
     const p = {id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:ntDup, issues:[], status:'busy',
                lineSig:res.lineSig || null, side, soft: flag, cap: S.id, noText};
     // sayfa sırası (bekletmeden): çevirince kamera sağ sayfada kalır ve önce o çekilirse, ardından gelen
@@ -2556,7 +2576,7 @@ const cam = {
     S.recent.unshift({id:p.id, lineSig:p.lineSig, side}); if(S.recent.length > 12) S.recent.pop();
     S.last = {id:p.id, q:this.quality(m), ext:this.extent(m), soft: softV ? softV.code : (fr.busy ? 'busy' : null),
               flag, fine: bl && !bl.unknown ? bl.page : 0, ups:0, sig:fr.sig, lined:!!res.lineSig, rows: res.lineSig ? res.lineSig.length : 0,
-              noText, at: now};
+              noText, at: now, ink: res.inkSig || null, ms0: fr.moveSum};
     // çekimden sonra aynı duruşta daha net kare gelirse değiştirilir (swapIfSharper)
     L.cap = {pid:p.id, s:fr.s, run:fr.run, moveSum:fr.moveSum, at:now, swaps:0, blur: flag === 'blur', busy: fr.busy, quadN: m.contN || m.blockN || m.quadN || null};
     this.count++; this.updateCounter();
@@ -2614,7 +2634,7 @@ const cam = {
     const fresh = !!L.polys && now - L.polyAt < 1500 && sc.moveSum - (L.polyMove || 0) < MOVE_CHECK/2;
     let tgt = null;
     if(this.spreadOn && fresh && L.polys.length === 2) tgt = L.polys;
-    else if(trk.quad && now - trk.at < 400) tgt = [trk.quad];
+    else if(trk.quad && now - trk.at < trk.ttl()) tgt = [trk.quad];
     else if(trk.dead && fresh) tgt = L.polys;            // takip işçisi yoksa: yalnız denetim sonucu
     if(!tgt){ L.disp = null; return; }
     // yumuşak geçiş; yeni sayfa / büyük sıçrama kaydırılmaz, doğrudan yeni yerinde çizilir
@@ -2726,7 +2746,7 @@ const cam = {
     this.active = false;
     proc.pump();                      // bekleyen sayfalar artık tüm işleyicilerle işlenir
     if(typeof ocr !== 'undefined') ocr.kick(300);   // metin tanıma kamera kapanınca başlar
-    this.note('sayfa takibi ' + (trk.dead ? 'yok' : 'ort ' + Math.round(trk.ms) + ' ms'));
+    this.note('sayfa takibi ' + (trk.dead ? 'yok' : 'ort ' + Math.round(trk.ms) + ' ms (tam ' + Math.round(trk.msT || 0) + ', hızlı ' + Math.round(trk.msF || 0) + ')'));
     window.__trkMs = trk.ms;
     this.keepAwake(false);
     cancelAnimationFrame(this.raf);

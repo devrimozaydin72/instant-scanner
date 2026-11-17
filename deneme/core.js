@@ -824,10 +824,18 @@ function edgeQuad(src, maxSide){
    hemen içi ile hemen dışının renk farkı (gerçek sayfa kenarı = kağıt / zemin sınırı). Önceki karede bulunan dörtgene
    yakın aday yeğlenir (titreme olmaz); son denetimin bulduğu sayfa (anchor — kare o zamandan beri oynamadıysa) hem aday
    olur hem de ona yakın adaylar öne geçer: yazı bloğu ile sayfa karışmaz. Dönen: null | {quad (0-1), score, src} */
-function trackFrame(src, prev, anchor, extra){
-  const W = src.width, H = src.height, MS = 200, sc = Math.min(1, MS/Math.max(W, H));
+function trackFrame(src, prev, anchor, extra, opt){
+  // fast: yalnız önceki dörtgen (ve denetimin sayfası) kenar iyileştirmeyle izlenir — tam arama (kağıt bölgesi,
+  // kenar dörtgeni) yapılmaz. Canlı takipte her 3 karenin 2'si böyledir (telefonda takip ~3 kat hızlanır).
+  const fast = !!(opt && opt.fast && prev && prev.length === 4);
+  const W = src.width, H = src.height, MS = (opt && opt.ms) || 200, sc = Math.min(1, MS/Math.max(W, H));
   const w = Math.max(24, Math.round(W*sc)), h = Math.max(24, Math.round(H*sc));
-  const small = downscale(src, w, h), id = ctx2d(small).getImageData(0, 0, w, h).data;
+  // giriş önce 2×MS'ye, oradan tam yarıya küçültülür: sonuç kaynağın çözünürlüğünden bağımsızdır (dantel dokusu
+  // her çözünürlükte aynı yumuşar — 1080p ve 4K karede de canlı önizlemedeki dörtgen bulunur)
+  const sc2 = Math.min(1, 2*MS/Math.max(W, H));
+  const base = sc2 < 1 ? downscale(src, Math.max(48, Math.round(W*sc2)), Math.max(48, Math.round(H*sc2))) : src;
+  const bk = w/base.width;
+  const small = downscale(base, w, h), id = ctx2d(small).getImageData(0, 0, w, h).data;
   const ch = [new Float32Array(w*h), new Float32Array(w*h), new Float32Array(w*h)];
   for(let i=0;i<w*h;i++){ ch[0][i] = id[i*4]; ch[1][i] = id[i*4+1]; ch[2][i] = id[i*4+2]; }
   for(const c of ch) boxBlur(c, w, h, 1, 1);
@@ -861,10 +869,10 @@ function trackFrame(src, prev, anchor, extra){
   };
   const cands = [];
   let d = null, e = null;
-  try{ d = detectPage(src, MS); }catch(_){}
-  if(d && d.ok) cands.push({src: 'paper', q: d.quad.map(p => [p[0]*sc, p[1]*sc]), fill: d.fill});
-  try{ e = edgeQuad(src, MS); }catch(_){}
-  if(e && e.cov > 0.6) cands.push({src: 'edge', q: e.quad.map(p => [p[0]*sc, p[1]*sc]), cov: e.cov});
+  if(!fast){ try{ d = detectPage(base, MS); }catch(_){} }
+  if(d && d.ok) cands.push({src: 'paper', q: d.quad.map(p => [p[0]*bk, p[1]*bk]), fill: d.fill});
+  if(!fast){ try{ e = edgeQuad(base, MS); }catch(_){} }
+  if(e && e.cov > 0.6) cands.push({src: 'edge', q: e.quad.map(p => [p[0]*bk, p[1]*bk]), cov: e.cov});
   if(prev && prev.length === 4) cands.push({src: 'prev', q: prev.map(p => [p[0]*w, p[1]*h])});
   const aq = anchor && anchor.length === 4 ? anchor.map(p => [p[0]*w, p[1]*h]) : null;
   if(aq) cands.push({src: 'anchor', q: aq});
@@ -912,7 +920,7 @@ function trackFrame(src, prev, anchor, extra){
     }
     return n ? s/n : 0;
   };
-  const refine = q0 => {
+  const refine = (q0, loose) => {
     let Q = q0.map(p => p.slice());
     for(let pass=0; pass<2; pass++) for(let e=0;e<4;e++){
       const cx = (Q[0][0]+Q[1][0]+Q[2][0]+Q[3][0])/4, cy = (Q[0][1]+Q[1][1]+Q[2][1]+Q[3][1])/4;
@@ -932,14 +940,31 @@ function trackFrame(src, prev, anchor, extra){
           if(v != null && v > bestS && innerTex(P0, P1, cx, cy) <= Math.max(t0*1.3, t0 + 3)){ bestS = v; bestE = [P0, P1]; }
         }
       }
-      if(bestE && bestS > cur*1.15 + 3){
+      if(bestE && bestS > (loose ? cur*1.04 + 1 : cur*1.15 + 3)){
         const nq = Q.map(p => p.slice()); nq[e] = bestE[0]; nq[(e+1)%4] = bestE[1];
         if(isConvex(nq) && shapeOk(nq)) Q = nq;
       }
     }
     return Q;
   };
-  for(const c of cands) if(c.src === 'paper' || c.src === 'edge') c.q = refine(c.q);   // 'det' zaten ince çözünürlükte bulundu
+  // hızlı izleme: önce bütün dörtgen kaydırılarak (±%9, kaba → ince) kenarların en iyi oturduğu yer bulunur
+  if(fast){
+    const pc = cands.find(c => c.src === 'prev');
+    if(pc){
+      let bq = pc.q, bs = quadS(pc.q).s;
+      const R = Math.round(Math.max(w, h)*0.09);
+      for(const st of [Math.max(2, Math.round(R/5)), 1]){
+        const c0 = bq, rr = st === 1 ? 2 : R;
+        for(let dy=-rr; dy<=rr; dy+=st) for(let dx=-rr; dx<=rr; dx+=st){
+          if(!dx && !dy) continue;
+          const q = c0.map(p => [p[0]+dx, p[1]+dy]), v = quadS(q).s;
+          if(v > bs){ bs = v; bq = q; }
+        }
+      }
+      pc.q = bq;
+    }
+  }
+  for(const c of cands) if(c.src === 'paper' || c.src === 'edge' || (fast && c.src === 'prev')) c.q = refine(c.q, fast && c.src === 'prev');   // 'det' zaten ince çözünürlükte bulundu
   // kenar şeridinin dokusu: gerçek sayfanın kenarının hemen içi düz kağıttır (kenar boşluğu, kapak); dörtgen örtüye
   // taşmışsa şerit dantel dokuludur → doku belirgin biçimde en düz adayınkinden fazlaysa puan düşer
   for(const c of cands) c.band = bandTex(c.q, tex, w, h);
@@ -963,9 +988,60 @@ function trackFrame(src, prev, anchor, extra){
     c.score = s;
     if(!best || s > best.score) best = c;
   }
-  if(!best || best.s2 < 18) return {quad: null, score: best ? best.s : 0, cands: cands.map(c => [c.src, Math.round(c.s2)])};
+  if(!best || best.s2 < 18) return {quad: null, score: best ? best.s : 0, cands: cands.map(c => [c.src, Math.round(c.s2)]), all: cands.map(c => ({src: c.src, s: Math.round(c.s2), es: c.es, band: +c.band.toFixed(1), q: c.q.map(p => [p[0]/w, p[1]/h])}))};
   return {quad: best.q.map(p => [Math.max(0, Math.min(1, p[0]/w)), Math.max(0, Math.min(1, p[1]/h))]), score: best.s, src: best.src, es: best.es.map(x => x == null ? null : Math.round(x)),
           cands: cands.map(c => [c.src, Math.round(c.s2)]), all: cands.map(c => ({src: c.src, s: Math.round(c.s2), es: c.es, band: +c.band.toFixed(1), q: c.q.map(p => [p[0]/w, p[1]/h])}))};
+}
+
+/* ---------- sayfa içerik imzası (yazısız / seyrek sayfalarda tekrar tespiti) ----------
+   Sayfa dörtgeninin içi düzleştirilir (kenarlardan %5 içeride: zemin karışmasın), yerel arka plandan sapma
+   (yazı, imza, logo, resim) 20×28 hücrede toplanır. Tüm karenin kaba imzası masa ve sayfanın yeri aynı kaldığında
+   iki farklı yazısız sayfayı ayıramaz; bu imza yalnız sayfanın İÇERİĞİNE bakar. */
+const INK_W = 20, INK_H = 28;
+function inkSig(c, qN){
+  if(!qN || qN.length !== 4) return null;
+  const W = c.width, H = c.height, sc = Math.min(1, 560/Math.max(W, H));
+  const w = Math.max(16, Math.round(W*sc)), h = Math.max(16, Math.round(H*sc));
+  const im = ctx2d(downscale(c, w, h)).getImageData(0, 0, w, h).data;
+  const GW = INK_W*3, GH = INK_H*3, m = 0.05;
+  const hm = homography([[0,0],[GW-1,0],[GW-1,GH-1],[0,GH-1]], [[0,0],[1,0],[1,1],[0,1]].map(([u, v]) => {
+    const uu = m + u*(1 - 2*m), vv = m + v*(1 - 2*m);
+    const top = [qN[0][0] + (qN[1][0]-qN[0][0])*uu, qN[0][1] + (qN[1][1]-qN[0][1])*uu];
+    const bot = [qN[3][0] + (qN[2][0]-qN[3][0])*uu, qN[3][1] + (qN[2][1]-qN[3][1])*uu];
+    return [(top[0] + (bot[0]-top[0])*vv)*(w-1), (top[1] + (bot[1]-top[1])*vv)*(h-1)];
+  }));
+  if(!hm) return null;
+  const g = new Float32Array(GW*GH);
+  for(let v=0; v<GH; v++) for(let u=0; u<GW; u++){
+    const [x, y] = applyH(hm, u, v);
+    const X = Math.max(0, Math.min(w-1, Math.round(x))), Y = Math.max(0, Math.min(h-1, Math.round(y))), i = (Y*w + X)*4;
+    g[v*GW+u] = 0.299*im[i] + 0.587*im[i+1] + 0.114*im[i+2];
+  }
+  const bg = g.slice(); boxBlur(bg, GW, GH, 6, 2);
+  const out = new Float32Array(INK_W*INK_H); let e = 0;
+  for(let v=0; v<GH; v++) for(let u=0; u<GW; u++){
+    const d = Math.max(0, Math.abs(g[v*GW+u] - bg[v*GW+u]) - 3);
+    out[Math.floor(v/3)*INK_W + Math.floor(u/3)] += d; e += d;
+  }
+  return {v: Array.from(out, x => Math.round(x)), e: e/(GW*GH)};
+}
+/* iki içerik imzasının benzerliği (±1 hücre kaydırmada en iyi kosinüs; 1 = aynı). İkisi de boşsa null (karar verilemez);
+   içerik miktarı çok farklıysa (biri boşa yakın, öteki dolu — imzalı sayfa / iç kapak) farklı sayfadır */
+function inkMatch(a, b){
+  if(!a || !b) return null;
+  const lo = Math.min(a.e, b.e), hi = Math.max(a.e, b.e);
+  if(hi < 0.6) return null;
+  if(hi > Math.max(1.5, lo*3)) return 0;
+  if(lo < 0.6) return null;
+  let best = 0;
+  for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){
+    let ab = 0, aa = 0, bb = 0;
+    for(let y=Math.max(0, dy); y<INK_H+Math.min(0, dy); y++) for(let x=Math.max(0, dx); x<INK_W+Math.min(0, dx); x++){
+      const p = a.v[y*INK_W+x], q = b.v[(y-dy)*INK_W + x-dx]; ab += p*q; aa += p*p; bb += q*q;
+    }
+    if(aa > 0 && bb > 0) best = Math.max(best, ab/Math.sqrt(aa*bb));
+  }
+  return best;
 }
 
 /* ---------- sayfa imzası (tekrar tespiti) ----------
@@ -4613,14 +4689,20 @@ async function handleQuick(m){
   }
   const ang = r.metrics && r.metrics.ang;
   if(spreadOn && !hintSide && ang != null && along(ang) > 0.7){ const sp = quickSpread(c, Object.assign({}, m.opts, {angHint: ang})); if(sp) return withMask(sp); }
-  return withMask({issues: r.issues, metrics: r.metrics, dbg: r.dbg, lineSig: r.lineSig || null});
+  const out = withMask({issues: r.issues, metrics: r.metrics, dbg: r.dbg, lineSig: r.lineSig || null});
+  // sayfa içerik imzası (yazısız / seyrek sayfa tekrar tespiti): canlı takip dörtgeni, yoksa sayfa maskesi / yazı dörtgeni
+  try{
+    const mt = out.metrics || {}, hq = (m.opts && m.opts.pageHint) || (mt.polys && mt.polys.length === 1 ? mt.polys[0] : null) || mt.quadN;
+    out.inkSig = hq ? inkSig(c, hq) : null;
+  }catch(_){ out.inkSig = null; }
+  return out;
 }
 if(IN_WORKER){
   self.onmessage = async e => {
     const m = e.data;
     try{
       if(m.kind === 'quick'){ self.postMessage(Object.assign({id:m.id, ok:true}, await handleQuick(m))); return; }
-      if(m.kind === 'track'){ const c = mkCanvas(m.w, m.h); ctx2d(c).putImageData(new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h), 0, 0); const t0 = Date.now(); const r = trackFrame(c, m.prev, m.anchor); self.postMessage({id:m.id, ok:true, r, ms: Date.now() - t0}); return; }
+      if(m.kind === 'track'){ const c = mkCanvas(m.w, m.h); ctx2d(c).putImageData(new ImageData(new Uint8ClampedArray(m.buf), m.w, m.h), 0, 0); const t0 = Date.now(); const r = trackFrame(c, m.prev, m.anchor, null, {fast: !!m.fast, ms: m.ms || 200}); self.postMessage({id:m.id, ok:true, r, fast: !!m.fast, ms: Date.now() - t0}); return; }
       const r = await handleProcess(m);
       self.postMessage(Object.assign({id:m.id, ok:true}, r));
     }catch(err){
@@ -4633,6 +4715,6 @@ G.ScanCore = {
   mkCanvas, ctx2d, canvasToBlob, downscale, grayOf, toGray, mean, lapVar, quantile,
   detectPage, detectPageData, pageSignature, sigDiff, processCanvas, handleProcess, handleQuick, lineMatch,
   txFind, txOrient, txWarp, txTrace, txBlocks, inkOf,
-  rotateCanvas, estimateTextField, edgeQuad, trackFrame, spreadGeometry, spreadHalves, spreadMapN, quickSpread, estimateAspect, homography, applyH, inQuad,
+  rotateCanvas, estimateTextField, edgeQuad, trackFrame, inkSig, inkMatch, spreadGeometry, spreadHalves, spreadMapN, quickSpread, estimateAspect, homography, applyH, inQuad,
 };
 })(typeof self !== 'undefined' ? self : this);

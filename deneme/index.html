@@ -617,7 +617,8 @@
 </div>
 
 <video id="vid" muted playsinline preload="auto" hidden></video>
-<div id="legalModal" hidden style="position:fixed; inset:0; z-index:60; background:#0f1420; display:flex; flex-direction:column">
+<style>#legalModal{position:fixed; inset:0; z-index:60; background:#0f1420; display:flex; flex-direction:column} #legalModal[hidden]{display:none !important}</style>
+<div id="legalModal" hidden>
   <div style="display:flex; justify-content:flex-end; padding:calc(env(safe-area-inset-top) + 8px) 12px 8px"><button class="btn" id="legalClose" data-t>Kapat</button></div>
   <iframe id="legalFrame" title="legal" style="flex:1; border:0; background:#fff; width:100%"></iframe>
 </div>

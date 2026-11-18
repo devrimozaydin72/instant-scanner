@@ -93,6 +93,10 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
     private var visionMs: Double = 0
     private var t0 = CACurrentMediaTime()
     private var visibleSince: CFTimeInterval = 0
+    private var prevThumb: [UInt8]? = nil
+    private var motion: Double = 0          // kareler arası ortalama parlaklık farkı (0-255)
+    private var waitSince: CFTimeInterval = 0
+    private var forceShot = false           // ekrana dokunuldu: o anki sayfa hemen çekilir
 
     // ana iş parçacığı
     private var pages: [[String: Any]] = []
@@ -153,6 +157,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         doneBtn.addTarget(self, action: #selector(finish), for: .touchUpInside)
         view.addSubview(doneBtn)
 
+        view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapShot)))
         thumb.translatesAutoresizingMaskIntoConstraints = false
         thumb.contentMode = .scaleAspectFill; thumb.clipsToBounds = true
         thumb.layer.cornerRadius = 6; thumb.layer.borderColor = UIColor.white.cgColor; thumb.layer.borderWidth = 1.5
@@ -235,6 +240,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         guard let pb = CMSampleBufferGetImageBuffer(sb) else { return }
         let now = CACurrentMediaTime()
         bufSize = CGSize(width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb))
+        motion = frameMotion(pb)
         let req = VNDetectDocumentSegmentationRequest()
         let a = CACurrentMediaTime()
         try? VNImageRequestHandler(cvPixelBuffer: pb, orientation: .up, options: [:]).perform([req])
@@ -266,27 +272,47 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         let stable = span >= 0.30 && wobble < 0.018
         let inFrame = q.inside(0.012)
 
+        if forceShot && phase != .capturing {
+            forceShot = false
+            note("dokunarak çekim")
+            shoot(q, pb: pb, now: now)
+            return
+        }
         switch phase {
         case .capturing:
             return
         case .waitChange:
-            if wobble > 0.06 || (capQuad.map { $0.maxDist(q) > 0.12 } ?? false) { disturbed = true }
+            // sayfa çevrildi mi: görüntüde belirgin hareket (çevrilen yaprak, el), dörtgen kayboldu / oynadı
+            if motion > 14 || wobble > 0.06 || (capQuad.map { $0.maxDist(q) > 0.12 } ?? false) { disturbed = true }
             guard stable && inFrame else { setHint(S("next", "✓ Tamam — sonraki sayfa")); return }
             let sig = Self.signature(CIImage(cvPixelBuffer: pb), q)
             let d = (sig != nil && lastSig != nil) ? Self.sigDiff(sig!, lastSig!) : 9
-            if d > 0.55 || (disturbed && d > 0.40) {
+            // yazılı sayfalar küçük imzada birbirine benzer: çevirme hareketi görüldüyse küçük fark da yeni sayfadır;
+            // hiç hareket yoksa (aynı duruş) ancak belirgin farkta
+            if d > 0.55 || (disturbed && d > 0.22) {
                 note(String(format: "yeni sayfa (içerik farkı %.2f%@)", d, disturbed ? ", hareket" : ""))
                 phase = .hunting; disturbed = false
-            } else { setHint(S("next", "✓ Tamam — sonraki sayfa")); return }
+            } else {
+                if now - waitSince > 3, Int(now * 2) % 6 == 0 { note(String(format: "aynı sayfa bekleniyor (fark %.2f, hareket %@)", d, disturbed ? "var" : "yok")) }
+                setHint(S("next", "✓ Tamam — sonraki sayfa")); return
+            }
             fallthrough
         case .hunting:
             if !inFrame { setHint(S("corners", "Dört köşe kadrajda olsun — telefonu biraz uzaklaştır"), warn: true); return }
             if !stable { setHint(S("hold", "Sabit tut — çekiliyor…")); return }
+            note(String(format: "çekim (sayfa görünür→sabit %.2f sn, model %.0f ms)", now - visibleSince, visionMs))
+            shoot(q, pb: pb, now: now)
+        }
+    }
+
+    @objc private func tapShot() { videoQueue.async { self.forceShot = true } }
+
+    private func shoot(_ q: PageQuad, pb: CVPixelBuffer, now: CFTimeInterval) {
+        do {
             lastSig = Self.signature(CIImage(cvPixelBuffer: pb), q)
             capQuad = q
             phase = .capturing
             setHint(S("hold", "Sabit tut — çekiliyor…"))
-            note(String(format: "çekim (sayfa görünür→sabit %.2f sn, model %.0f ms)", now - visibleSince, visionMs))
             let s = AVCapturePhotoSettings()
             s.photoQualityPrioritization = .balanced
             s.maxPhotoDimensions = photoOut.maxPhotoDimensions
@@ -307,7 +333,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         }
         AudioServicesPlaySystemSound(1057)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        videoQueue.async { self.phase = .waitChange; self.disturbed = false }
+        videoQueue.async { self.phase = .waitChange; self.disturbed = false; self.waitSince = CACurrentMediaTime() }
         procQueue.async {
             defer { DispatchQueue.main.async { self.pending -= 1 } }
             guard var img = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return }
@@ -334,6 +360,21 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                 self.thumb.image = thumbImg
             }
         }
+    }
+
+    /// kareler arası hareket: Y düzleminden 24×32 örnek, önceki kareyle ortalama mutlak fark
+    private func frameMotion(_ pb: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard CVPixelBufferGetPlaneCount(pb) > 0, let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return 0 }
+        let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0), bpr = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+        let p = base.assumingMemoryBound(to: UInt8.self)
+        var t = [UInt8](repeating: 0, count: 24 * 32)
+        for y in 0..<32 { for x in 0..<24 { t[y * 24 + x] = p[(y * h / 32 + h / 64) * bpr + x * w / 24 + w / 48] } }
+        defer { prevThumb = t }
+        guard let o = prevThumb else { return 0 }
+        var s = 0; for i in 0..<t.count { s += abs(Int(t[i]) - Int(o[i])) }
+        return Double(s) / Double(t.count)
     }
 
     // MARK: çizim

@@ -1,6 +1,6 @@
 {
-  "appId": "io.github.devrimozaydin72.instantscanner",
-  "appName": "INSTANT SCANNER",
+  "appId": "com.innowhatif.instantscanner",
+  "appName": "Instant Scanner",
   "webDir": "www",
   "backgroundColor": "#0f1420",
   "ios": {

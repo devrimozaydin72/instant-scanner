@@ -170,6 +170,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
     private var lastWords = Set<String>()   // son çekilen sayfanın kelimeleri (Apple metin tanıma)
     private var lastTextCheck: CFTimeInterval = 0
     private var newPageAt: CFTimeInterval = 0
+    private var outSince: CFTimeInterval = 0
 
     // ana iş parçacığı
     private var pages: [[String: Any]] = []
@@ -376,7 +377,18 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             }
             fallthrough
         case .hunting:
-            if !inFrame { setHint(S("corners", "Dört köşe kadrajda olsun — telefonu biraz uzaklaştır"), warn: true); return }
+            if !inFrame {
+                // açık kitap kadrajı dolduruyor olabilir: köşe dışarıda ama sayfa 1 sn sabitse yine çekilir (kırpma yazıya göre yapılır)
+                if stable { if outSince == 0 { outSince = now } } else { outSince = 0 }
+                if outSince > 0 && now - outSince > 1.0 {
+                    outSince = 0
+                    note("köşe kadraj dışında ama 1 sn sabit → çekim")
+                    shoot(q, pb: pb, now: now)
+                    return
+                }
+                setHint(S("corners", "Dört köşe kadrajda olsun — telefonu biraz uzaklaştır"), warn: true); return
+            }
+            outSince = 0
             if !stable { setHint(S("hold", "Sabit tut — çekiliyor…")); return }
             note(String(format: "çekim (yeni sayfa→çekim %.2f sn, model %.0f ms)", newPageAt > 0 ? now - newPageAt : now - t0, visionMs))
             shoot(q, pb: pb, now: now)
@@ -832,12 +844,18 @@ enum PageText {
         return best
     }
 
-    /// iki kelime kümesi aynı sayfanın mı? (iki tarafta da yeterli kelime yoksa nil → görüntü imzasına bakılır)
+    /// iki kelime kümesi aynı sayfanın mı? true / false; kelimeler karar vermeye yetmiyorsa nil (görüntü imzasına bakılır)
     static func same(_ a: Set<String>, _ b: Set<String>) -> Bool? {
-        // biri dolu yazı sayfası, öteki yazısız (kapak, iç kapak): farklı sayfa
-        if (a.count >= 25 && b.count < 6) || (b.count >= 25 && a.count < 6) { return false }
-        guard a.count >= 12, b.count >= 12 else { return nil }
-        return Double(a.intersection(b).count) / Double(min(a.count, b.count)) > 0.45
+        let lo = min(a.count, b.count), hi = max(a.count, b.count)
+        // kelime sayıları çok farklı (dolu sayfa / az yazılı sayfa): farklı sayfa
+        if hi >= 15 && Double(lo) < Double(hi) * 0.3 { return false }
+        if lo >= 3 {
+            let r = Double(a.intersection(b).count) / Double(lo)
+            // ortak kelimeler + benzer kelime sayısı (kitap adı gibi birkaç ortak kelime iki farklı az yazılı sayfada da olur)
+            if r >= 0.45 && Double(lo) >= Double(hi) * 0.5 { return true }
+            if r < 0.15 { return false }     // hızlı tanıma gürültülü olsa da aynı sayfada ortak kelime çıkar
+        }
+        return nil
     }
 
     /// aranabilir PDF / Word / TXT için tam metin tanıma: kelime kutuları (piksel, sol-üst orijin) + paragraflar

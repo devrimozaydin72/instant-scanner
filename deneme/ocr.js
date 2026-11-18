@@ -90,7 +90,24 @@ const ocr = {
       this.busy = false; this.cur = null; this.emit();
     }
   },
+  /* iPhone uygulaması: Apple'ın cihazdaki metin tanıması (Vision) — Tesseract'tan hızlı ve isabetli */
+  async runNative(p, gen){
+    const AP = {tur:'tr-TR', eng:'en-US', spa:'es-ES', por:'pt-BR', fra:'fr-FR', rus:'ru-RU', ara:'ar-SA', chi_sim:'zh-Hans', hin:'hi-IN'};
+    const ver = p.ver, lang = this.key(), t0 = performance.now();
+    const data = await blobToBase64(p.procBlob);
+    const uri = (await native.call('Filesystem', 'writeFile', {path: 'ocr-' + p.id + '.jpg', data, directory: 'CACHE'})).uri;
+    const r = await native.call('NativeScanner', 'ocr', {path: uri, langs: this.langs().map(l => AP[l]).filter(Boolean)});
+    if(gen !== this.gen || p.ver !== ver) return;
+    p.ocr = {ver, lang, w: r.w, h: r.h, words: (r.words || []).map(w => [w[0], w[1], w[2], w[3], w[4], null]), paras: r.paras || [], conf: 90};
+    diagLog.push(`ocr ${state.pages.indexOf(p) + 1}. sayfa ${Math.round(performance.now() - t0)}ms (Apple ${r.ms}ms) kelime ${p.ocr.words.length}`);
+    try{ native.call('Filesystem', 'deleteFile', {path: 'ocr-' + p.id + '.jpg', directory: 'CACHE'}).catch(() => {}); }catch(_){}
+    if(typeof session !== 'undefined'){ session.saved.delete(p.id); session.schedule(); }
+  },
   async run(p, gen){
+    if(native.has('NativeScanner') && !this.nativeFailed){
+      try{ return await this.runNative(p, gen); }
+      catch(e){ this.nativeFailed = true; diagLog.push('Apple metin tanıma hata → Tesseract: ' + (e && e.message)); }
+    }
     const w = await this.ensureWorker();
     if(gen !== this.gen) return;
     const ver = p.ver, lang = this.key(), t0 = performance.now();

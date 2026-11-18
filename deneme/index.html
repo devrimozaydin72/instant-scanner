@@ -3036,6 +3036,19 @@ $('btnRetakeAll').onclick = () => startRetake(badPages().map(p => p.id));
    ============================================================ */
 /* iPhone uygulaması: canlı tarama yerel ekranda (Apple'ın cihazdaki belge modeli — her karede köşeler, otomatik çekim).
    Çekilen tam çözünürlüklü kareler + köşeler buraya döner; kırpma, düzleştirme, metin tanıma ve PDF burada yapılır. */
+/* karede açık kitap (iki sayfa) var mı: hızlı denetimin çift sayfa yolu; varsa iki yarı (okuma sırasıyla) */
+async function splitIfSpread(blob){
+  try{
+    const bmp = await createImageBitmap(blob);
+    const k = Math.min(1, QUICK_MAX/Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width*k); c.height = Math.round(bmp.height*k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); if(bmp.close) bmp.close();
+    const res = await quick.run(c, Object.assign(procOpts({rot:0}), {rot:0, spread:true, mask:false}));
+    const m = (res && res.metrics) || {};
+    if(m.spread && m.split){ diagLog.push('yerel kare: çift sayfa → 2 sayfa'); return await splitBlob(blob, m.split); }
+  }catch(e){ diagLog.push('çift sayfa denetimi hata: ' + (e && e.message)); }
+  return null;
+}
 async function nativeScan(method){
   method = method || 'scan';
   const strings = {show: T('Sayfayı göster — kendiliğinden çekilir'), hold: T('Sabit tut — çekiliyor…'), next: T('✓ Tamam — sonraki sayfa'),
@@ -3054,7 +3067,10 @@ async function nativeScan(method){
   for(const pg of (r && r.pages) || []){
     try{
       const b = await (await fetch(window.Capacitor.convertFileSrc(pg.path))).blob();
-      items.push({file: new File([b], 'sayfa.jpg', {type: 'image/jpeg'}), hint: pg.quad || null});
+      // açık kitap (yan tutulmuş iki sayfa) tek karede: iki sayfaya bölünür (canlı web çekimindeki gibi)
+      const hv = await splitIfSpread(b);
+      if(hv) hv.forEach((h, k) => items.push({file: new File([h], 'sayfa-' + k + '.jpg', {type: 'image/jpeg'}), hint: null}));
+      else items.push({file: new File([b], 'sayfa.jpg', {type: 'image/jpeg'}), hint: pg.quad || null});
     }catch(_){}
   }
   for(const l of (r && r.log) || []) diagLog.push(l);

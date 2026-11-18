@@ -25,8 +25,20 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "scan", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pick", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "record", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "record", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "ocr", returnType: CAPPluginReturnPromise)
     ]
+    private let ocrQueue = DispatchQueue(label: "ns.ocr", qos: .utility)
+
+    /// Apple metin tanıma: {path, langs} → {w, h, words:[[x0,y0,x1,y1,metin,null]], paras, ms}
+    @objc func ocr(_ call: CAPPluginCall) {
+        guard let path = call.getString("path"), let url = URL(string: path) ?? URL(fileURLWithPath: path) as URL? else { call.reject("path"); return }
+        let langs = call.getArray("langs", String.self) ?? []
+        ocrQueue.async {
+            let r = PageText.recognize(url.isFileURL ? url : URL(fileURLWithPath: path), langs: langs)
+            if let e = r["error"] as? String { call.reject(e) } else { call.resolve(r) }
+        }
+    }
     private var importer: MediaImporter?
 
     /// galeriden fotoğraf / video seç → yerelde incele → {pages}
@@ -72,6 +84,38 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
         default: call.reject("camera denied")
         }
     }
+}
+
+
+/// Y düzleminden 24×32 küçük resim: her hücre 4×4 örneğin ortalaması (tek piksel örnekleme titremede çok gürültülü)
+func lumaThumb(_ pb: CVPixelBuffer) -> [UInt8] {
+    CVPixelBufferLockBaseAddress(pb, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+    guard CVPixelBufferGetPlaneCount(pb) > 0, let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return [UInt8](repeating: 0, count: 768) }
+    let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0), bpr = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+    let p = base.assumingMemoryBound(to: UInt8.self)
+    var t = [UInt8](repeating: 0, count: 24 * 32)
+    for cy in 0..<32 { for cx in 0..<24 {
+        var s = 0
+        for sy in 0..<4 { for sx in 0..<4 {
+            let x = (cx * 4 + sx) * w / 96 + w / 192, y = (cy * 4 + sy) * h / 128 + h / 256
+            s += Int(p[y * bpr + x])
+        } }
+        t[cy * 24 + cx] = UInt8(s / 16)
+    } }
+    return t
+}
+/// iki küçük resim arasındaki fark: ±1 hücre kaydırmada en küçük ortalama mutlak fark (el titremesi elenir)
+func thumbMotion(_ a: [UInt8], _ b: [UInt8]) -> Double {
+    var best = 1e9
+    for dy in -1...1 { for dx in -1...1 {
+        var s = 0, n = 0
+        for y in max(0, dy)..<(32 + min(0, dy)) { for x in max(0, dx)..<(24 + min(0, dx)) {
+            s += abs(Int(a[y * 24 + x]) - Int(b[(y - dy) * 24 + x - dx])); n += 1
+        } }
+        if n > 0 { best = min(best, Double(s) / Double(n)) }
+    } }
+    return best
 }
 
 /// Normalleştirilmiş dörtgen (dik görüntü, sol-üst orijin, 0…1): sol-üst, sağ-üst, sağ-alt, sol-alt
@@ -123,6 +167,9 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
     private var motion: Double = 0          // kareler arası ortalama parlaklık farkı (0-255)
     private var waitSince: CFTimeInterval = 0
     private var forceShot = false           // ekrana dokunuldu: o anki sayfa hemen çekilir
+    private var lastWords = Set<String>()   // son çekilen sayfanın kelimeleri (Apple metin tanıma)
+    private var lastTextCheck: CFTimeInterval = 0
+    private var newPageAt: CFTimeInterval = 0
 
     // ana iş parçacığı
     private var pages: [[String: Any]] = []
@@ -309,15 +356,20 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             return
         case .waitChange:
             // sayfa çevrildi mi: görüntüde belirgin hareket (çevrilen yaprak, el), dörtgen kayboldu / oynadı
-            if motion > 14 || wobble > 0.06 || (capQuad.map { $0.maxDist(q) > 0.12 } ?? false) { disturbed = true }
+            if motion > 10 || wobble > 0.06 || (capQuad.map { $0.maxDist(q) > 0.12 } ?? false) { disturbed = true }
             guard stable && inFrame else { setHint(S("next", "✓ Tamam — sonraki sayfa")); return }
-            let sig = Self.signature(CIImage(cvPixelBuffer: pb), q)
+            if now - lastTextCheck < 0.35 { return }
+            lastTextCheck = now
+            // aynı sayfa mı: önce sayfadaki kelimeler (Apple metin tanıma, hızlı mod); yazısız sayfada görüntü imzası
+            let img = CIImage(cvPixelBuffer: pb)
+            let words = PageText.words(img, q)
+            let sameText = PageText.same(words, lastWords)
+            let sig = Self.signature(img, q)
             let d = (sig != nil && lastSig != nil) ? Self.sigDiff(sig!, lastSig!) : 9
-            // yazılı sayfalar küçük imzada birbirine benzer: çevirme hareketi görüldüyse küçük fark da yeni sayfadır;
-            // hiç hareket yoksa (aynı duruş) ancak belirgin farkta
-            if d > 0.55 || (disturbed && d > 0.22) {
-                note(String(format: "yeni sayfa (içerik farkı %.2f%@)", d, disturbed ? ", hareket" : ""))
-                phase = .hunting; disturbed = false
+            let isNew = sameText.map { !$0 } ?? (d > 0.55 || (disturbed && d > 0.30))
+            if isNew {
+                note(String(format: "yeni sayfa (kelime %d/%d ortak %d, imza farkı %.2f%@)", words.count, lastWords.count, words.intersection(lastWords).count, d, disturbed ? ", hareket" : ""))
+                phase = .hunting; disturbed = false; newPageAt = now
             } else {
                 if now - waitSince > 3, Int(now * 2) % 6 == 0 { note(String(format: "aynı sayfa bekleniyor (fark %.2f, hareket %@)", d, disturbed ? "var" : "yok")) }
                 setHint(S("next", "✓ Tamam — sonraki sayfa")); return
@@ -326,7 +378,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         case .hunting:
             if !inFrame { setHint(S("corners", "Dört köşe kadrajda olsun — telefonu biraz uzaklaştır"), warn: true); return }
             if !stable { setHint(S("hold", "Sabit tut — çekiliyor…")); return }
-            note(String(format: "çekim (sayfa görünür→sabit %.2f sn, model %.0f ms)", now - visibleSince, visionMs))
+            note(String(format: "çekim (yeni sayfa→çekim %.2f sn, model %.0f ms)", newPageAt > 0 ? now - newPageAt : now - t0, visionMs))
             shoot(q, pb: pb, now: now)
         }
     }
@@ -335,7 +387,8 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
 
     private func shoot(_ q: PageQuad, pb: CVPixelBuffer, now: CFTimeInterval) {
         do {
-            lastSig = Self.signature(CIImage(cvPixelBuffer: pb), q)
+            let img = CIImage(cvPixelBuffer: pb)
+            lastSig = Self.signature(img, q)
             capQuad = q
             phase = .capturing
             setHint(S("hold", "Sabit tut — çekiliyor…"))
@@ -346,6 +399,8 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                 self.pending += 1
                 self.photoOut.capturePhoto(with: s, delegate: self)
             }
+            // deklanşörden sonra: bu sayfanın kelimeleri (sonraki sayfa / aynı sayfa ayrımı için)
+            lastWords = PageText.words(img, q)
         }
     }
 
@@ -390,17 +445,10 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
 
     /// kareler arası hareket: Y düzleminden 24×32 örnek, önceki kareyle ortalama mutlak fark
     private func frameMotion(_ pb: CVPixelBuffer) -> Double {
-        CVPixelBufferLockBaseAddress(pb, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
-        guard CVPixelBufferGetPlaneCount(pb) > 0, let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return 0 }
-        let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0), bpr = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
-        let p = base.assumingMemoryBound(to: UInt8.self)
-        var t = [UInt8](repeating: 0, count: 24 * 32)
-        for y in 0..<32 { for x in 0..<24 { t[y * 24 + x] = p[(y * h / 32 + h / 64) * bpr + x * w / 24 + w / 48] } }
+        let t = lumaThumb(pb)
         defer { prevThumb = t }
         guard let o = prevThumb else { return 0 }
-        var s = 0; for i in 0..<t.count { s += abs(Int(t[i]) - Int(o[i])) }
-        return Double(s) / Double(t.count)
+        return thumbMotion(t, o)
     }
 
     // MARK: çizim
@@ -599,7 +647,7 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
     }
 
     // video: ~12 kare/sn incelenir
-    private struct Frame { let pb: CVPixelBuffer; let t: Double; let quad: PageQuad; let sharp: Double }
+    private struct Frame { let pb: CVPixelBuffer; let t: Double; let quad: PageQuad?; let sharp: Double }
     private func analyzeVideo(_ url: URL) {
         let t0 = CACurrentMediaTime()
         let asset = AVURLAsset(url: url)
@@ -611,27 +659,38 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
         reader.add(out)
         reader.startReading()
         let orient = Self.orientation(track.preferredTransform)
-        var lastT = -1.0, n = 0, before = pages.count
+        var lastT = -1.0, n = 0, runs = 0
+        let before = pages.count
         var prevThumb: [UInt8]? = nil
         var prevQuad: PageQuad? = nil
+        var motions: [Double] = []
         var runStart = -1.0, runEnd = -1.0, best: Frame? = nil   // durulan an: başlangıç, son, en net kare (yalnız o tutulur)
-        var lastSig: [Float]? = nil, lastSharp = 0.0, lastIdx = -1
+        var recent: [(idx: Int, sig: [Float]?, words: Set<String>, sharp: Double)] = []   // son 3 sayfa (geri dönüş de tekrar sayılır)
         var turned = true
 
         func endRun() {
             defer { runStart = -1; runEnd = -1; best = nil }
-            guard runStart >= 0, runEnd - runStart >= 0.25, let best = best else { return }   // hazır videoda dört köşe şartı yok (sayfa kenara değse de alınır)
+            guard runStart >= 0, runEnd - runStart >= 0.2, let best = best else { return }   // hazır videoda dört köşe şartı yok
+            runs += 1
             let img = Self.oriented(best.pb, orient)
-            let sig = LiveScannerViewController.signature(img, best.quad)
-            if let s = sig, let l = lastSig, lastIdx >= 0 {
-                let d = LiveScannerViewController.sigDiff(s, l)
-                if d < (turned ? 0.22 : 0.55) {
+            let words = PageText.words(img, best.quad)
+            let sig = best.quad.flatMap { LiveScannerViewController.signature(img, $0) }
+            for (k, r) in recent.enumerated().reversed() {
+                var same: Bool
+                if let st = PageText.same(words, r.words) { same = st }
+                else if let a = sig, let b = r.sig { same = LiveScannerViewController.sigDiff(a, b) < (turned ? 0.30 : 0.55) }
+                else { same = !turned && k == recent.count - 1 }
+                if same {
                     // aynı sayfa: daha netse öncekinin yerine
-                    if best.sharp > lastSharp * 1.15, let pg = writePage(img) { pages[lastIdx] = pg; lastSharp = best.sharp }
+                    if best.sharp > r.sharp * 1.15, let pg = writePage(img) { pages[r.idx] = pg; recent[k].sharp = best.sharp }
                     return
                 }
             }
-            if let pg = writePage(img) { pages.append(pg); lastIdx = pages.count - 1; lastSig = sig; lastSharp = best.sharp; turned = false }
+            if let pg = writePage(img) {
+                pages.append(pg)
+                recent.append((idx: pages.count - 1, sig: sig, words: words, sharp: best.sharp)); if recent.count > 3 { recent.removeFirst() }
+                turned = false
+            }
         }
 
         while reader.status == .reading, !cancelled, let sb = out.copyNextSampleBuffer() {
@@ -640,18 +699,25 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
             lastT = t
             guard let pb = CMSampleBufferGetImageBuffer(sb) else { continue }
             n += 1
-            let (thumb, sharp) = Self.thumbAndSharpness(pb)
+            let sharp = Self.thumbAndSharpness(pb).1
+            let thumb = lumaThumb(pb)
             var motion = 99.0
-            if let o = prevThumb { var s = 0; for i in 0..<thumb.count { s += abs(Int(thumb[i]) - Int(o[i])) }; motion = Double(s) / Double(thumb.count) }
+            if let o = prevThumb { motion = thumbMotion(thumb, o) }
             prevThumb = thumb
-            if motion > 14 { turned = true }
+            // uyarlanır eşik: elde çekilen videonun titreme tabanına göre (son ~3 sn'nin alt %20'si)
+            if motion < 99 { motions.append(motion); if motions.count > 36 { motions.removeFirst() } }
+            let floor = motions.count >= 6 ? motions.sorted()[motions.count / 5] : 2
+            let thr = max(3.5, min(10, floor * 1.8 + 1.5))
+            if motion > max(14, thr * 2.5) { turned = true }
             let req = VNDetectDocumentSegmentationRequest()
             try? VNImageRequestHandler(cvPixelBuffer: pb, orientation: orient, options: [:]).perform([req])
             var q: PageQuad? = nil
             if let o = req.results?.first, o.confidence > 0.5 { let qq = PageQuad(o); if qq.area > 0.04 { q = qq } }
-            let still = motion < 6 && q != nil && (prevQuad.map { $0.maxDist(q!) < 0.02 } ?? false)
+            // sayfa kadrajı dolduruyorsa köşe bulunamayabilir: o zaman yalnız hareketsizliğe bakılır
+            let quadOk = q == nil || prevQuad == nil || prevQuad!.maxDist(q!) < 0.035
+            let still = motion < thr && quadOk
             prevQuad = q
-            if still, let q = q {
+            if still {
                 if runStart < 0 { runStart = t }
                 runEnd = t
                 if best == nil || sharp > best!.sharp { best = Frame(pb: pb, t: t, quad: q, sharp: sharp) }
@@ -660,7 +726,7 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
         }
         endRun()
         reader.cancelReading()
-        log.append(String(format: "video %.1f sn: %d kare incelendi, %d sayfa, %.1f sn", dur, n, pages.count - before, CACurrentMediaTime() - t0))
+        log.append(String(format: "video %.1f sn: %d kare incelendi, %d durgun an, %d sayfa, %.1f sn", dur, n, runs, pages.count - before, CACurrentMediaTime() - t0))
     }
 
     private static func orientation(_ t: CGAffineTransform) -> CGImagePropertyOrientation {
@@ -722,4 +788,104 @@ final class ImportProgressViewController: UIViewController {
     }
     func update(_ f: Double, _ t: String, _ s: String) { bar.progress = Float(f); label.text = t; sub.text = s }
     @objc private func cancelTap() { onCancel?() }
+}
+
+// MARK: - Sayfa metni (Apple metin tanıma, cihazda)
+
+enum PageText {
+    private static let ci = CIContext(options: [.cacheIntermediates: false])
+
+    /// dörtgen içini düzleştir (CI koordinatları sol-alt orijinli)
+    static func rectify(_ img: CIImage, _ q: PageQuad) -> CIImage? {
+        let e = img.extent
+        func v(_ p: CGPoint) -> CIVector { CIVector(x: e.minX + p.x * e.width, y: e.minY + (1 - p.y) * e.height) }
+        guard let f = CIFilter(name: "CIPerspectiveCorrection") else { return nil }
+        f.setValue(img, forKey: kCIInputImageKey)
+        f.setValue(v(q.p[0]), forKey: "inputTopLeft"); f.setValue(v(q.p[1]), forKey: "inputTopRight")
+        f.setValue(v(q.p[2]), forKey: "inputBottomRight"); f.setValue(v(q.p[3]), forKey: "inputBottomLeft")
+        guard let r = f.outputImage, r.extent.width > 8, r.extent.height > 8 else { return nil }
+        return r.transformed(by: CGAffineTransform(translationX: -r.extent.minX, y: -r.extent.minY))
+    }
+
+    /// hızlı kelime kümesi (aynı sayfa mı kontrolü için): 4+ harfli kelimeler, küçük harf.
+    /// Yazı yan dönmüşse (yan tutulmuş açık kitap) diğer yönler de denenir.
+    static func words(_ img: CIImage, _ q: PageQuad?) -> Set<String> {
+        var im = img
+        if let q = q, let r = rectify(img, q) { im = r }
+        let s = min(1, 1400 / max(im.extent.width, im.extent.height))
+        im = im.transformed(by: CGAffineTransform(scaleX: s, y: s))
+        var best = Set<String>()
+        for o in [CGImagePropertyOrientation.up, .right, .left] {
+            let req = VNRecognizeTextRequest()
+            req.recognitionLevel = .fast
+            req.usesLanguageCorrection = false
+            req.recognitionLanguages = ["tr-TR", "en-US"]
+            try? VNImageRequestHandler(ciImage: im, orientation: o, options: [:]).perform([req])
+            var set = Set<String>()
+            for r in req.results ?? [] {
+                guard let t = r.topCandidates(1).first?.string.lowercased() else { continue }
+                for w in t.split(whereSeparator: { !$0.isLetter }) where w.count >= 4 { set.insert(String(w)) }
+            }
+            if set.count > best.count { best = set }
+            if best.count >= 25 { break }
+        }
+        return best
+    }
+
+    /// iki kelime kümesi aynı sayfanın mı? (iki tarafta da yeterli kelime yoksa nil → görüntü imzasına bakılır)
+    static func same(_ a: Set<String>, _ b: Set<String>) -> Bool? {
+        // biri dolu yazı sayfası, öteki yazısız (kapak, iç kapak): farklı sayfa
+        if (a.count >= 25 && b.count < 6) || (b.count >= 25 && a.count < 6) { return false }
+        guard a.count >= 12, b.count >= 12 else { return nil }
+        return Double(a.intersection(b).count) / Double(min(a.count, b.count)) > 0.45
+    }
+
+    /// aranabilir PDF / Word / TXT için tam metin tanıma: kelime kutuları (piksel, sol-üst orijin) + paragraflar
+    static func recognize(_ url: URL, langs: [String]) -> [String: Any] {
+        let t0 = CACurrentMediaTime()
+        guard let img = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
+              let cg = ci.createCGImage(img, from: img.extent.integral) else { return ["error": "image"] }
+        let W = Double(cg.width), H = Double(cg.height)
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = true
+        if #available(iOS 16.0, *) { req.automaticallyDetectsLanguage = langs.isEmpty }
+        let supported = (try? req.supportedRecognitionLanguages()) ?? []
+        let want = langs.filter { l in supported.contains(l) || supported.contains { $0.hasPrefix(l.prefix(2)) } }
+        if !want.isEmpty { req.recognitionLanguages = want }
+        try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([req])
+        var words: [[Any]] = []
+        var lines: [(y0: Double, y1: Double, x0: Double, text: String)] = []
+        for r in req.results ?? [] {
+            guard let c = r.topCandidates(1).first, c.confidence >= 0.3 else { continue }
+            let s = c.string
+            let lb = r.boundingBox
+            lines.append((y0: (1 - lb.maxY) * H, y1: (1 - lb.minY) * H, x0: lb.minX * W, text: s))
+            var idx = s.startIndex
+            for part in s.split(separator: " ", omittingEmptySubsequences: true) {
+                guard let rng = s.range(of: part, range: idx..<s.endIndex) else { continue }
+                idx = rng.upperBound
+                guard part.contains(where: { $0.isLetter || $0.isNumber }),
+                      let box = try? c.boundingBox(for: rng)?.boundingBox else { continue }
+                let x0 = box.minX * W, x1 = box.maxX * W, y0 = (1 - box.maxY) * H, y1 = (1 - box.minY) * H
+                words.append([Int(x0.rounded()), Int(y0.rounded()), Int(x1.rounded()), Int(y1.rounded()), String(part), NSNull()])
+            }
+        }
+        // satırlar → paragraflar: yukarıdan aşağı; satır aralığı belirgin açılınca ya da girinti başlayınca yeni paragraf
+        lines.sort { $0.y0 < $1.y0 }
+        let lh = lines.map { $0.y1 - $0.y0 }.sorted()
+        let med = lh.isEmpty ? 20 : lh[lh.count / 2]
+        let left = lines.map { $0.x0 }.sorted().first ?? 0
+        var paras: [String] = [], cur = "", prevY1 = -1.0
+        for l in lines {
+            let gap = prevY1 < 0 ? 0 : l.y0 - prevY1
+            let indent = l.x0 - left > med * 1.2
+            if !cur.isEmpty && (gap > med * 0.9 || indent) { paras.append(cur); cur = "" }
+            if cur.hasSuffix("-"), let f = l.text.first, f.isLowercase { cur.removeLast(); cur += l.text }
+            else { cur += (cur.isEmpty ? "" : " ") + l.text }
+            prevY1 = l.y1
+        }
+        if !cur.isEmpty { paras.append(cur) }
+        return ["w": Int(W), "h": Int(H), "words": words, "paras": paras, "ms": Int((CACurrentMediaTime() - t0) * 1000)]
+    }
 }

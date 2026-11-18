@@ -876,7 +876,11 @@ function trackFrame(src, prev, anchor, extra, opt){
   if(prev && prev.length === 4) cands.push({src: 'prev', q: prev.map(p => [p[0]*w, p[1]*h])});
   const aq = anchor && anchor.length === 4 ? anchor.map(p => [p[0]*w, p[1]*h]) : null;
   if(aq) cands.push({src: 'anchor', q: aq});
-  for(const q of extra || []) if(q && q.length === 4) cands.push({src: 'det', q: q.map(p => [p[0]*w, p[1]*h])});
+  // ek adaylar: [[x,y]×4] (ince çözünürlüklü tespit) ya da {src:'ml', q} (eğitilmiş köşe modeli)
+  for(const q of extra || []){
+    const sq = Array.isArray(q) ? q : q && q.q, src = Array.isArray(q) ? 'det' : (q && q.src) || 'det';
+    if(sq && sq.length === 4 && isConvex(sq.map(p => [p[0]*w, p[1]*h]))) cands.push({src, q: sq.map(p => [p[0]*w, p[1]*h])});
+  }
   if(!cands.length) return null;
   // biçim: kitap sayfası yukarıdan bakınca dikdörtgene yakındır (köşe açıları 55-125°, karşılıklı kenarlar en çok ~22° açık)
   const shapeOk = q => {
@@ -966,7 +970,7 @@ function trackFrame(src, prev, anchor, extra, opt){
       pc.q = bq;
     }
   }
-  for(const c of cands) if(c.src === 'paper' || c.src === 'edge' || (fast && c.src === 'prev')) c.q = refine(c.q, fast && c.src === 'prev');   // 'det' zaten ince çözünürlükte bulundu
+  for(const c of cands) if(c.src === 'paper' || c.src === 'edge' || c.src === 'ml' || (fast && c.src === 'prev')) c.q = refine(c.q, fast && c.src === 'prev');   // 'det' zaten ince çözünürlükte bulundu
   // kenar şeridinin dokusu: gerçek sayfanın kenarının hemen içi düz kağıttır (kenar boşluğu, kapak); dörtgen örtüye
   // taşmışsa şerit dantel dokuludur → doku belirgin biçimde en düz adayınkinden fazlaysa puan düşer
   for(const c of cands) c.band = bandTex(c.q, tex, w, h);
@@ -986,6 +990,7 @@ function trackFrame(src, prev, anchor, extra, opt){
     if((c.src === 'edge' || c.src === 'det' || ((c.src === 'prev' || c.src === 'anchor') && paperC && paperC.band <= c.band*1.3 + 2)) && paperC && quadArea(c.q) < quadArea(paperC.q)*0.8 && insideFrac(c.q, paperC.q) > 0.85) s *= 0.4;
     c.s2 = s;
     if(c.src === 'paper') s *= 1.15;                         // kağıt bölgesi: anlam olarak sayfa
+    if(c.src === 'ml') s *= 1.6;                             // eğitilmiş köşe modeli: kenar puanı onu ancak açıkça yalanlarsa elenir
     if(c.src === 'prev') s *= 0.9;                           // eski dörtgen ancak yenisi zayıfsa kalır
     if(prev && c.src !== 'prev' && near(c.q, prev.map(p => [p[0]*w, p[1]*h])) < 0.08) s *= 1.15;   // süreklilik
     if(aq && c.src !== 'anchor' && near(c.q, aq) < 0.08) s *= 1.4;

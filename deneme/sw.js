@@ -1,5 +1,5 @@
-const CACHE = 'instant-scanner-deneme-v38';
-const CORE = ['./', './index.html', './core.js', './i18n.js', './ocr.js', './manifest.webmanifest', './icon.svg'];
+const CACHE = 'instant-scanner-deneme-v39';
+const CORE = ['./', './index.html', './core.js', './trkml.js', './i18n.js', './ocr.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)));
@@ -18,7 +18,7 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const path = new URL(e.request.url).pathname;
   const isPage = e.request.mode === 'navigate' ||
-                 path.endsWith('/index.html') || path.endsWith('/core.js') || path.endsWith('/i18n.js') || path.endsWith('/ocr.js');
+                 path.endsWith('/index.html') || path.endsWith('/core.js') || path.endsWith('/i18n.js') || path.endsWith('/ocr.js') || path.endsWith('/trkml.js');
   if (isPage) {
     // sayfa: önce ağ (güncellemeler hemen ulaşsın), çevrimdışıysa önbellek
     e.respondWith(

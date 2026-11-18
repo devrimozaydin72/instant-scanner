@@ -535,7 +535,7 @@
     <input type="search" id="histSearch" placeholder="ara" data-t-ph="🔎 Taramalarda kelime ara" style="width:100%; margin:4px 0 10px" hidden>
     <div id="histList"></div>
   </section>
-  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 38</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
+  <p class="ver">INSTANT SCANNER · <span id="verTxt">sürüm 39</span> · <button class="linkbtn" id="btnOnb" style="font-size:12px; padding:0" data-t>tanıtımı göster</button> · <button class="linkbtn" id="btnLang" style="font-size:12px; padding:0">🌐 Language</button></p>
 </main>
 
 <!-- ÖNİZLEME -->
@@ -1045,7 +1045,8 @@ proc.init();
 
 function procOpts(p){
   const [outW, outH] = OUT_SIZE[String(settings.quality)] || OUT_SIZE['0.85'];
-  return {mode:p.mode || settings.mode, smartCrop:settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0};
+  // pageHint: çekim anında ekranda gösterilen (eğitilmiş modelle bulunan) sayfa dörtgeni — yazısız sayfa (kapak) kırpması ona uyar
+  return {mode:p.mode || settings.mode, smartCrop:settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0, pageHint: p.hint || undefined};
 }
 /* sayfayı (yeniden) işle; eski sonuçlar sürüm numarasıyla elenir */
 function processPage(p){
@@ -1814,13 +1815,26 @@ const trk = {
   quad: null, at: 0, pend: null, miss: 0, n: 0, last: 0,
   // gösterilen dörtgen bu süre güncellenmezse gizlenir (yavaş telefonda takip aralığına göre uzar)
   ttl(){ return Math.max(600, this.last*3); },
+  // önce eğitilmiş köşe modelli modül işçisi (trkml.js); açılamazsa / hata verirse modelsiz klasik işçi (core.js)
   init(){
     if(proc.fallback){ this.dead = true; return; }
+    const classic = () => {
+      try{
+        this.w = new Worker('core.js'); this.mlMode = false;
+        this.w.onmessage = e => this.onRes(e.data);
+        this.w.onerror = e => { log('takip işçisi hatası', e.message); this.dead = true; this.busy = false; };
+      }catch(_){ this.dead = true; }
+    };
     try{
-      this.w = new Worker('core.js');
+      this.w = new Worker('trkml.js', {type: 'module'}); this.mlMode = true;
       this.w.onmessage = e => this.onRes(e.data);
-      this.w.onerror = e => { log('takip işçisi hatası', e.message); this.dead = true; this.busy = false; };
-    }catch(_){ this.dead = true; }
+      this.w.onerror = e => {
+        if(this.mlOk){ log('takip işçisi hatası', e.message); this.dead = true; this.busy = false; return; }
+        diagLog.push('model işçisi açılamadı (' + (e && e.message || '?') + ') → modelsiz takip');
+        try{ this.w.terminate(); }catch(_){}
+        this.busy = false; classic();
+      };
+    }catch(_){ classic(); }
   },
   reset(){ this.quad = null; this.pend = null; this.miss = 0; this.at = 0; this.n = 0; },
   // takip dörtgeni taze ve dört köşesi kadrajın içinde
@@ -1846,6 +1860,8 @@ const trk = {
   },
   onRes(d){
     this.busy = false;
+    if(d.mlInfo){ this.mlOk = true; diagLog.push('sayfa modeli: ' + d.mlInfo); }
+    if(d.ml) this.mlMs = d.ml.ms;
     if(!d.ok){ if(++this.fails > 5){ this.dead = true; log('takip kapatıldı:', d.error); } return; }
     this.ms = this.ms ? this.ms*0.8 + d.ms*0.2 : d.ms; this.last = this.last ? this.last*0.6 + d.ms*0.4 : d.ms;
     if(d.fast) this.msF = this.msF ? this.msF*0.8 + d.ms*0.2 : d.ms; else this.msT = this.msT ? this.msT*0.8 + d.ms*0.2 : d.ms;
@@ -2592,7 +2608,7 @@ const cam = {
     const ntDup = noText && !this.retake && !!S.last && S.last.noText && now - S.last.at < 10000 && !(inkM != null && inkM < 0.8);
     if(ntDup) this.note(`  yazısız sayfa yazısız sayfanın ardından (${((now - S.last.at)/1000).toFixed(1)} sn, içerik ${inkM == null ? '-' : inkM.toFixed(2)}) → TEKRAR? işareti`);
     const p = {id:state.nextId++, origBlob:null, rot:0, time:fr.t, maybeDup:ntDup, issues:[], status:'busy',
-               lineSig:res.lineSig || null, side, soft: flag, cap: S.id, noText};
+               lineSig:res.lineSig || null, side, soft: flag, cap: S.id, noText, hint: trk.page() ? trk.quad.map(q => q.slice()) : null};
     // sayfa sırası (bekletmeden): çevirince kamera sağ sayfada kalır ve önce o çekilirse, ardından gelen
     // sol sayfa onun ÖNÜNE yerleştirilir. Kanıt: art arda iki sağ sayfa (önceki açılımın sağı + yeni
     // açılımın sağı), sonra bir sol sayfa.
@@ -2778,7 +2794,7 @@ const cam = {
     this.active = false;
     proc.pump();                      // bekleyen sayfalar artık tüm işleyicilerle işlenir
     if(typeof ocr !== 'undefined') ocr.kick(300);   // metin tanıma kamera kapanınca başlar
-    this.note('sayfa takibi ' + (trk.dead ? 'yok' : 'ort ' + Math.round(trk.ms) + ' ms (tam ' + Math.round(trk.msT || 0) + ', hızlı ' + Math.round(trk.msF || 0) + ')'));
+    this.note('sayfa takibi ' + (trk.dead ? 'yok' : 'ort ' + Math.round(trk.ms) + ' ms (tam ' + Math.round(trk.msT || 0) + ', hızlı ' + Math.round(trk.msF || 0) + (trk.mlMode ? ', model ' + Math.round(trk.mlMs || 0) : ', modelsiz') + ')'));
     window.__trkMs = trk.ms;
     this.keepAwake(false);
     cancelAnimationFrame(this.raf);

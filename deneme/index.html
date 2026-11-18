@@ -1486,9 +1486,14 @@ async function scanVideo(file){
   const url = URL.createObjectURL(file);
   try{
     video.src = url;
+    // iPhone Safari gizli videoyu oynatılmadan yüklemez: kısa bir oynat-durdur ile yükleme başlatılır; hiç yüklenmezse hata (takılmasın)
     await new Promise((res, rej) => {
-      video.onloadeddata = res;
+      let ok = false;
+      video.onloadeddata = () => { ok = true; res(); };
       video.onerror = () => rej(new Error(T('Video açılamadı. Format desteklenmiyor olabilir (ör. HEVC).')));
+      try{ video.load(); }catch(_){}
+      setTimeout(() => { if(!ok){ const pr = video.play(); if(pr && pr.then) pr.then(() => video.pause()).catch(() => {}); } }, 1200);
+      setTimeout(() => { if(!ok) rej(new Error(T('Video açılamadı. Format desteklenmiyor olabilir (ör. HEVC).'))); }, 15000);
     });
     if(!isFinite(video.duration)){                 // MediaRecorder webm düzeltmesi
       video.currentTime = 1e9;
@@ -3031,12 +3036,20 @@ $('btnRetakeAll').onclick = () => startRetake(badPages().map(p => p.id));
    ============================================================ */
 /* iPhone uygulaması: canlı tarama yerel ekranda (Apple'ın cihazdaki belge modeli — her karede köşeler, otomatik çekim).
    Çekilen tam çözünürlüklü kareler + köşeler buraya döner; kırpma, düzleştirme, metin tanıma ve PDF burada yapılır. */
-async function nativeScan(){
+async function nativeScan(method){
+  method = method || 'scan';
   const strings = {show: T('Sayfayı göster — kendiliğinden çekilir'), hold: T('Sabit tut — çekiliyor…'), next: T('✓ Tamam — sonraki sayfa'),
-                   corners: T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'), count: T('{n} sayfa'), done: T('Bitti ✓')};
+                   corners: T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'), count: T('{n} sayfa'), done: T('Bitti ✓'),
+                   analyzing: T('Video analiz ediliyor…'), progress: T('Kareler inceleniyor… {p}%'), found: T('{n} sayfa bulundu'), cancel: T('Vazgeç')};
   let r;
-  try{ r = await native.call('NativeScanner', 'scan', {strings}); }
-  catch(e){ const m = String(e && e.message || e); if(/denied/i.test(m)) toast(T('Kameraya erişilemedi ({e}). Video kaydı ile devam edebilirsin.', {e: m})); else cam.open(); return; }
+  try{ r = await native.call('NativeScanner', method, {strings}); }
+  catch(e){
+    const m = String(e && e.message || e);
+    if(/denied/i.test(m)) toast(T('Kameraya erişilemedi ({e}). Video kaydı ile devam edebilirsin.', {e: m}));
+    else if(method === 'scan') cam.open();
+    else toast(m);
+    return;
+  }
   const items = [];
   for(const pg of (r && r.pages) || []){
     try{
@@ -3048,6 +3061,11 @@ async function nativeScan(){
   if(items.length) runFiles(items);
 }
 $('btnLive').onclick = () => native.has('NativeScanner') ? nativeScan() : cam.open();
+// iPhone uygulaması: galeriden seçilen / kamerayla kaydedilen video ve fotoğraflar yerelde (Apple belge modeli) incelenir
+if(native.has('NativeScanner')){
+  $('btnPick').onclick = () => nativeScan('pick');
+  $('btnRecord').onclick = () => nativeScan('record');
+}
 if(native.on) console.log('[scan] yerel tarayıcı (Apple belge modeli): ' + (native.has('NativeScanner') ? 'var' : 'yok'));
 /* gizlilik / KVKK ve kullanım koşulları: uygulamanın içinde gösterilir (çevrimdışı da açılır) */
 function showLegal(page){
@@ -3058,8 +3076,11 @@ $('btnPrivacy').onclick = () => showLegal('gizlilik');
 $('btnTerms').onclick = () => showLegal('kosullar');
 $('legalClose').onclick = () => { $('legalModal').hidden = true; $('legalFrame').src = 'about:blank'; };
 $('btnMoreLive').onclick = () => cam.open();
-$('btnPick').onclick = () => $('filePick').click();
-$('btnRecord').onclick = () => $('fileCapture').click();
+// iPhone uygulamasında (yerel tarayıcı varsa) yukarıda yerel içe aktarmaya bağlandı
+if(!native.has('NativeScanner')){
+  $('btnPick').onclick = () => $('filePick').click();
+  $('btnRecord').onclick = () => $('fileCapture').click();
+}
 $('filePick').onchange = e => { const fs = Array.from(e.target.files); e.target.value=''; runFiles(fs); };
 $('fileCapture').onchange = e => { const fs = Array.from(e.target.files); e.target.value=''; runFiles(fs); };
 $('btnCancel').onclick = () => { state.cancel = true; };

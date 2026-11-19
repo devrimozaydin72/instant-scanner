@@ -658,6 +658,15 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
         return pg
     }
 
+    /// yazılmış sayfa JPEG'ini verilen yöne çevirip yeniden yaz
+    private func rotatePage(_ pg: [String: Any], _ o: CGImagePropertyOrientation) -> [String: Any]? {
+        guard let path = pg["path"] as? String, let url = URL(string: path), let im = CIImage(contentsOf: url) else { return nil }
+        var r = im.oriented(o); r = r.transformed(by: CGAffineTransform(translationX: -r.extent.minX, y: -r.extent.minY))
+        guard let cg = Self.ci.createCGImage(r, from: r.extent.integral), let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.92) else { return nil }
+        guard (try? jpg.write(to: url)) != nil else { return nil }
+        return ["path": path]
+    }
+
     // video: ~12 kare/sn incelenir
     private struct Frame { let pb: CVPixelBuffer; let t: Double; let quad: PageQuad?; let sharp: Double }
     private func analyzeVideo(_ url: URL) {
@@ -677,7 +686,10 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
         var prevQuad: PageQuad? = nil
         var motions: [Double] = []
         var runStart = -1.0, runEnd = -1.0, best: Frame? = nil   // durulan an: başlangıç, son, en net kare (yalnız o tutulur)
-        var recent: [(idx: Int, sig: [Float]?, words: Set<String>, sharp: Double)] = []   // son 3 sayfa (geri dönüş de tekrar sayılır)
+        var recent: [(idx: Int, sig: [Float]?, sets: [CGImagePropertyOrientation: (Set<String>, Double)], sharp: Double)] = []   // son 3 sayfa
+        // yazının yönü video boyunca tek: tüm durgun anların güven puanları toplanır, en yüksek yön hepsine uygulanır
+        var oScore: [CGImagePropertyOrientation: Double] = [:]
+        func bestO() -> CGImagePropertyOrientation { oScore.max(by: { $0.value < $1.value })?.value ?? 0 > 2 ? oScore.max(by: { $0.value < $1.value })!.key : .up }
         var turned = true
 
         func endRun() {
@@ -685,22 +697,28 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
             guard runStart >= 0, runEnd - runStart >= 0.2, let best = best else { return }   // hazır videoda dört köşe şartı yok
             runs += 1
             let img = Self.oriented(best.pb, orient)
-            let words = PageText.words(img, best.quad)
+            let sets = PageText.wordSets(img, best.quad)
+            for (o, v) in sets { oScore[o, default: 0] += v.1 }
+            let o = bestO()
+            let words = sets[o]?.0 ?? []
             let sig = best.quad.flatMap { LiveScannerViewController.signature(img, $0) }
             for (k, r) in recent.enumerated().reversed() {
+                let rw = r.sets[o]?.0 ?? []
                 var same: Bool
-                if let st = PageText.same(words, r.words) { same = st }
+                if let st = PageText.same(words, rw) { same = st }
                 else if let a = sig, let b = r.sig { same = LiveScannerViewController.sigDiff(a, b) < (turned ? 0.30 : 0.55) }
                 else { same = !turned && k == recent.count - 1 }
                 if same {
-                    // aynı sayfa: daha netse öncekinin yerine
-                    if best.sharp > r.sharp * 1.15, let pg = writePage(img) { pages[r.idx] = pg; recent[k].sharp = best.sharp }
+                    // aynı sayfa: daha tam (daha çok kelime) ya da belirgin daha netse öncekinin yerine
+                    let fuller = words.count > Int(Double(rw.count) * 1.15) + 2
+                    let sharper = words.count >= rw.count * 9 / 10 && best.sharp > r.sharp * 1.15
+                    if fuller || sharper, let pg = writePage(img) { pages[r.idx] = pg; recent[k].sharp = best.sharp; recent[k].sets = sets; recent[k].sig = sig }
                     return
                 }
             }
             if let pg = writePage(img) {
                 pages.append(pg)
-                recent.append((idx: pages.count - 1, sig: sig, words: words, sharp: best.sharp)); if recent.count > 3 { recent.removeFirst() }
+                recent.append((idx: pages.count - 1, sig: sig, sets: sets, sharp: best.sharp)); if recent.count > 3 { recent.removeFirst() }
                 turned = false
             }
         }
@@ -738,7 +756,12 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
         }
         endRun()
         reader.cancelReading()
-        log.append(String(format: "video %.1f sn: %d kare incelendi, %d durgun an, %d sayfa, %.1f sn", dur, n, runs, pages.count - before, CACurrentMediaTime() - t0))
+        let o = bestO()
+        if o != .up {
+            // sayfalar yazının yönüne çevrilir (telefon yatay / ters tutulmuş); köşe ipucu bu durumda gönderilmez
+            for i in before..<pages.count { if let r = rotatePage(pages[i], o) { pages[i] = r } }
+        }
+        log.append(String(format: "video %.1f sn: %d kare incelendi, %d durgun an, %d sayfa, yön %d, %.1f sn", dur, n, runs, pages.count - before, Int(o.rawValue), CACurrentMediaTime() - t0))
     }
 
     private static func orientation(_ t: CGAffineTransform) -> CGImagePropertyOrientation {
@@ -821,13 +844,15 @@ enum PageText {
 
     /// hızlı kelime kümesi (aynı sayfa mı kontrolü için): 4+ harfli kelimeler, küçük harf.
     /// Yazı yan dönmüşse (yan tutulmuş açık kitap) diğer yönler de denenir.
-    static func words(_ img: CIImage, _ q: PageQuad?) -> Set<String> {
+    static func words(_ img: CIImage, _ q: PageQuad?) -> Set<String> { wordsAndOrientation(img, q).0 }
+    /// kelimeler + yazının en çok okunduğu yön (yan dönmüş sayfayı düz çevirmek için)
+    static func wordsAndOrientation(_ img: CIImage, _ q: PageQuad?) -> (Set<String>, CGImagePropertyOrientation) {
         var im = img
         if let q = q, let r = rectify(img, q) { im = r }
         let s = min(1, 1400 / max(im.extent.width, im.extent.height))
         im = im.transformed(by: CGAffineTransform(scaleX: s, y: s))
-        var best = Set<String>()
-        for o in [CGImagePropertyOrientation.up, .right, .left] {
+        var best = Set<String>(), bestO = CGImagePropertyOrientation.up
+        for o in [CGImagePropertyOrientation.up, .right, .left, .down] {
             let req = VNRecognizeTextRequest()
             req.recognitionLevel = .fast
             req.usesLanguageCorrection = false
@@ -838,19 +863,48 @@ enum PageText {
                 guard let t = r.topCandidates(1).first?.string.lowercased() else { continue }
                 for w in t.split(whereSeparator: { !$0.isLetter }) where w.count >= 4 { set.insert(String(w)) }
             }
-            if set.count > best.count { best = set }
+            if set.count > best.count { best = set; bestO = o }
             if best.count >= 25 { break }
         }
-        return best
+        return (best, bestO)
+    }
+
+    /// dört yönün her birinde kelime kümesi + güven puanı (Σ satır güveni × 4+ harfli kelime sayısı). Ters / yan duran yazı
+    /// da "kelime" üretir ama güveni düşüktür; puan yönü seçer.
+    static func wordSets(_ img: CIImage, _ q: PageQuad?) -> [CGImagePropertyOrientation: (Set<String>, Double)] {
+        var im = img
+        if let q = q, let r = rectify(img, q) { im = r }
+        let s = min(1, 1400 / max(im.extent.width, im.extent.height))
+        im = im.transformed(by: CGAffineTransform(scaleX: s, y: s))
+        var out: [CGImagePropertyOrientation: (Set<String>, Double)] = [:]
+        for o in [CGImagePropertyOrientation.up, .right, .left, .down] {
+            let req = VNRecognizeTextRequest()
+            req.recognitionLevel = .fast
+            req.usesLanguageCorrection = false
+            req.recognitionLanguages = ["tr-TR", "en-US"]
+            try? VNImageRequestHandler(ciImage: im, orientation: o, options: [:]).perform([req])
+            var set = Set<String>(), score = 0.0
+            for r in req.results ?? [] {
+                guard let c = r.topCandidates(1).first else { continue }
+                let ws = c.string.lowercased().split(whereSeparator: { !$0.isLetter }).filter { $0.count >= 4 }
+                for w in ws { set.insert(String(w)) }
+                score += Double(c.confidence) * Double(ws.count)
+            }
+            out[o] = (set, score)
+        }
+        return out
     }
 
     /// iki kelime kümesi aynı sayfanın mı? true / false; kelimeler karar vermeye yetmiyorsa nil (görüntü imzasına bakılır)
     static func same(_ a: Set<String>, _ b: Set<String>) -> Bool? {
         let lo = min(a.count, b.count), hi = max(a.count, b.count)
-        // kelime sayıları çok farklı (dolu sayfa / az yazılı sayfa): farklı sayfa
+        let r = lo > 0 ? Double(a.intersection(b).count) / Double(lo) : 0
+        // dolu yazı sayfası: kısmi görüntü (kamera sayfanın üzerinde kaydı) aynı sayfanın alt kümesidir
+        if lo >= 40 && r >= 0.45 { return true }
+        // kelime sayıları çok farklı (dolu sayfa / az yazılı sayfa; iç kapak / imzalı sayfa): farklı sayfa
         if hi >= 15 && Double(lo) < Double(hi) * 0.3 { return false }
+        if hi >= 8 && lo < 40 && Double(lo) < Double(hi) * 0.5 { return false }
         if lo >= 3 {
-            let r = Double(a.intersection(b).count) / Double(lo)
             // ortak kelimeler + benzer kelime sayısı (kitap adı gibi birkaç ortak kelime iki farklı az yazılı sayfada da olur)
             if r >= 0.45 && Double(lo) >= Double(hi) * 0.5 { return true }
             if r < 0.15 { return false }     // hızlı tanıma gürültülü olsa da aynı sayfada ortak kelime çıkar

@@ -1662,6 +1662,15 @@ enum Straighten {
             let cols = inkCols(xa, xb)
             guard let a = cols.first, let b = cols.last else { return nil }
             guard CGFloat(b - a) <= CGFloat(w) * 0.04 else { return nil }
+            // en az 5 ayrı iz (alt alta harfler) ya da sayfa boyu uzun bir çizgi: tek bir okunamayan işaret silinmez
+            var runs = 0, longest = 0, cur = 0, inRun = false
+            for y in y0..<y1 {
+                var dark = false
+                for x in a...b { if Double(g[y * w + x]) < 0.75 * Double(g[y * w + min(w - 1, b + 6)]) { dark = true; break } }
+                if dark { cur += 1; if !inRun { runs += 1; inRun = true } } else { longest = max(longest, cur); cur = 0; inRun = false }
+            }
+            longest = max(longest, cur)
+            guard runs >= 5 || longest > (y1 - y0) / 7 else { return nil }
             let na = CGFloat(a) / CGFloat(w) - 0.004, nb = CGFloat(b) / CGFloat(w) + 0.004
             // metin tanıma bu sütunda bir şey okuduysa (numara, kelime) içeriktir
             // (tek-iki harflik parçalar sayılmaz: kesik satır başlarından metin tanıma bazen "i" gibi tek harf okur)
@@ -1670,7 +1679,7 @@ enum Straighten {
             return CGRect(x: na, y: 0, width: nb - na, height: 1)
         }
         var fills: [CGRect] = []
-        let outer: CGFloat = 0.09
+        let outer: CGFloat = 0.2     // alttaki sayfanın izi kenardan %13'e kadar içeride görülebiliyor
         if let z = zone(0, Int(min(lx - 0.012, outer) * CGFloat(w))) { fills.append(CGRect(x: 0, y: 0.08, width: min(z.maxX + 0.003, lx - 0.008), height: 0.84)) }
         if let z = zone(Int(max(rx + 0.012, 1 - outer) * CGFloat(w)), w) { let x = max(z.minX - 0.003, rx + 0.008); fills.append(CGRect(x: x, y: 0.08, width: 1 - x, height: 0.84)) }
         guard !fills.isEmpty else { return cg }

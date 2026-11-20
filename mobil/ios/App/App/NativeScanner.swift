@@ -1,4 +1,5 @@
 import UIKit
+import CoreML
 import AVFoundation
 import Vision
 import CoreImage
@@ -461,6 +462,14 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             let req = VNDetectDocumentSegmentationRequest()
             try? VNImageRequestHandler(ciImage: out.transformed(by: CGAffineTransform(scaleX: ds, y: ds)), options: [:]).perform([req])
             if let o = req.results?.first, o.confidence > 0.5 { let pq = PageQuad(o); if pq.area > 0.04 { quad = pq } }
+            if let path = PageFlattener.flattenToFile(out, prefix: "canli"), let ui = UIImage(contentsOfFile: URL(string: path)!.path) {
+                DispatchQueue.main.async {
+                    self.pages.append(["path": path, "flat": true])
+                    self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
+                    self.thumb.image = ui
+                }
+                return
+            }
             guard let cg = Self.ci.createCGImage(out, from: out.extent.integral),
                   let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.92) else { return }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("tarama-\(UUID().uuidString).jpg")
@@ -665,6 +674,8 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
     }
     /// görüntü → (uzun kenar ≤2600) JPEG + Apple belge modelinin köşeleri
     private func writePage(_ img: CIImage) -> [String: Any]? {
+        // UVDoc: sayfayı kırpar ve düzleştirir (kıvrık kitap sayfası, perspektif); olmazsa ham kare + köşeler
+        if let path = PageFlattener.flattenToFile(img, prefix: "ice") { return ["path": path, "flat": true] }
         let s = min(1, 2600 / max(img.extent.width, img.extent.height))
         let out = img.transformed(by: CGAffineTransform(scaleX: s, y: s))
         let ds = min(1, 1024 / max(out.extent.width, out.extent.height))
@@ -988,6 +999,8 @@ final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate 
         var pages: [[String: Any]] = []
         for i in 0..<scan.pageCount {
             let img = scan.imageOfPage(at: i)
+            // kıvrık kitap sayfası: UVDoc ile düzleştirilir (Apple yalnız perspektifi düzeltir)
+            if let cg = img.cgImage, let path = PageFlattener.flattenToFile(CIImage(cgImage: cg), prefix: "apple") { pages.append(["path": path, "flat": true]); continue }
             // web uygulamasının sakladığı karelerle aynı boyut sınırı (uzun kenar ≤2600)
             let s = min(1, 2600 / max(img.size.width, img.size.height))
             let sz = CGSize(width: (img.size.width * s).rounded(), height: (img.size.height * s).rounded())
@@ -1001,4 +1014,102 @@ final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate 
     }
     func documentCameraViewControllerDidCancel(_ c: VNDocumentCameraViewController) { c.dismiss(animated: true) { self.done([]) } }
     func documentCameraViewController(_ c: VNDocumentCameraViewController, didFailWithError error: Error) { c.dismiss(animated: true) { self.done([]) } }
+}
+
+// MARK: - Sayfa düzleştirme (UVDoc, Core ML)
+
+/// UVDoc (MIT, Tanguy Magne 2023): kıvrık sayfa fotoğrafını düzleştirir. Model 488×712 girişten 2×45×31 ızgara verir
+/// (her ızgara noktası: kaynak görüntüde [-1,1] konumu); ızgara tam çözünürlüğe çift doğrusal büyütülüp görüntü yeniden örneklenir.
+final class Dewarper {
+    let model: MLModel
+    init(url: URL) throws {
+        let cfg = MLModelConfiguration(); cfg.computeUnits = .all
+        model = try MLModel(contentsOf: url, configuration: cfg)
+    }
+    private static let ci = CIContext(options: [.cacheIntermediates: false])
+
+    /// ızgara (2×45×31): [x0..][y0..] (her biri 45×31)
+    func grid(_ img: CGImage) throws -> [Float] {
+        var pb: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 488, 712, kCVPixelFormatType_32BGRA, [kCVPixelBufferCGImageCompatibilityKey: true, kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary, &pb)
+        guard let buf = pb else { throw NSError(domain: "uv", code: 1) }
+        let ci = CIImage(cgImage: img)
+        let sc = ci.transformed(by: CGAffineTransform(scaleX: 488 / ci.extent.width, y: 712 / ci.extent.height))
+        Self.ci.render(sc, to: buf)
+        let out = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(pixelBuffer: buf)]))
+        guard let a = out.featureValue(for: "grid")?.multiArrayValue else { throw NSError(domain: "uv", code: 2) }
+        var g = [Float](repeating: 0, count: 2 * 45 * 31)
+        for i in 0..<g.count { g[i] = a[i].floatValue }
+        return g
+    }
+
+    /// görüntüyü ızgaraya göre yeniden örnekle (çıktı boyutu = giriş boyutu, uzun kenar en çok maxSide)
+    func unwarp(_ img: CGImage, maxSide: Int = 2600) throws -> CGImage {
+        let g = try grid(img)
+        let W = img.width, H = img.height
+        let s = min(1, Double(maxSide) / Double(max(W, H)))
+        let OW = Int(Double(W) * s), OH = Int(Double(H) * s)
+        // kaynak RGBA
+        var src = [UInt8](repeating: 0, count: W * H * 4)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let ctx = CGContext(data: &src, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: W, height: H))
+        var dst = [UInt8](repeating: 255, count: OW * OH * 4)
+        let GW = 31, GH = 45
+        let gx = Array(g[0..<(GW * GH)]), gy = Array(g[(GW * GH)...])
+        src.withUnsafeBufferPointer { sp in dst.withUnsafeMutableBufferPointer { dp in
+            DispatchQueue.concurrentPerform(iterations: OH) { y in
+                let v = Float(y) / Float(max(1, OH - 1)) * Float(GH - 1)
+                let v0 = min(GH - 2, Int(v)), fv = v - Float(v0)
+                for x in 0..<OW {
+                    let u = Float(x) / Float(max(1, OW - 1)) * Float(GW - 1)
+                    let u0 = min(GW - 2, Int(u)), fu = u - Float(u0)
+                    let i00 = v0 * GW + u0, i01 = i00 + 1, i10 = i00 + GW, i11 = i10 + 1
+                    let nx = (gx[i00] * (1 - fu) + gx[i01] * fu) * (1 - fv) + (gx[i10] * (1 - fu) + gx[i11] * fu) * fv
+                    let ny = (gy[i00] * (1 - fu) + gy[i01] * fu) * (1 - fv) + (gy[i10] * (1 - fu) + gy[i11] * fu) * fv
+                    // align_corners=True: -1 → 0, +1 → W-1
+                    let sx = (nx + 1) / 2 * Float(W - 1), sy = (ny + 1) / 2 * Float(H - 1)
+                    let o = (y * OW + x) * 4
+                    if sx < 0 || sy < 0 || sx > Float(W - 1) || sy > Float(H - 1) { continue }
+                    let x0 = min(W - 2, Int(sx)), y0 = min(H - 2, Int(sy)), fx = sx - Float(x0), fy = sy - Float(y0)
+                    let p00 = (y0 * W + x0) * 4, p01 = p00 + 4, p10 = p00 + W * 4, p11 = p10 + 4
+                    for c in 0..<3 {
+                        let a = Float(sp[p00 + c]) * (1 - fx) + Float(sp[p01 + c]) * fx
+                        let b = Float(sp[p10 + c]) * (1 - fx) + Float(sp[p11 + c]) * fx
+                        dp[o + c] = UInt8(max(0, min(255, a * (1 - fy) + b * fy + 0.5)))
+                    }
+                    dp[o + 3] = 255
+                }
+            }
+        } }
+        let octx = CGContext(data: &dst, width: OW, height: OH, bitsPerComponent: 8, bytesPerRow: OW * 4, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        return octx.makeImage()!
+    }
+}
+
+/// uygulama genelinde tek düzleştirici (model ilk kullanımda yüklenir; yüklenemezse nil → ham kare kullanılır)
+enum PageFlattener {
+    private static let lock = NSLock()
+    private static var dw: Dewarper? = nil
+    private static var tried = false
+    private static let ci = CIContext(options: [.cacheIntermediates: false])
+    static var ready: Bool { get_() != nil }
+    private static func get_() -> Dewarper? {
+        lock.lock(); defer { lock.unlock() }
+        if !tried {
+            tried = true
+            if let url = Bundle.main.url(forResource: "UVDoc", withExtension: "mlmodelc") { dw = try? Dewarper(url: url) }
+        }
+        return dw
+    }
+    /// görüntüyü düzleştirip (uzun kenar ≤2600) JPEG olarak geçici klasöre yazar → yol; başarısızsa nil
+    static func flattenToFile(_ img: CIImage, prefix: String = "duz") -> String? {
+        guard let d = get_() else { return nil }
+        let e = img.extent
+        guard let cg = ci.createCGImage(img, from: e.integral) else { return nil }
+        guard let out = try? d.unwarp(cg) else { return nil }
+        guard let jpg = UIImage(cgImage: out).jpegData(compressionQuality: 0.92) else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString).jpg")
+        return (try? jpg.write(to: url)) != nil ? url.absoluteString : nil
+    }
 }

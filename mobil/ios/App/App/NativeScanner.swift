@@ -39,7 +39,7 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async {
             guard VNDocumentCameraViewController.isSupported, let host = self.bridge?.viewController else { call.reject("unsupported"); return }
             let t0 = CACurrentMediaTime()
-            let d = AppleScanDelegate { pages in
+            let d = AppleScanDelegate(strings: call.getObject("strings") as? [String: String] ?? [:]) { pages in
                 let n = pages.count, secs = CACurrentMediaTime() - t0
                 call.resolve(["pages": pages, "log": [String(format: "Apple tarayıcı: %d sayfa, %.1f sn", n, secs)]])
                 self.appleScanner = nil
@@ -994,23 +994,40 @@ enum PageText {
 // MARK: - Apple belge tarayıcısı (VisionKit)
 final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate {
     private let done: ([[String: Any]]) -> Void
-    init(_ done: @escaping ([[String: Any]]) -> Void) { self.done = done }
+    private let strings: [String: String]
+    private let work = DispatchQueue(label: "ns.applescan", qos: .userInitiated)
+    init(strings: [String: String] = [:], _ done: @escaping ([[String: Any]]) -> Void) { self.strings = strings; self.done = done }
     func documentCameraViewController(_ c: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
-        var pages: [[String: Any]] = []
-        for i in 0..<scan.pageCount {
-            let img = scan.imageOfPage(at: i)
-            // kıvrık kitap sayfası: UVDoc ile düzleştirilir (Apple yalnız perspektifi düzeltir)
-            if let cg = img.cgImage, let path = PageFlattener.flattenToFile(CIImage(cgImage: cg), prefix: "apple") { pages.append(["path": path, "flat": true]); continue }
-            // web uygulamasının sakladığı karelerle aynı boyut sınırı (uzun kenar ≤2600)
-            let s = min(1, 2600 / max(img.size.width, img.size.height))
-            let sz = CGSize(width: (img.size.width * s).rounded(), height: (img.size.height * s).rounded())
-            let r = UIGraphicsImageRenderer(size: sz, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; return f }())
-            let out = r.image { _ in img.draw(in: CGRect(origin: .zero, size: sz)) }
-            guard let jpg = out.jpegData(compressionQuality: 0.92) else { continue }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("apple-\(UUID().uuidString).jpg")
-            if (try? jpg.write(to: url)) != nil { pages.append(["path": url.absoluteString, "flat": true]) }
+        // sayfalar hemen alınır, tarayıcı kapanır; düzleştirme (UVDoc) ARKA PLANDA, ilerleme ekranıyla yapılır
+        // (ana iş parçacığında yapılınca ekran donuyordu)
+        let imgs = (0..<scan.pageCount).map { scan.imageOfPage(at: $0) }
+        let host = c.presentingViewController
+        c.dismiss(animated: true) {
+            let pv = ImportProgressViewController(title: self.strings["preparing"] ?? "Sayfalar düzleştiriliyor…", cancel: self.strings["cancel"] ?? "Vazgeç")
+            var cancelled = false
+            pv.onCancel = { cancelled = true }
+            pv.modalPresentationStyle = .overFullScreen
+            host?.present(pv, animated: true)
+            self.work.async {
+                var pages: [[String: Any]] = []
+                for (i, img) in imgs.enumerated() {
+                    if cancelled { break }
+                    DispatchQueue.main.async { pv.update(Double(i) / Double(max(1, imgs.count)), (self.strings["preparing"] ?? "Sayfalar düzleştiriliyor…") + " \(i + 1)/\(imgs.count)", "") }
+                    autoreleasepool {
+                        if let cg = img.cgImage, let path = PageFlattener.flattenToFile(CIImage(cgImage: cg), prefix: "apple") { pages.append(["path": path, "flat": true]); return }
+                        // düzleştirilemedi: Apple'ın kırptığı sayfa (uzun kenar ≤2600)
+                        let s = min(1, 2600 / max(img.size.width, img.size.height))
+                        let sz = CGSize(width: (img.size.width * s).rounded(), height: (img.size.height * s).rounded())
+                        let r = UIGraphicsImageRenderer(size: sz, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; return f }())
+                        let out = r.image { _ in img.draw(in: CGRect(origin: .zero, size: sz)) }
+                        guard let jpg = out.jpegData(compressionQuality: 0.92) else { return }
+                        let url = FileManager.default.temporaryDirectory.appendingPathComponent("apple-\(UUID().uuidString).jpg")
+                        if (try? jpg.write(to: url)) != nil { pages.append(["path": url.absoluteString, "flat": true]) }
+                    }
+                }
+                DispatchQueue.main.async { pv.dismiss(animated: true) { self.done(pages) } }
+            }
         }
-        c.dismiss(animated: true) { self.done(pages) }
     }
     func documentCameraViewControllerDidCancel(_ c: VNDocumentCameraViewController) { c.dismiss(animated: true) { self.done([]) } }
     func documentCameraViewController(_ c: VNDocumentCameraViewController, didFailWithError error: Error) { c.dismiss(animated: true) { self.done([]) } }
@@ -1105,9 +1122,13 @@ enum PageFlattener {
     /// görüntüyü düzleştirip (uzun kenar ≤2600) JPEG olarak geçici klasöre yazar → yol; başarısızsa nil
     static func flattenToFile(_ img: CIImage, prefix: String = "duz") -> String? {
         guard let d = get_() else { return nil }
+        var img = img
+        // düzleştirme 2000 px'te (okunaklılık için yeterli; yeniden örnekleme ~%40 daha hızlı)
+        let k = min(1, 2000 / max(img.extent.width, img.extent.height))
+        if k < 1 { img = img.transformed(by: CGAffineTransform(scaleX: k, y: k)) }
         let e = img.extent
         guard let cg = ci.createCGImage(img, from: e.integral) else { return nil }
-        guard let out = try? d.unwarp(cg) else { return nil }
+        guard let out = try? d.unwarp(cg, maxSide: 2000) else { return nil }
         guard let jpg = UIImage(cgImage: out).jpegData(compressionQuality: 0.92) else { return nil }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString).jpg")
         return (try? jpg.write(to: url)) != nil ? url.absoluteString : nil

@@ -3040,6 +3040,8 @@ $('btnRetakeAll').onclick = () => startRetake(badPages().map(p => p.id));
 async function splitIfSpread(blob){
   try{
     const bmp = await createImageBitmap(blob);
+    // dikey (tek sayfa) görüntüde açık kitap aranmaz: sayfa başına ~1 sn kazanç
+    if(bmp.width < bmp.height*1.05){ if(bmp.close) bmp.close(); return null; }
     const k = Math.min(1, QUICK_MAX/Math.max(bmp.width, bmp.height));
     const c = document.createElement('canvas'); c.width = Math.round(bmp.width*k); c.height = Math.round(bmp.height*k);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); if(bmp.close) bmp.close();
@@ -3053,7 +3055,8 @@ async function nativeScan(method){
   method = method || 'scan';
   const strings = {show: T('Sayfayı göster — kendiliğinden çekilir'), hold: T('Sabit tut — çekiliyor…'), next: T('✓ Tamam — sonraki sayfa'),
                    corners: T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'), count: T('{n} sayfa'), done: T('Bitti ✓'),
-                   analyzing: T('Video analiz ediliyor…'), progress: T('Kareler inceleniyor… {p}%'), found: T('{n} sayfa bulundu'), cancel: T('Vazgeç')};
+                   analyzing: T('Video analiz ediliyor…'), progress: T('Kareler inceleniyor… {p}%'), found: T('{n} sayfa bulundu'), cancel: T('Vazgeç'),
+                   preparing: T('Sayfalar düzleştiriliyor…')};
   let r;
   try{ r = await native.call('NativeScanner', method, {strings}); }
   catch(e){
@@ -3064,8 +3067,10 @@ async function nativeScan(method){
     else toast(m);
     return;
   }
-  const items = [];
-  for(const pg of (r && r.pages) || []){
+  const items = [], list = (r && r.pages) || [];
+  // sayfalar alınırken / açık kitap denetlenirken ekranda ilerleme (yoksa uygulama donmuş sanılıyordu)
+  if(list.length) showOverlay(T('Hazırlanıyor…'));
+  for(const pg of list){
     try{
       const b = await (await fetch(window.Capacitor.convertFileSrc(pg.path))).blob();
       // açık kitap (yan tutulmuş iki sayfa) tek karede: iki sayfaya bölünür (canlı web çekimindeki gibi)
@@ -3075,6 +3080,7 @@ async function nativeScan(method){
       else items.push({file: new File([b], 'sayfa.jpg', {type: 'image/jpeg'}), hint: pg.quad || null, flat: !!pg.flat});
     }catch(_){}
   }
+  if(list.length) hideOverlay();
   for(const l of (r && r.log) || []) diagLog.push(l);
   if(items.length) runFiles(items);
 }

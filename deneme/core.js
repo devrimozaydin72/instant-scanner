@@ -1773,13 +1773,26 @@ function fillAlpha(d, w, h, alpha, col){
 /* iyileştirme sonrası: kağıt ~beyaz, gölge/sırt bantları koyu kalır */
 /* grafik sayfa mı (kapak, fotoğraf, renkli çizim)? Kağıt gibi olmayan (belirgin renkli ya da koyu) piksellerin
    oranı büyükse evet. Böyle sayfada yerel kağıt rengine bölmek koyu zemini "gölge" sanıp beyaza çevirir */
-function isGraphic(d, w, h){
+function isGraphic(d, w, h, paper, darkRule){
+  // renkler önce kağıt rengine göre dengelenir: sarı ev ışığında kağıt da "renkli" görünür, yazı sayfası kapak sanılırdı
+  // yalnız kağıda benzeyen (nötr ya da ev ışığında sarımsı) renge göre: mavi gökyüzü gibi açık renkli kapak zemini kağıt sayılmaz
+  if(paper && !(paper[2] <= paper[0]*1.02 && paper[0] - paper[2] < 110)) paper = null;
+  const sr = paper ? Math.min(2.5, 255/Math.max(1, paper[0])) : 1, sg = paper ? Math.min(2.5, 255/Math.max(1, paper[1])) : 1, sb = paper ? Math.min(2.5, 255/Math.max(1, paper[2])) : 1;
   let n = 0, k = 0;
   for(let y=Math.floor(h*0.08); y<h*0.92; y+=3) for(let x=Math.floor(w*0.08); x<w*0.92; x+=3){
-    const j = (y*w+x)*4, r = d[j], g = d[j+1], b = d[j+2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    const j = (y*w+x)*4, r = Math.min(255, d[j]*sr), g = Math.min(255, d[j+1]*sg), b = Math.min(255, d[j+2]*sb), mx = Math.max(r, g, b), mn = Math.min(r, g, b);
     k++; if((mx - mn > 55 && mx > 50) || 0.299*r + 0.587*g + 0.114*b < 85) n++;
   }
-  return k > 0 && n/k > 0.3;
+  if(k > 0 && n/k > 0.3) return true;
+  if(!darkRule) return false;     // yalnız iPhone'da kırpılmış sayfada (gölgeli ham karede sırt gölgesi de koyu sayılırdı)
+  // ışıktan bağımsız ikinci ölçü: en parlak kısma (kağıt) göre koyu piksel oranı. Yazı sayfasında %0-14,
+  // kapakta / fotoğrafta %38-40 (telefon örnekleri; ev ışığında kapak renkleri soluk göründüğü için renk ölçüsü kaçırıyordu)
+  const Ls = [];
+  for(let y=Math.floor(h*0.08); y<h*0.92; y+=5) for(let x=Math.floor(w*0.08); x<w*0.92; x+=5){ const j = (y*w+x)*4; Ls.push(0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]); }
+  if(Ls.length < 50) return false;
+  const P90 = quantile(Ls, 0.9);
+  let dk = 0; for(const l of Ls) if(l < P90*0.6) dk++;
+  return dk/Ls.length > 0.25;
 }
 /* grafik sayfa iyileştirmesi: beyaz dengesi (en parlak nötr pikseller) + düzey germe + hafif keskinlik.
    Renkler korunur; gri/siyah-beyaz modda griye çevrilir (kapakta sert eşik yazıyı bozar) */
@@ -3367,6 +3380,14 @@ function processCanvas(src, opts){
   let tl = Date.now(); const tms = [];
   const T = name => { const n=Date.now(); tms.push(name+':'+(n-tl)); tl=n; };
   const sd = imgData(src).data;
+  // iPhone uygulamasının kırpıp düzleştirdiği sayfa (flat): kapak / fotoğraf sayfası olduğu gibi bırakılır (yeniden kırpma
+  // kapağın yazısını "sayfa" sanıp küçük bir parça kesiyordu); yazı sayfasında parmak silme + kenar izi kırpma yapılır
+  if(opts.flat && opts.smartCrop){
+    const rs = [], gs = [], bs = [];
+    for(let i=0; i<W*H; i+=37){ const j = i*4, l = 0.299*sd[j] + 0.587*sd[j+1] + 0.114*sd[j+2]; if(l > 140){ rs.push(sd[j]); gs.push(sd[j+1]); bs.push(sd[j+2]); } }
+    const paper = rs.length > W*H/37*0.05 ? [quantile(rs,0.6), quantile(gs,0.6), quantile(bs,0.6)] : null;
+    if(isGraphic(sd, W, H, paper)){ opts = Object.assign({}, opts, {smartCrop: false}); dbg.push('düz sayfa: kapak/grafik → yeniden kırpılmaz'); }
+  }
   let det = null, quad = null;
   // ---- yazı öncelikli yol: yazı satırlarından yön, perspektif ve kıvrım (sayfa kenarına bakmaz)
   let TX = null;
@@ -3637,9 +3658,10 @@ function processCanvas(src, opts){
   const paperRaw = TX ? [255, 255, 255] : paperColorQ(qRaw, qw*qh);
   const paperL = 0.299*paperRaw[0]+0.587*paperRaw[1]+0.114*paperRaw[2];
   let fillQ = null, fingerQ = null;
-  const graphic = mode !== 'yazı' && opts.mode !== 'orig' && isGraphic(pageData, fw, fhR);
+  const graphic = mode !== 'yazı' && opts.mode !== 'orig' && isGraphic(pageData, fw, fhR, TX ? null : paperRaw, !!opts.flat);
   if(graphic) dbg.push('grafik sayfa (kapak/fotoğraf): renkler korunur');
-  if(opts.smartCrop && !TX && !graphic){
+  // düz sayfa (iPhone'da kırpılıp düzleştirildi): yeniden kırpılmaz ama parmak / el yine silinir
+  if((opts.smartCrop || opts.flat) && !TX && !graphic){
     const localPaper = localPaperGrid(qRaw, qw, qh);
     const cand = new Uint8Array(qw*qh);
     const comp = mode === 'sayfa' && det && det.ok ? det.compFilled : null;
@@ -3750,7 +3772,7 @@ function processCanvas(src, opts){
   T('iyileştir');
   const pageCanvas = quick ? null : putRGBA(pageData, fw, fh);
   let fbox = {x0:0,y0:0,x1:fw,y1:fhR};
-  if(mode === 'sayfa' && opts.smartCrop && opts.mode !== 'orig' && !graphic) fbox = trimEnhancedBox(pageData, fw, fh);
+  if(mode === 'sayfa' && (opts.smartCrop || opts.flat) && opts.mode !== 'orig' && !graphic) fbox = trimEnhancedBox(pageData, fw, fh);   // kenardaki koyu şerit (sayfa bitim izi) atılır
 
   // ---- sorunlar
   const st = inkStatsQ(pageData, fw, fhR, Q, fbox, fingerQ);

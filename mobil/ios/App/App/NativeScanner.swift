@@ -1,4 +1,5 @@
 import UIKit
+import QuickLook
 import CoreML
 import AVFoundation
 import Vision
@@ -16,6 +17,11 @@ func nlog(_ s: String) { print("[yerel] " + s); fflush(stdout) }
 class MainViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(NativeScannerPlugin())
+        // iki parmakla sayfa büyütme kapalı (büyütülen ekran geri küçültülemiyordu); ekran hep normal boyutta
+        if let sv = webView?.scrollView {
+            sv.minimumZoomScale = 1; sv.maximumZoomScale = 1; sv.bouncesZoom = false
+            sv.pinchGestureRecognizer?.isEnabled = false
+        }
         // sayfa düzleştirme modeli açılışta arka planda yüklenir (ilk yükleme ~10 sn; taramaya hazır olsun)
         DispatchQueue.global(qos: .utility).async {
             _ = PageFlattener.ready
@@ -39,8 +45,25 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "record", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ocr", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "appleScan", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "takePending", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "takePending", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "preview", returnType: CAPPluginReturnPromise)
     ]
+    private var previewSource: PdfPreviewSource?
+
+    /// PDF'i tam ekran göster (Apple Quick Look): kaydırarak bakılır, sağ üstte paylaş / Dosyalara kaydet, "Bitti" ile geri dönülür
+    @objc func preview(_ call: CAPPluginCall) {
+        guard let p = call.getString("path") else { call.reject("yol yok"); return }
+        let url = p.hasPrefix("file:") ? URL(string: p)! : URL(fileURLWithPath: p)
+        DispatchQueue.main.async {
+            guard let host = self.bridge?.viewController else { call.reject("görünüm yok"); return }
+            let src = PdfPreviewSource(url: url) { self.previewSource = nil; call.resolve() }
+            self.previewSource = src
+            let ql = QLPreviewController()
+            ql.dataSource = src; ql.delegate = src
+            ql.modalPresentationStyle = .fullScreen
+            host.present(ql, animated: true)
+        }
+    }
 
     /// Tarayıcı açıkken iOS bellek için web görünümünü kapatabilir (sayfa yeniden yüklenir, bekleyen çağrı kaybolur).
     /// Bu yüzden tarama sonucu önce diske yazılır; web görünümü açılışta / sonuç gelince bekleyenleri alır.
@@ -223,9 +246,11 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
 
     // ana iş parçacığı
     private var pages: [[String: Any]] = []
+    private var pageWords: [Set<String>] = []
     private var log: [String] = []
     private var pending = 0
     private var finishing = false
+    private var stopShooting = false      // "Bitti"ye basıldı: kamera yeni sayfa çekmez (bekleme hiç bitmiyordu)
     private var dispQuad: PageQuad? = nil
 
     override var prefersStatusBarHidden: Bool { true }
@@ -360,7 +385,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
 
     // MARK: her kare
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let pb = CMSampleBufferGetImageBuffer(sb) else { return }
+        guard let pb = CMSampleBufferGetImageBuffer(sb), !stopShooting else { return }
         let now = CACurrentMediaTime()
         bufSize = CGSize(width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb))
         motion = frameMotion(pb)
@@ -480,7 +505,44 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             defer { DispatchQueue.main.async { self.pending -= 1 } }
             guard var img = CIImage(data: data, options: [.applyOrientationProperty: true]) else { return }
             img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
-            // web uygulamasının sakladığı karelerle aynı boyut (uzun kenar en çok 2600)
+            // tam çözünürlüklü fotoğraftan kırpılır (sayfa kareyi doldurur → keskin), sonra düzleştirilir
+            let tf = CACurrentMediaTime()
+            let fr0 = PageFlattener.flatten(img, prefix: "canli", rejectBlurry: true)
+            if let fr = fr0, fr.path.isEmpty {
+                // bulanık / sayfa çevrilirken çekilmiş: eklenmez, tarayıcı sayfayı sabitlenince yeniden çeker
+                self.note("bulanık kare atıldı → yeniden çekilecek")
+                self.videoQueue.async { if self.phase == .waitChange { self.phase = .hunting; self.newPageAt = CACurrentMediaTime() } }
+                self.setHint(self.S("blurry", "Bulanık çıktı — sabit tut, yeniden çekiliyor"), warn: true)
+                return
+            }
+            if let fr = fr0, let ui = UIImage(contentsOfFile: URL(string: fr.path)!.path) {
+                let ms = (CACurrentMediaTime() - tf) * 1000
+                DispatchQueue.main.async {
+                    // aynı sayfa ikinci kez çekildiyse (son 3 sayfayla kelime karşılaştırması) yenisi öncekinin yerine geçer
+                    let lo = max(0, self.pages.count - 3)
+                    if let k = (lo..<self.pages.count).last(where: { PageText.same(fr.words, self.pageWords[$0]) == true }) {
+                        // aynı sayfa: daha dolu olan kalır (sayfa çevrilirken / telefon kalkarken çekilen kesik kare atılır)
+                        if fr.words.count > Int(Double(self.pageWords[k].count) * 1.1) {
+                            self.pages[k] = ["path": fr.path, "flat": true]
+                            self.pageWords[k] = fr.words
+                            self.note(String(format: "tekrar çekim: %d. sayfanın yerine geçti (%d > kelime, %.0f ms)", k + 1, fr.words.count, ms))
+                        } else {
+                            self.note(String(format: "tekrar çekim atıldı (%d. sayfa daha dolu, %.0f ms)", k + 1, ms))
+                        }
+                    } else if fr.words.count < 2, let prev = self.pageWords.last, prev.count >= 30 {
+                        // yazı sayfasından hemen sonra yazısız kare: büyük olasılıkla masa / el / sayfa çevrilirken → atılır
+                        self.note("yazısız kare atıldı (masa / çevirme anı)")
+                    } else {
+                        self.pages.append(["path": fr.path, "flat": true])
+                        self.pageWords.append(fr.words)
+                        self.note(String(format: "sayfa %d kırpıldı + düzleştirildi %.0f ms (%d kelime)", self.pages.count, ms, fr.words.count))
+                    }
+                    self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
+                    self.thumb.image = ui
+                }
+                return
+            }
+            // düzleştirici yoksa: web uygulamasının sakladığı karelerle aynı boyut (uzun kenar en çok 2600)
             let s = min(1, 2600 / max(img.extent.width, img.extent.height))
             let out = img.transformed(by: CGAffineTransform(scaleX: s, y: s))
             // köşeler fotoğrafta yeniden bulunur (daha kesin); bulunamazsa canlı dörtgen
@@ -489,14 +551,6 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             let req = VNDetectDocumentSegmentationRequest()
             try? VNImageRequestHandler(ciImage: out.transformed(by: CGAffineTransform(scaleX: ds, y: ds)), options: [:]).perform([req])
             if let o = req.results?.first, o.confidence > 0.5 { let pq = PageQuad(o); if pq.area > 0.04 { quad = pq } }
-            if let path = PageFlattener.flattenToFile(out, prefix: "canli"), let ui = UIImage(contentsOfFile: URL(string: path)!.path) {
-                DispatchQueue.main.async {
-                    self.pages.append(["path": path, "flat": true])
-                    self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
-                    self.thumb.image = ui
-                }
-                return
-            }
             guard let cg = Self.ci.createCGImage(out, from: out.extent.integral),
                   let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.92) else { return }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("tarama-\(UUID().uuidString).jpg")
@@ -544,9 +598,15 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         guard !finishing else { return }
         finishing = true
         doneBtn.isEnabled = false
-        // çekilmekte / yazılmakta olan sayfa beklenir
+        doneBtn.alpha = 0.85
+        videoQueue.async { self.stopShooting = true }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        // çekilmekte / düzleştirilmekte olan sayfalar beklenir; düğmede kalan sayı görünür (basıldığı anlaşılsın)
         func waitDone() {
-            if pending > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: waitDone); return }
+            if pending > 0 {
+                doneBtn.setTitle(S("finishing", "Hazırlanıyor… {n}").replacingOccurrences(of: "{n}", with: "\(pending)"), for: .disabled)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: waitDone); return
+            }
             let total = CACurrentMediaTime() - t0
             log.append(String(format: "yerel tarama: %d sayfa, %.1f sn, belge modeli ort %.0f ms", pages.count, total, visionMs))
             videoQueue.async { self.session.stopRunning() }
@@ -1043,7 +1103,7 @@ final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate 
                     DispatchQueue.main.async { pv.update(Double(i) / Double(max(1, imgs.count)), (self.strings["preparing"] ?? "Sayfalar düzleştiriliyor…") + " \(i + 1)/\(imgs.count)", "") }
                     autoreleasepool {
                         let t = CACurrentMediaTime()
-                        if let cg = img.cgImage, let path = PageFlattener.flattenToFile(CIImage(cgImage: cg), prefix: "apple") { pages.append(["path": path, "flat": true]); nlog(String(format: "sayfa %d düzleştirildi %.0f ms (%dx%d)", i + 1, (CACurrentMediaTime() - t) * 1000, Int(img.size.width), Int(img.size.height))); return }
+                        if let cg = img.cgImage, let path = PageFlattener.flattenToFile(CIImage(cgImage: cg), prefix: "apple", detect: false) { pages.append(["path": path, "flat": true]); nlog(String(format: "sayfa %d düzleştirildi %.0f ms (%dx%d)", i + 1, (CACurrentMediaTime() - t) * 1000, Int(img.size.width), Int(img.size.height))); return }
                         nlog("sayfa \(i + 1) düzleştirilemedi (cgImage \(img.cgImage != nil), model \(PageFlattener.ready))")
                         // düzleştirilemedi: Apple'ın kırptığı sayfa (uzun kenar ≤2600)
                         let s = min(1, 2600 / max(img.size.width, img.size.height))
@@ -1157,7 +1217,12 @@ enum PageFlattener {
     /// sayfayı dik çevirmek için gereken yön. Apple'ın doğru (accurate) metin tanıması yazıyı her yönde okur ve satır
     /// köşelerini verir: okuma yönü vektörü (sol-üst → sağ-üst, kelime uzunluğuyla ağırlıklı) yazının nereye baktığını söyler.
     /// (Hızlı mod ve güven puanı ters / yan yazıyı ayırt edemiyor — Mac'te dört yönle doğrulandı.) Yazısız sayfada .up
-    static func uprightOrientation(_ cg: CGImage) -> CGImagePropertyOrientation {
+    static func uprightOrientation(_ cg: CGImage) -> CGImagePropertyOrientation { orientationAndWords(cg).0 }
+    /// yön + sayfadaki 4+ harfli kelimeler (doğru mod her yönde okur; aynı sayfa ikinci kez çekildi mi kontrolü için)
+    static func orientationAndWords(_ cg: CGImage) -> (CGImagePropertyOrientation, Set<String>) { let r = analyze(cg); return (r.0, r.1) }
+    /// yön + kelimeler + bulanık mı. Bulanık / sayfa çevrilirken çekilmiş karede yazının çoğu düşük güvenle okunur
+    /// (telefondaki örneklerde harflerin %71-87'si; iyi sayfalarda %0-3). Az yazılı sayfa (imza, kapak) bu ölçüye girmez.
+    static func analyze(_ cg: CGImage) -> (CGImagePropertyOrientation, Set<String>, Bool) {
         var im = CIImage(cgImage: cg)
         let k = min(1, 1000 / max(im.extent.width, im.extent.height))
         im = im.transformed(by: CGAffineTransform(scaleX: k, y: k))
@@ -1167,29 +1232,65 @@ enum PageFlattener {
         req.recognitionLanguages = ["tr-TR", "en-US"]
         try? VNImageRequestHandler(ciImage: im, orientation: .up, options: [:]).perform([req])
         var dx = 0.0, dy = 0.0
+        var words = Set<String>()
+        var chars = 0, low = 0
         for r in req.results ?? [] {
             let w = Double(r.topRight.x - r.topLeft.x), h = Double(r.topRight.y - r.topLeft.y)
             let L = (w * w + h * h).squareRoot(); if L < 1e-6 { continue }
-            let c = Double(r.topCandidates(1).first?.string.count ?? 0)
+            let cand = r.topCandidates(1).first
+            let str = cand?.string ?? ""
+            chars += str.count; if (cand?.confidence ?? 0) < 0.5 { low += str.count }
+            let c = Double(str.count)
             dx += w / L * c; dy += h / L * c
+            for x in str.lowercased().split(whereSeparator: { !$0.isLetter }) where x.count >= 4 { words.insert(String(x)) }
         }
-        if max(abs(dx), abs(dy)) < 40 { return .up }            // yazı çok az: dokunulmaz
-        if abs(dx) >= abs(dy) { return dx > 0 ? .up : .down }
-        return dy > 0 ? .right : .left                          // (CIImage.oriented ile doğrulanmış eşleme)
+        let blurry = chars >= 300 && Double(low) >= Double(chars) * 0.5
+        if max(abs(dx), abs(dy)) < 40 { return (.up, words, blurry) }            // yazı çok az: dokunulmaz
+        if abs(dx) >= abs(dy) { return (dx > 0 ? .up : .down, words, blurry) }
+        return (dy > 0 ? .right : .left, words, blurry)                          // (CIImage.oriented ile doğrulanmış eşleme)
     }
 
-    /// görüntüyü düzleştirip (uzun kenar ≤2600) JPEG olarak geçici klasöre yazar → yol; başarısızsa nil
-    static func flattenToFile(_ img: CIImage, prefix: String = "duz") -> String? {
+    /// Apple belge modeliyle sayfa köşeleri (normalize, CI koordinatı: sol-alt orijin) — TL, TR, BR, BL
+    static func detectQuad(_ img: CIImage) -> [CGPoint]? {
+        let ds = min(1, 1024 / max(img.extent.width, img.extent.height))
+        let req = VNDetectDocumentSegmentationRequest()
+        try? VNImageRequestHandler(ciImage: img.transformed(by: CGAffineTransform(scaleX: ds, y: ds)), options: [:]).perform([req])
+        guard let o = req.results?.first, o.confidence > 0.5 else { return nil }
+        let q = [o.topLeft, o.topRight, o.bottomRight, o.bottomLeft]
+        var a: CGFloat = 0
+        for k in 0..<4 { let p = q[k], n = q[(k + 1) % 4]; a += p.x * n.y - n.x * p.y }
+        return abs(a) / 2 > 0.08 ? q : nil
+    }
+
+    /// görüntüyü düzleştirip JPEG olarak geçici klasöre yazar → yol; başarısızsa nil
+    static func flattenToFile(_ img: CIImage, prefix: String = "duz", detect: Bool = true) -> String? { flatten(img, prefix: prefix, detect: detect)?.path }
+
+    /// 1) sayfa köşeleri bulunur, dörtgen %6 genişletilip perspektifi düzeltilerek kırpılır (masa / örtü atılır, sayfa
+    ///    kareyi doldurur → daha yüksek çözünürlük); 2) UVDoc kıvrımı açar; 3) yazı yönüne göre dik çevrilir.
+    /// Mac'te senin karelerinle doğrulandı: tüm karede UVDoc arka planı bırakıyordu. → (yol, sayfadaki kelimeler)
+    static func flatten(_ img0: CIImage, prefix: String = "duz", detect: Bool = true, rejectBlurry: Bool = false) -> (path: String, words: Set<String>)? {
         guard let d = get_() else { return nil }
-        var img = img
-        // düzleştirme 2000 px'te (okunaklılık için yeterli; yeniden örnekleme ~%40 daha hızlı)
-        let k = min(1, 1800 / max(img.extent.width, img.extent.height))
-        if k < 1 { img = img.transformed(by: CGAffineTransform(scaleX: k, y: k)) }
+        var img = img0.transformed(by: CGAffineTransform(translationX: -img0.extent.minX, y: -img0.extent.minY))
         let e = img.extent
-        guard let cg = ci.createCGImage(img, from: e.integral) else { return nil }
-        guard var out = try? d.unwarp(cg, maxSide: 1800) else { return nil }
+        if detect, let q = detectQuad(img) {
+            let cx = q.map { $0.x }.reduce(0, +) / 4, cy = q.map { $0.y }.reduce(0, +) / 4
+            let pts = q.map { CGPoint(x: min(1, max(0, cx + ($0.x - cx) * 1.06)) * e.width, y: min(1, max(0, cy + ($0.y - cy) * 1.06)) * e.height) }
+            if let f = CIFilter(name: "CIPerspectiveCorrection") {
+                f.setValue(img, forKey: kCIInputImageKey)
+                f.setValue(CIVector(cgPoint: pts[0]), forKey: "inputTopLeft"); f.setValue(CIVector(cgPoint: pts[1]), forKey: "inputTopRight")
+                f.setValue(CIVector(cgPoint: pts[2]), forKey: "inputBottomRight"); f.setValue(CIVector(cgPoint: pts[3]), forKey: "inputBottomLeft")
+                if let r = f.outputImage, r.extent.width > 200, r.extent.height > 200 {
+                    img = r.transformed(by: CGAffineTransform(translationX: -r.extent.minX, y: -r.extent.minY))
+                }
+            }
+        }
+        let k = min(1, 2200 / max(img.extent.width, img.extent.height))
+        if k < 1 { img = img.transformed(by: CGAffineTransform(scaleX: k, y: k)) }
+        guard let cg = ci.createCGImage(img, from: img.extent.integral) else { return nil }
+        guard var out = try? d.unwarp(cg, maxSide: 2200) else { return nil }
         // yazı yan / ters ise düz çevrilir (yan tutulmuş açık kitap → yatay → web ikiye böler; PDF'te hepsi dik)
-        let o = uprightOrientation(out)
+        let (o, words, blurry) = analyze(out)
+        if blurry && rejectBlurry { nlog("bulanık / çevrilirken çekilmiş kare atıldı"); return (path: "", words: words) }
         if o != .up {
             var r = CIImage(cgImage: out).oriented(o)
             r = r.transformed(by: CGAffineTransform(translationX: -r.extent.minX, y: -r.extent.minY))
@@ -1198,6 +1299,16 @@ enum PageFlattener {
         }
         guard let jpg = UIImage(cgImage: out).jpegData(compressionQuality: 0.92) else { return nil }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString).jpg")
-        return (try? jpg.write(to: url)) != nil ? url.absoluteString : nil
+        return (try? jpg.write(to: url)) != nil ? (url.absoluteString, words) : nil
     }
+}
+
+/// Quick Look veri kaynağı (tek PDF)
+final class PdfPreviewSource: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
+    let url: URL
+    let onClose: () -> Void
+    init(url: URL, onClose: @escaping () -> Void) { self.url = url; self.onClose = onClose }
+    func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+    func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { url as NSURL }
+    func previewControllerDidDismiss(_ controller: QLPreviewController) { onClose() }
 }

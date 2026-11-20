@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0f1420">
 <title>INSTANT SCANNER — Kitaptan PDF</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -580,6 +580,7 @@
     <h3 id="pdfTitle">✅ PDF hazır</h3>
     <div id="pdfInfo"></div>
     <div class="rowbtns">
+      <button class="btn green" id="pdfView" style="font-size:18px; padding:14px" hidden data-t>👁 PDF'i Gör</button>
       <button class="btn green" id="pdfShare" data-t>📤 Paylaş / Dosyalara Kaydet</button>
       <button class="btn" id="pdfDown" data-t>⬇ PDF İndir</button>
       <button class="btn gray" id="pdfOpen" data-t>👁 Aç</button>
@@ -871,6 +872,9 @@ const pdfDlg = {
     $('pdfDown').hidden = native.on;
     $('pdfDown').className = 'btn ' + (preferShare ? 'gray' : 'green');
     $('pdfOpen').hidden = native.on || isIOS;     // iOS'ta indirme zaten görüntüleme seçeneği sunar
+    // iPhone uygulaması: PDF tam ekran açılır (Bitti ile geri dönülür); paylaşım ikinci düğme
+    $('pdfView').hidden = !native.has('NativeScanner');
+    if(!$('pdfView').hidden) $('pdfShare').className = 'btn gray';
     $('pdfNew').hidden = !d.fresh || !!d.raw;
     $('pdfDel').hidden = d.fresh || !d.docId;
     $('pdfDlg').hidden = false;
@@ -930,6 +934,16 @@ $('pdfShare').onclick = async () => {
   }
 };
 $('pdfDown').onclick = () => { const d = pdfDlg.cur; if(d) downloadBlob(d.blob, d.name); };
+$('pdfView').onclick = async () => {
+  const d = pdfDlg.cur; if(!d) return;
+  showOverlay(T('PDF açılıyor…'));
+  try{
+    const data = await blobToBase64(d.blob);
+    const uri = (await native.call('Filesystem', 'writeFile', {path:d.name, data, directory:'CACHE'})).uri;
+    hideOverlay();
+    await native.call('NativeScanner', 'preview', {path: uri});
+  }catch(e){ hideOverlay(); toast(T('PDF açılamadı: {e}', {e: e && e.message || e})); }
+};
 $('pdfOpen').onclick = () => {
   const d = pdfDlg.cur; if(!d) return;
   if(!pdfDlg.url) pdfDlg.url = URL.createObjectURL(d.blob);
@@ -1053,7 +1067,7 @@ proc.init();
 function procOpts(p){
   const [outW, outH] = OUT_SIZE[String(settings.quality)] || OUT_SIZE['0.85'];
   // pageHint: çekim anında ekranda gösterilen (eğitilmiş modelle bulunan) sayfa dörtgeni — yazısız sayfa (kapak) kırpması ona uyar
-  return {mode:p.mode || settings.mode, smartCrop: p.flat ? false : settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0, pageHint: p.hint || undefined};
+  return {mode:p.mode || settings.mode, smartCrop: p.flat ? false : settings.smartCrop, flat: !!p.flat, quality:settings.quality, outW, outH, rot:p.rot||0, pageHint: p.hint || undefined};
 }
 /* sayfayı (yeniden) işle; eski sonuçlar sürüm numarasıyla elenir */
 function processPage(p){
@@ -3063,7 +3077,7 @@ async function nativeScanRun(method){
   const strings = {show: T('Sayfayı göster — kendiliğinden çekilir'), hold: T('Sabit tut — çekiliyor…'), next: T('✓ Tamam — sonraki sayfa'),
                    corners: T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'), count: T('{n} sayfa'), done: T('Bitti ✓'),
                    analyzing: T('Video analiz ediliyor…'), progress: T('Kareler inceleniyor… {p}%'), found: T('{n} sayfa bulundu'), cancel: T('Vazgeç'),
-                   preparing: T('Sayfalar düzleştiriliyor…')};
+                   preparing: T('Sayfalar düzleştiriliyor…'), finishing: T('Hazırlanıyor… {n}'), blurry: T('Bulanık çıktı — sabit tut, yeniden çekiliyor')};
   let r;
   console.log('[tarama] yerel ' + method + ' başladı');
   try{

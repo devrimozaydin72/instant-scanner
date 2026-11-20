@@ -509,6 +509,14 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
             // tam çözünürlüklü fotoğraftan kırpılır (sayfa kareyi doldurur → keskin), sonra düzleştirilir
             let tf = CACurrentMediaTime()
+            // tanı için ham kare (uzun kenar 2400, geçici klasör; iOS kendisi temizler)
+            do {
+                let k = min(1, 2400 / max(img.extent.width, img.extent.height))
+                let sm = img.transformed(by: CGAffineTransform(scaleX: k, y: k))
+                if let cg = Self.ci.createCGImage(sm, from: sm.extent.integral), let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.85) {
+                    try? jpg.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("ham-\(Int(Date().timeIntervalSince1970 * 1000)).jpg"))
+                }
+            }
             let fr0 = PageFlattener.flatten(img, prefix: "canli", rejectBlurry: true)
             if let fr = fr0, fr.paths.isEmpty {
                 // bulanık / sayfa çevrilirken çekilmiş: eklenmez, tarayıcı sayfayı sabitlenince yeniden çeker
@@ -1239,8 +1247,13 @@ enum PagePipeline {
         func med(_ x: Int) -> Double { var v: [UInt8] = []; for y in stride(from: h / 10, to: h * 9 / 10, by: 3) { v.append(g[y * w + x]) }; v.sort(); return Double(v[v.count / 2]) }
         var c: [Double] = []; for x in stride(from: w / 3, to: w * 2 / 3, by: 5) { c.append(med(x)) }; c.sort()
         let paper = c[c.count / 2]
+        // yalnız dolgu kadar koyu (≈ 41 gri) ve düzgün sütunlar: gölgeli kağıt (100-150) ve yazı kesilmez
+        func uniformDark(_ x: Int) -> Bool {
+            var v: [UInt8] = []; for y in stride(from: h / 10, to: h * 9 / 10, by: 3) { v.append(g[y * w + x]) }; v.sort()
+            return Double(v[v.count / 2]) < min(paper * 0.45, 90) && Double(v[v.count * 9 / 10]) < min(paper * 0.55, 110)
+        }
         var n = 0
-        while n < w * 8 / 100 && med(left ? n : w - 1 - n) < paper * 0.6 { n += 1 }
+        while n < w * 8 / 100 && uniformDark(left ? n : w - 1 - n) { n += 1 }
         guard n > 0 else { return cg }
         let cut = Int(Double(n + 1) * Double(cg.width) / Double(w))
         let r = left ? CGRect(x: cut, y: 0, width: cg.width - cut, height: cg.height) : CGRect(x: 0, y: 0, width: cg.width - cut, height: cg.height)
@@ -1694,7 +1707,7 @@ enum Straighten {
             var rs: [Int] = [], gs: [Int] = [], bs: [Int] = []
             for y in stride(from: Int(H * 0.1), to: Int(H * 0.9), by: 7) { let o = (y * cg.width + max(0, min(cg.width - 1, sx))) * 4; rs.append(Int(px[o])); gs.append(Int(px[o + 1])); bs.append(Int(px[o + 2])) }
             rs.sort(); gs.sort(); bs.sort()
-            ctx.setFillColor(CGColor(colorSpace: cs, components: [CGFloat(rs[rs.count * 3 / 4]) / 255, CGFloat(gs[gs.count * 3 / 4]) / 255, CGFloat(bs[bs.count * 3 / 4]) / 255, 1])!)
+            ctx.setFillColor(CGColor(colorSpace: cs, components: [CGFloat(rs[rs.count * 9 / 10]) / 255, CGFloat(gs[gs.count * 9 / 10]) / 255, CGFloat(bs[bs.count * 9 / 10]) / 255, 1])!)
             ctx.fill(CGRect(x: f.minX * W, y: (1 - f.maxY) * H, width: f.width * W, height: f.height * H))
         }
         log.append(String(format: "yan sayfa izi temizlendi (%@)", fills.map { String(format: "%.3f-%.3f", $0.minX, $0.maxX) }.joined(separator: ", ")))
@@ -1734,13 +1747,25 @@ enum Straighten {
         if PagePipeline.debugSpine { print(String(format: "  koyu oranı %.3f", darkFrac)) }
         if darkFrac > 0.25 { log.append(String(format: "kenar temizliği yok (grafik sayfa, koyu %%%.0f)", darkFrac * 100)); return out }
         // renkli zemin (mavi gökyüzü gibi): kenar bandı renkliyse de dokunulmaz — aşağıda yalnız gri / kahverengi bant boyanır
+        // sütun / satır: kağıt düzeyi (üst %20) ve içinde yazı (mürekkep) var mı. Mürekkep görülen ilk sütunda / satırda
+        // durulur: gölgeli kağıttaki yazının üstüne asla boya gelmez (metin tanıma gölgedeki son harfleri okuyamayabilir)
         func colPaper(_ x: Int) -> Double { var v: [UInt8] = []; for y in stride(from: 0, to: h, by: 3) { v.append(px(x, y)) }; v.sort(); return Double(v[v.count * 8 / 10]) }
         func rowPaper(_ y: Int) -> Double { var v: [UInt8] = []; for x in stride(from: 0, to: w, by: 3) { v.append(px(x, y)) }; v.sort(); return Double(v[v.count * 8 / 10]) }
+        func colInk(_ x: Int) -> Bool {
+            var v: [Double] = []; for y in stride(from: h / 20, to: h - h / 20, by: 2) { v.append(Double(px(x, y))) }
+            var n = 0; for i in v.indices { let lo = max(0, i - 6), hi = min(v.count - 1, i + 6); let loc = v[lo...hi].max()!; if v[i] < loc * 0.72 { n += 1 } }
+            return n >= 3
+        }
+        func rowInk(_ y: Int) -> Bool {
+            var v: [Double] = []; for x in stride(from: w / 20, to: w - w / 20, by: 2) { v.append(Double(px(x, y))) }
+            var n = 0; for i in v.indices { let lo = max(0, i - 6), hi = min(v.count - 1, i + 6); let loc = v[lo...hi].max()!; if v[i] < loc * 0.72 { n += 1 } }
+            return n >= 3
+        }
         // kenardan içeri: kağıttan %12+ koyu sütun / satırlar (yazı alanına girmeden)
-        var L = 0; while L < Int(cx0 * CGFloat(w)) && colPaper(L) < paper * 0.88 { L += 1 }
-        var R = 0; while R < Int((1 - cx1) * CGFloat(w)) && colPaper(w - 1 - R) < paper * 0.88 { R += 1 }
-        var T = 0; while T < Int(cy0 * CGFloat(h)) && rowPaper(T) < paper * 0.88 { T += 1 }
-        var B = 0; while B < Int((1 - cy1) * CGFloat(h)) && rowPaper(h - 1 - B) < paper * 0.88 { B += 1 }
+        var L = 0; while L < Int(cx0 * CGFloat(w)) && colPaper(L) < paper * 0.88 && !colInk(L) { L += 1 }
+        var R = 0; while R < Int((1 - cx1) * CGFloat(w)) && colPaper(w - 1 - R) < paper * 0.88 && !colInk(w - 1 - R) { R += 1 }
+        var T = 0; while T < Int(cy0 * CGFloat(h)) && rowPaper(T) < paper * 0.88 && !rowInk(T) { T += 1 }
+        var B = 0; while B < Int((1 - cy1) * CGFloat(h)) && rowPaper(h - 1 - B) < paper * 0.88 && !rowInk(h - 1 - B) { B += 1 }
         guard L + R + T + B > 0 else { return out }
         let W = CGFloat(out.width), H = CGFloat(out.height)
         let space = CGColorSpaceCreateDeviceRGB()
@@ -1754,7 +1779,7 @@ enum Straighten {
             if l >= paper * 0.97 * 1.0 { rs.append(Int(p8[o])); gs.append(Int(p8[o + 1])); bs.append(Int(p8[o + 2])) } } }
         guard rs.count > 20 else { return out }
         rs.sort(); gs.sort(); bs.sort()
-        ctx.setFillColor(CGColor(colorSpace: space, components: [CGFloat(rs[rs.count / 2]) / 255, CGFloat(gs[gs.count / 2]) / 255, CGFloat(bs[bs.count / 2]) / 255, 1])!)
+        ctx.setFillColor(CGColor(colorSpace: space, components: [CGFloat(rs[rs.count * 9 / 10]) / 255, CGFloat(gs[gs.count * 9 / 10]) / 255, CGFloat(bs[bs.count * 9 / 10]) / 255, 1])!)
         let sx = W / CGFloat(w), sy = H / CGFloat(h)
         if L > 0 { ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(L + 1) * sx, height: H)) }
         if R > 0 { ctx.fill(CGRect(x: W - CGFloat(R + 1) * sx, y: 0, width: CGFloat(R + 1) * sx, height: H)) }

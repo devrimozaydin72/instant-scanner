@@ -1052,7 +1052,7 @@ proc.init();
 function procOpts(p){
   const [outW, outH] = OUT_SIZE[String(settings.quality)] || OUT_SIZE['0.85'];
   // pageHint: çekim anında ekranda gösterilen (eğitilmiş modelle bulunan) sayfa dörtgeni — yazısız sayfa (kapak) kırpması ona uyar
-  return {mode:p.mode || settings.mode, smartCrop:settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0, pageHint: p.hint || undefined};
+  return {mode:p.mode || settings.mode, smartCrop: p.flat ? false : settings.smartCrop, quality:settings.quality, outW, outH, rot:p.rot||0, pageHint: p.hint || undefined};
 }
 /* sayfayı (yeniden) işle; eski sonuçlar sürüm numarasıyla elenir */
 function processPage(p){
@@ -1470,7 +1470,7 @@ async function addCapture(c, opts){
     processPage(p);
     return p;
   }
-  const p = {id:c.id, origBlob:blob, rot:0, time:c.t, maybeDup:!!c.maybeDup, issues:[], status:'busy', hint: c.hint || null};
+  const p = {id:c.id, origBlob:blob, rot:0, time:c.t, maybeDup:!!c.maybeDup, issues:[], status:'busy', hint: c.hint || null, flat: !!c.flat};
   if(opts && opts.insertAt != null) state.pages.splice(opts.insertAt, 0, p);
   else state.pages.push(p);
   processPage(p);
@@ -1565,8 +1565,8 @@ async function scanVideo(file){
 async function runFiles(files){
   if(state.busy) return;
   // öğe: File ya da {file, hint} (iPhone uygulamasının yerel tarayıcısı: Apple belge modelinin bulduğu sayfa köşeleri)
-  const hints = new Map();
-  files = Array.from(files || []).map(f => { if(f && f.file){ if(f.hint) hints.set(f.file, f.hint); return f.file; } return f; });
+  const hints = new Map(), flats = new Set();
+  files = Array.from(files || []).map(f => { if(f && f.file){ if(f.hint) hints.set(f.file, f.hint); if(f.flat) flats.add(f.file); return f.file; } return f; });
   files = files.filter(f => /^(video|image)\//.test(f.type) || /\.(mp4|mov|webm|m4v|jpe?g|png|heic|webp)$/i.test(f.name||''));
   if(!files.length) return;
   state.cancel = false; state.busy = true;
@@ -1580,7 +1580,7 @@ async function runFiles(files){
     for(const f of files){
       if((f.type||'').startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name||'')){
         $('progTitle').textContent = T('Fotoğraflar ekleniyor…');
-        await addCapture({id:state.nextId++, blob:Promise.resolve(f), t:0, hint: hints.get(f) || null});   // sayfa listeye girmeden "bulunamadı" denmesin
+        await addCapture({id:state.nextId++, blob:Promise.resolve(f), t:0, hint: hints.get(f) || null, flat: flats.has(f)});   // sayfa listeye girmeden "bulunamadı" denmesin
       } else {
         $('progTitle').textContent = T('Video analiz ediliyor…');
         await scanVideo(f);
@@ -3059,6 +3059,7 @@ async function nativeScan(method){
   catch(e){
     const m = String(e && e.message || e);
     if(/denied/i.test(m)) toast(T('Kameraya erişilemedi ({e}). Video kaydı ile devam edebilirsin.', {e: m}));
+    else if(method === 'appleScan') return nativeScan('scan');      // Apple tarayıcısı yoksa kendi yerel tarayıcımız
     else if(method === 'scan') cam.open();
     else toast(m);
     return;
@@ -3069,14 +3070,16 @@ async function nativeScan(method){
       const b = await (await fetch(window.Capacitor.convertFileSrc(pg.path))).blob();
       // açık kitap (yan tutulmuş iki sayfa) tek karede: iki sayfaya bölünür (canlı web çekimindeki gibi)
       const hv = await splitIfSpread(b);
-      if(hv) hv.forEach((h, k) => items.push({file: new File([h], 'sayfa-' + k + '.jpg', {type: 'image/jpeg'}), hint: null}));
-      else items.push({file: new File([b], 'sayfa.jpg', {type: 'image/jpeg'}), hint: pg.quad || null});
+      // flat: Apple tarayıcısı sayfayı zaten kırpıp düzleştirdi → burada yeniden kırpılmaz, yalnız temizlenir
+      if(hv) hv.forEach((h, k) => items.push({file: new File([h], 'sayfa-' + k + '.jpg', {type: 'image/jpeg'}), hint: null, flat: !!pg.flat}));
+      else items.push({file: new File([b], 'sayfa.jpg', {type: 'image/jpeg'}), hint: pg.quad || null, flat: !!pg.flat});
     }catch(_){}
   }
   for(const l of (r && r.log) || []) diagLog.push(l);
   if(items.length) runFiles(items);
 }
-$('btnLive').onclick = () => native.has('NativeScanner') ? nativeScan() : cam.open();
+// iPhone uygulaması: canlı tarama Apple'ın belge tarayıcısıyla (VisionKit — otomatik çekim, köşe, perspektif, ışık düzeltmesi)
+$('btnLive').onclick = () => native.has('NativeScanner') ? nativeScan('appleScan') : cam.open();
 // iPhone uygulaması: galeriden seçilen / kamerayla kaydedilen video ve fotoğraflar yerelde (Apple belge modeli) incelenir
 if(native.has('NativeScanner')){
   $('btnPick').onclick = () => nativeScan('pick');

@@ -5,6 +5,7 @@ import CoreImage
 import AudioToolbox
 import Capacitor
 import PhotosUI
+import VisionKit
 import UniformTypeIdentifiers
 
 /// Capacitor köprüsü: yerel eklentiyi (NativeScanner) kaydeder
@@ -26,8 +27,28 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "scan", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pick", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "record", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "ocr", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "ocr", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "appleScan", returnType: CAPPluginReturnPromise)
     ]
+    private var appleScanner: AppleScanDelegate?
+
+    /// Apple'ın belge tarayıcısı (VisionKit — Notlar / Dosyalar'daki tarayıcı): otomatik çekim, köşe, perspektif ve ışık
+    /// düzeltmesi Apple'da; sayfalar düzleştirilmiş JPEG olarak döner → {pages:[{path, flat:true}], log}
+    @objc func appleScan(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard VNDocumentCameraViewController.isSupported, let host = self.bridge?.viewController else { call.reject("unsupported"); return }
+            let t0 = CACurrentMediaTime()
+            let d = AppleScanDelegate { pages in
+                let n = pages.count, secs = CACurrentMediaTime() - t0
+                call.resolve(["pages": pages, "log": [String(format: "Apple tarayıcı: %d sayfa, %.1f sn", n, secs)]])
+                self.appleScanner = nil
+            }
+            self.appleScanner = d
+            let vc = VNDocumentCameraViewController()
+            vc.delegate = d
+            host.present(vc, animated: true)
+        }
+    }
     private let ocrQueue = DispatchQueue(label: "ns.ocr", qos: .utility)
 
     /// Apple metin tanıma: {path, langs} → {w, h, words:[[x0,y0,x1,y1,metin,null]], paras, ms}
@@ -699,7 +720,7 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
             let img = Self.oriented(best.pb, orient)
             let sets = PageText.wordSets(img, best.quad)
             for (o, v) in sets { oScore[o, default: 0] += v.1 }
-            let o = bestO()
+            let o = sets.max(by: { $0.value.1 < $1.value.1 })?.key ?? .up    // bu karenin en güvenli okunan yönü
             let words = sets[o]?.0 ?? []
             let sig = best.quad.flatMap { LiveScannerViewController.signature(img, $0) }
             for (k, r) in recent.enumerated().reversed() {
@@ -756,11 +777,7 @@ final class MediaImporter: NSObject, PHPickerViewControllerDelegate, UIImagePick
         }
         endRun()
         reader.cancelReading()
-        let o = bestO()
-        if o != .up {
-            // sayfalar yazının yönüne çevrilir (telefon yatay / ters tutulmuş); köşe ipucu bu durumda gönderilmez
-            for i in before..<pages.count { if let r = rotatePage(pages[i], o) { pages[i] = r } }
-        }
+        let o = bestO()   // yalnız günlük için (sayfalar çevrilmez: yazılı sayfaların yönünü web uygulaması kendisi bulur)
         log.append(String(format: "video %.1f sn: %d kare incelendi, %d durgun an, %d sayfa, yön %d, %.1f sn", dur, n, runs, pages.count - before, Int(o.rawValue), CACurrentMediaTime() - t0))
     }
 
@@ -960,4 +977,28 @@ enum PageText {
         if !cur.isEmpty { paras.append(cur) }
         return ["w": Int(W), "h": Int(H), "words": words, "paras": paras, "ms": Int((CACurrentMediaTime() - t0) * 1000)]
     }
+}
+
+
+// MARK: - Apple belge tarayıcısı (VisionKit)
+final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate {
+    private let done: ([[String: Any]]) -> Void
+    init(_ done: @escaping ([[String: Any]]) -> Void) { self.done = done }
+    func documentCameraViewController(_ c: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
+        var pages: [[String: Any]] = []
+        for i in 0..<scan.pageCount {
+            let img = scan.imageOfPage(at: i)
+            // web uygulamasının sakladığı karelerle aynı boyut sınırı (uzun kenar ≤2600)
+            let s = min(1, 2600 / max(img.size.width, img.size.height))
+            let sz = CGSize(width: (img.size.width * s).rounded(), height: (img.size.height * s).rounded())
+            let r = UIGraphicsImageRenderer(size: sz, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; return f }())
+            let out = r.image { _ in img.draw(in: CGRect(origin: .zero, size: sz)) }
+            guard let jpg = out.jpegData(compressionQuality: 0.92) else { continue }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("apple-\(UUID().uuidString).jpg")
+            if (try? jpg.write(to: url)) != nil { pages.append(["path": url.absoluteString, "flat": true]) }
+        }
+        c.dismiss(animated: true) { self.done(pages) }
+    }
+    func documentCameraViewControllerDidCancel(_ c: VNDocumentCameraViewController) { c.dismiss(animated: true) { self.done([]) } }
+    func documentCameraViewController(_ c: VNDocumentCameraViewController, didFailWithError error: Error) { c.dismiss(animated: true) { self.done([]) } }
 }

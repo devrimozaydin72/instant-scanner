@@ -1468,11 +1468,12 @@ class FrameScanner {
 
 /* çekilen kare → sayfa listesine ekle / değiştir, işleme gönder */
 /* çift sayfa: tam çözünürlüklü kareyi hızlı denetimin bulduğu geometriyle iki yarıya böl */
-async function splitBlob(blob, g){
+async function splitBlob(blob, g, flat){
   const bmp = await createImageBitmap(blob);
   const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
   c.getContext('2d').drawImage(bmp, 0, 0); if(bmp.close) bmp.close();
-  const hv = C.spreadHalves(c, g);
+  // iPhone'da düzleştirilmiş açık kitap: sırttan tam kesilir (komşu sayfa payı bırakılmaz)
+  const hv = C.spreadHalves(c, flat ? C.flatSpreadCuts(c, g) : g);
   return Promise.all(hv.map(h => C.canvasToBlob(h, 'image/jpeg', 0.92)));
 }
 async function addCapture(c, opts){
@@ -3053,7 +3054,7 @@ $('btnRetakeAll').onclick = () => startRetake(badPages().map(p => p.id));
 /* iPhone uygulaması: canlı tarama yerel ekranda (Apple'ın cihazdaki belge modeli — her karede köşeler, otomatik çekim).
    Çekilen tam çözünürlüklü kareler + köşeler buraya döner; kırpma, düzleştirme, metin tanıma ve PDF burada yapılır. */
 /* karede açık kitap (iki sayfa) var mı: hızlı denetimin çift sayfa yolu; varsa iki yarı (okuma sırasıyla) */
-async function splitIfSpread(blob){
+async function splitIfSpread(blob, flat){
   try{
     const bmp = await createImageBitmap(blob);
     // dikey (tek sayfa) görüntüde açık kitap aranmaz: sayfa başına ~1 sn kazanç
@@ -3063,7 +3064,7 @@ async function splitIfSpread(blob){
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); if(bmp.close) bmp.close();
     const res = await quick.run(c, Object.assign(procOpts({rot:0}), {rot:0, spread:true, mask:false}));
     const m = (res && res.metrics) || {};
-    if(m.spread && m.split){ diagLog.push('yerel kare: çift sayfa → 2 sayfa'); return await splitBlob(blob, m.split); }
+    if(m.spread && m.split){ diagLog.push('yerel kare: çift sayfa → 2 sayfa'); return await splitBlob(blob, m.split, flat); }
   }catch(e){ diagLog.push('çift sayfa denetimi hata: ' + (e && e.message)); }
   return null;
 }
@@ -3104,7 +3105,7 @@ async function importNativePages(r){
     try{
       const b = await (await fetch(window.Capacitor.convertFileSrc(pg.path))).blob();
       // açık kitap (yan tutulmuş iki sayfa) tek karede: iki sayfaya bölünür (canlı web çekimindeki gibi)
-      const hv = await splitIfSpread(b);
+      const hv = await splitIfSpread(b, !!pg.flat);
       // flat: Apple tarayıcısı sayfayı zaten kırpıp düzleştirdi → burada yeniden kırpılmaz, yalnız temizlenir
       if(hv) hv.forEach((h, k) => items.push({file: new File([h], 'sayfa-' + k + '.jpg', {type: 'image/jpeg'}), hint: null, flat: !!pg.flat}));
       else items.push({file: new File([b], 'sayfa.jpg', {type: 'image/jpeg'}), hint: pg.quad || null, flat: !!pg.flat});

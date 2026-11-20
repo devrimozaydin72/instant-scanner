@@ -3769,6 +3769,7 @@ function processCanvas(src, opts){
     // kenardaki parmak sessizce silinir; yazının belirgin kısmını örtmüşse (altındaki harfler hiç görünmedi) işaretlenir
     if(onText > sw*sh*0.01) issues.push({code:'finger', side:-1});
   }
+  if(opts.flat && !graphic && !quick && opts.mode !== 'orig') cleanSideStrips(pageData, fw, fhR, dbg);
   T('iyileştir');
   const pageCanvas = quick ? null : putRGBA(pageData, fw, fh);
   let fbox = {x0:0,y0:0,x1:fw,y1:fhR};
@@ -3839,7 +3840,7 @@ function processCanvas(src, opts){
     const dy = Math.round(outH*myT + Math.max(0, (availH - fh))*0.15);
     ox.drawImage(pageCanvas, dx, dy);
   } else {
-    out = toFinalPage(pageCanvas, fbox, outW, outH);
+    out = toFinalPage(pageCanvas, fbox, outW, outH, graphic || opts.flat ? [255, 255, 255] : null);
   }
   T('son');
   metrics.ms = Date.now()-t0;
@@ -4349,7 +4350,7 @@ function inkStatsQ(d, w, h, Q, box, fingerQ){
   return {edge, frac: all, fingerOnText, sharp: gn ? gs/gn : 0, crisp: nDark >= 40 ? nVdark/nDark : -1};
 }
 /* tüm sayfalar TAM outW×outH; kırpma kutusu oranı korunarak ortalanır */
-function toFinalPage(canvas, box, W, H){
+function toFinalPage(canvas, box, W, H, fill){
   const w=box.x1-box.x0, h=box.y1-box.y0;
   const s=Math.min(W/w, H/h);
   const dw=Math.round(w*s), dh=Math.round(h*s);
@@ -4358,7 +4359,7 @@ function toFinalPage(canvas, box, W, H){
   for(let x=0;x<w;x+=3) for(const y of [0,h-1]){ const i=(y*w+x)*4; rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]); }
   for(let y=0;y<h;y+=3) for(const x of [0,w-1]){ const i=(y*w+x)*4; rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]); }
   const c=mkCanvas(W,H), x2=ctx2d(c);
-  x2.fillStyle=`rgb(${quantile(rs,0.5)|0},${quantile(gs,0.5)|0},${quantile(bs,0.5)|0})`;
+  x2.fillStyle = fill ? `rgb(${fill[0]},${fill[1]},${fill[2]})` : `rgb(${quantile(rs,0.5)|0},${quantile(gs,0.5)|0},${quantile(bs,0.5)|0})`;
   x2.fillRect(0,0,W,H);
   x2.imageSmoothingEnabled=true; x2.imageSmoothingQuality='high';
   x2.drawImage(canvas, box.x0, box.y0, w, h, (W-dw)>>1, (H-dh)>>1, dw, dh);
@@ -4585,6 +4586,59 @@ function spreadHalves(src, g){
     return c;
   });
 }
+/* iPhone'da düzleştirilmiş açık kitap: yarılar sırttan tam kesilir (ham karedeki %3.5 komşu sayfa payı burada yan sayfanın
+   yazısını yarıya taşıyordu). Sırt: yazı blokları arasındaki ortanın ±%6'sında kağıt parlaklığının en düşük olduğu sütun */
+function flatSpreadCuts(src, g){
+  const r = rotateCanvas(src, g.rot), k = Math.min(1, 900/Math.max(r.width, r.height));
+  const w = Math.max(8, Math.round(r.width*k)), h = Math.max(8, Math.round(r.height*k));
+  const gr = grayOf(downscale(r, w, h));
+  const a = Math.max(1, Math.round((g.spineN - 0.06)*w)), b = Math.min(w - 2, Math.round((g.spineN + 0.06)*w));
+  const prof = [];
+  for(let x=a; x<=b; x++){ const v = []; for(let y=Math.round(h*0.1); y<h*0.9; y+=2) v.push(gr[y*w + x]); prof.push(quantile(v, 0.8)); }
+  const sm = prof.map((_, i) => { let q = 0, n = 0; for(let j=Math.max(0, i-2); j<=Math.min(prof.length-1, i+2); j++){ q += prof[j]; n++; } return q/n; });
+  let best = -1, bv = 1e9; sm.forEach((v, i) => { if(v < bv){ bv = v; best = i; } });
+  const med = quantile(sm, 0.5);
+  const sp = best >= 0 && bv < med*0.97 ? (a + best)/w : g.spineN;
+  return Object.assign({}, g, {cuts: [[0, sp], [sp, 1]], spineN: sp});
+}
+/* düz sayfa kenarındaki şeritler (sırt çizgisi, yan / alttaki sayfanın kenarı ve yazısı): sayfanın kendi yazısından boş bir
+   şeritle ayrılmış, kenara yapışık ve sayfa boyunca uzanan koyu iz beyaza boyanır. Sayfa düzeni (boyut, konum) değişmez */
+function cleanSideStrips(d, w, h, dbg){
+  const col = new Float32Array(w), span = new Uint8Array(w), B = 24;
+  const y0 = Math.round(h*0.02), y1 = Math.round(h*0.98);
+  for(let x=0; x<w; x++){
+    let n = 0, bins = 0, inBin = false, lastBin = -1;
+    for(let y=y0; y<y1; y+=2){
+      const j = (y*w + x)*4;
+      // sırt çizgisi açık gri olabilir: eşik 190
+      if(0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2] < 190){ n++; const bI = (y*B/h)|0; if(bI !== lastBin){ bins++; lastBin = bI; } }
+    }
+    col[x] = n; span[x] = bins;
+  }
+  const empty = x => col[x] <= Math.max(1, (y1 - y0)/2*0.002);
+  const gapMin = Math.max(6, Math.round(w*0.01)), zone = Math.round(w*0.2);
+  const side = (dir) => {
+    // kenardan içeri: önce mürekkepli şerit (iz), sonra boşluk; iz sayfa boyunca uzanıyorsa (≥ %35) temizlenir
+    let x = dir > 0 ? 0 : w - 1, end = dir > 0 ? zone : w - 1 - zone, maxSpan = 0, ink = 0, run = 0, cut = -1, first = -1;
+    // iz kenara YAPIŞIK olmalı (sırt gölgesi / yan sayfanın kesik yazısı); kenardan boşlukla ayrılan sütun
+    // (içindekilerdeki sayfa numaraları, kenar notu) sayfanın kendi içeriğidir, dokunulmaz
+    // ya da kenarın %5'i içinde başlayan DAR (≤ %3.5) iz sütunu (alttaki sayfanın satır başları); sayfa numarası sütunu
+    // kenardan daha içeride (kitap kenar boşluğu) durur
+    const touch = Math.max(3, Math.round(w*0.012)), near = Math.round(w*0.05), narrow = Math.round(w*0.035);
+    for(; dir > 0 ? x < end : x > end; x += dir){
+      if(first < 0 && !empty(x)){ first = Math.abs(x - (dir > 0 ? 0 : w - 1)); if(first > near) return 0; }
+      if(empty(x)){ run++; if(run >= gapMin && ink > 0){ cut = x - dir*Math.floor(run/2); break; } }
+      else { if(run >= gapMin && ink === 0){ /* kenarda önce boşluk: iz yok */ } run = 0; ink++; maxSpan = Math.max(maxSpan, span[x]); }
+    }
+    if(cut < 0 || maxSpan < B*0.35) return 0;
+    if(ink > narrow) return 0;          // geniş iz: içerik olabilir (içindekilerde sayfa numarası sütunu); yalnız ince iz silinir
+    const xa = dir > 0 ? 0 : cut, xb = dir > 0 ? cut : w - 1;
+    for(let y=0; y<h; y++) for(let x=xa; x<=xb; x++){ const j = (y*w + x)*4; d[j] = d[j+1] = d[j+2] = 255; }
+    return xb - xa + 1;
+  };
+  const l = side(1), r = side(-1);
+  if(l || r) dbg.push(`kenar izi temizlendi sol ${l}px sağ ${r}px`);
+}
 /* yarı-tuval normal koordinatı → özgün kare normal koordinatı */
 function spreadMapN(g, k, srcW, srcH){
   const RW = g.rot % 180 ? srcH : srcW, RH = g.rot % 180 ? srcW : srcH, [a, b] = g.cuts[k];
@@ -4750,6 +4804,6 @@ G.ScanCore = {
   mkCanvas, ctx2d, canvasToBlob, downscale, grayOf, toGray, mean, lapVar, quantile,
   detectPage, detectPageData, pageSignature, sigDiff, processCanvas, handleProcess, handleQuick, lineMatch,
   txFind, txOrient, txWarp, txTrace, txBlocks, inkOf,
-  rotateCanvas, estimateTextField, edgeQuad, trackFrame, inkSig, inkMatch, spreadGeometry, spreadHalves, spreadMapN, quickSpread, estimateAspect, homography, applyH, inQuad,
+  rotateCanvas, estimateTextField, edgeQuad, trackFrame, inkSig, inkMatch, spreadGeometry, spreadHalves, flatSpreadCuts, spreadMapN, quickSpread, estimateAspect, homography, applyH, inQuad,
 };
 })(typeof self !== 'undefined' ? self : this);

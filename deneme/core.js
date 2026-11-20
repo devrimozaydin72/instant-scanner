@@ -3391,7 +3391,8 @@ function processCanvas(src, opts){
   let det = null, quad = null;
   // ---- yazı öncelikli yol: yazı satırlarından yön, perspektif ve kıvrım (sayfa kenarına bakmaz)
   let TX = null;
-  if(opts.smartCrop && opts.tx !== false){
+  // düz sayfa (iPhone'da düzleştirildi): yazı satırlarından ince düzleştirme yine yapılır (sayfa düzeni korunarak, aşağıda)
+  if((opts.smartCrop || opts.flat) && opts.tx !== false){
     try{
       const f = txFind(src, {sd, maxSide: quick ? 760 : 1100, quick, angHint: opts.angHint});
       for(const d of f.dbg) dbg.push(d);
@@ -3403,6 +3404,22 @@ function processCanvas(src, opts){
     }catch(e){ dbg.push('yazı yolu hata: ' + (e && e.message)); }
     T('yazı');
   }
+  // düz sayfa: yalnız yazı sayfasında (≥ 8 satır) satır düzleştirme; kapak / başlık sayfası olduğu gibi
+  if(TX && opts.flat && !(TX.P.tb && TX.P.tb.n >= 8)){ dbg.push('düz sayfa: az satır, satır düzleştirme yok'); TX = null; }
+  // düz sayfa: içerik kutusu yerine düzlemin GÖRÜNTÜ İÇİNE düşen kısmı → yazı yerinden oynamaz, kenar boşlukları korunur
+  let flatBox = null;
+  if(TX && opts.flat){
+    const PP = TX.P;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    const sx = PP.bw/80, sy = PP.bh/100, mgW = W*0.002, mgH = H*0.002;
+    for(let Y=0; Y<=PP.bh; Y+=sy) for(let X=0; X<=PP.bw; X+=sx){
+      const q = PP.toSrc(X, Y);
+      if(isFinite(q[0]) && isFinite(q[1]) && q[0] >= -mgW && q[1] >= -mgH && q[0] <= W + mgW && q[1] <= H + mgH){ if(X < x0) x0 = X; if(X > x1) x1 = X; if(Y < y0) y0 = Y; if(Y > y1) y1 = Y; }
+    }
+    if(x1 - x0 > PP.bw*0.3 && y1 - y0 > PP.bh*0.3){ flatBox = {x0, y0, w: x1 - x0, h: y1 - y0}; dbg.push(`düz sayfa: satırlar düzlendi, düzen korundu (düzlem ${x0|0}-${x1|0} × ${y0|0}-${y1|0} / ${PP.bw|0}×${PP.bh|0})`); }
+    else { dbg.push('düz sayfa: düzlem görüntüyü kapsamıyor → satır düzleştirme yok'); TX = null; }
+  }
+
   // çift sayfanın yarısı: yazı yoksa (şekil/grafik sayfası) ağır sayfa analizi yapılmaz
   if(quick && opts.txOnly && !TX){
     dbg.push('yarı: yazı yok (şekil sayfası?)');
@@ -3539,7 +3556,7 @@ function processCanvas(src, opts){
   }
   // az satırlı (şekil/grafik ağırlıklı) sayfa, kağıt sınırı bulunduysa sayfanın tamamı olarak alınır
   if(!TX && det && det.ok && content && P && P.tb && P.tb.n < 12){ dbg.push(`az satır (${P.tb.n}): sayfa sınırından kırpılır`); content = null; }
-  if(TX){ P = TX.P; content = TX.content; tqSrc = TX.tq; }
+  if(TX){ P = TX.P; content = flatBox ? Object.assign({}, TX.content, flatBox) : TX.content; tqSrc = TX.tq; }
   // yazı bloğunun kaynak karedeki gerçek dörtgeni (düzlemin doğrulanmış satırlarından; tq zemindeki izleri de içerebilir)
   let blockQ = null;
   if(TX && P.tb){
@@ -3634,13 +3651,14 @@ function processCanvas(src, opts){
     return {canvas: null, issues, metrics: metricsQ, dbg: dbg.join(' | '), lineSig: lineSigs(P)};
   }
   // ---- yerleşim: tüm sayfalarda tutarlı yazı boyutu (satır aralığına göre), kenar boşlukları beyaz
-  const mx = content === null ? 0 : (mode === 'yazı' ? 0.075 : 0), myT = mode === 'yazı' ? 0.06 : 0, myB = mode === 'yazı' ? 0.06 : 0;
+  const lay = mode === 'yazı' && !opts.flat;
+  const mx = content === null ? 0 : (lay ? 0.075 : 0), myT = lay ? 0.06 : 0, myB = lay ? 0.06 : 0;
   const availW = outW*(1-2*mx), availH = outH*(1-myT-myB);
   let s = Math.min(availW/content.w, availH/content.h);
   // yazı boyutu tutarlılığı yalnız sayfanın bir kısmını kaplayan içerikte (bölüm sonu, kısa sayfa):
   // kapak/büyük başlık gibi sayfayı dolduran içerik satır aralığına göre küçültülmez, sayfaya sığdırılır
   const contentFrac = det && det.ok && mode === 'yazı' ? (content.h*P.srcPerPx)/Math.max(1, srcPageH) : 0;
-  if(mode === 'yazı' && content.pitch && contentFrac < 0.6){
+  if(lay && content.pitch && contentFrac < 0.6){
     const sPitch = (outW*0.86/26) / content.pitch;      // ~26 satır aralığı = sayfa genişliği
     s = Math.min(s, sPitch*1.0);
   }

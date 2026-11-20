@@ -9,10 +9,19 @@ import PhotosUI
 import VisionKit
 import UniformTypeIdentifiers
 
+/// tanı kaydı (Mac'e bağlıyken konsolda görünür)
+func nlog(_ s: String) { print("[yerel] " + s); fflush(stdout) }
+
 /// Capacitor köprüsü: yerel eklentiyi (NativeScanner) kaydeder
 class MainViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(NativeScannerPlugin())
+        // sayfa düzleştirme modeli açılışta arka planda yüklenir (ilk yükleme ~10 sn; taramaya hazır olsun)
+        DispatchQueue.global(qos: .utility).async {
+            _ = PageFlattener.ready
+            // metin tanıma (doğru mod) modelini de yükle: yön bulma ve OCR'ın ilk çağrısı beklemesin
+            if let cg = CIContext().createCGImage(CIImage(color: .white).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64)), from: CGRect(x: 0, y: 0, width: 64, height: 64)) { _ = PageFlattener.uprightOrientation(cg) }
+        }
     }
 }
 
@@ -29,8 +38,24 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "pick", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "record", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ocr", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "appleScan", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "appleScan", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "takePending", returnType: CAPPluginReturnPromise)
     ]
+
+    /// Tarayıcı açıkken iOS bellek için web görünümünü kapatabilir (sayfa yeniden yüklenir, bekleyen çağrı kaybolur).
+    /// Bu yüzden tarama sonucu önce diske yazılır; web görünümü açılışta / sonuç gelince bekleyenleri alır.
+    static var pendingURL: URL { FileManager.default.temporaryDirectory.appendingPathComponent("bekleyen-sayfalar.json") }
+    static func savePending(_ pages: [[String: Any]]) {
+        guard !pages.isEmpty, let d = try? JSONSerialization.data(withJSONObject: pages) else { return }
+        try? d.write(to: pendingURL)
+    }
+    @objc func takePending(_ call: CAPPluginCall) {
+        let url = Self.pendingURL
+        guard let d = try? Data(contentsOf: url), let arr = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]] else { call.resolve(["pages": []]); return }
+        try? FileManager.default.removeItem(at: url)
+        nlog("bekleyen \(arr.count) sayfa web'e verildi")
+        call.resolve(["pages": arr])
+    }
     private var appleScanner: AppleScanDelegate?
 
     /// Apple'ın belge tarayıcısı (VisionKit — Notlar / Dosyalar'daki tarayıcı): otomatik çekim, köşe, perspektif ve ışık
@@ -40,6 +65,7 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
             guard VNDocumentCameraViewController.isSupported, let host = self.bridge?.viewController else { call.reject("unsupported"); return }
             let t0 = CACurrentMediaTime()
             let d = AppleScanDelegate(strings: call.getObject("strings") as? [String: String] ?? [:]) { pages in
+                Self.savePending(pages)
                 let n = pages.count, secs = CACurrentMediaTime() - t0
                 call.resolve(["pages": pages, "log": [String(format: "Apple tarayıcı: %d sayfa, %.1f sn", n, secs)]])
                 self.appleScanner = nil
@@ -68,7 +94,7 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
         let strings = call.getObject("strings") as? [String: String] ?? [:]
         DispatchQueue.main.async {
             guard let host = self.bridge?.viewController else { call.reject("no view controller"); return }
-            let imp = MediaImporter(host: host, strings: strings) { pages, log in call.resolve(["pages": pages, "log": log]); self.importer = nil }
+            let imp = MediaImporter(host: host, strings: strings) { pages, log in Self.savePending(pages); call.resolve(["pages": pages, "log": log]); self.importer = nil }
             self.importer = imp
             imp.pickFromLibrary()
         }
@@ -78,7 +104,7 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
         let strings = call.getObject("strings") as? [String: String] ?? [:]
         DispatchQueue.main.async {
             guard let host = self.bridge?.viewController else { call.reject("no view controller"); return }
-            let imp = MediaImporter(host: host, strings: strings) { pages, log in call.resolve(["pages": pages, "log": log]); self.importer = nil }
+            let imp = MediaImporter(host: host, strings: strings) { pages, log in Self.savePending(pages); call.resolve(["pages": pages, "log": log]); self.importer = nil }
             self.importer = imp
             imp.recordVideo()
         }
@@ -93,6 +119,7 @@ public class NativeScannerPlugin: CAPPlugin, CAPBridgedPlugin {
                 vc.strings = strings
                 vc.modalPresentationStyle = .fullScreen
                 vc.onFinish = { pages, log in
+                    Self.savePending(pages)
                     vc.dismiss(animated: true)
                     call.resolve(["pages": pages, "log": log])
                 }
@@ -1001,6 +1028,7 @@ final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate 
         // sayfalar hemen alınır, tarayıcı kapanır; düzleştirme (UVDoc) ARKA PLANDA, ilerleme ekranıyla yapılır
         // (ana iş parçacığında yapılınca ekran donuyordu)
         let imgs = (0..<scan.pageCount).map { scan.imageOfPage(at: $0) }
+        nlog("Apple tarayıcı: \(imgs.count) sayfa alındı")
         let host = c.presentingViewController
         c.dismiss(animated: true) {
             let pv = ImportProgressViewController(title: self.strings["preparing"] ?? "Sayfalar düzleştiriliyor…", cancel: self.strings["cancel"] ?? "Vazgeç")
@@ -1014,7 +1042,9 @@ final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate 
                     if cancelled { break }
                     DispatchQueue.main.async { pv.update(Double(i) / Double(max(1, imgs.count)), (self.strings["preparing"] ?? "Sayfalar düzleştiriliyor…") + " \(i + 1)/\(imgs.count)", "") }
                     autoreleasepool {
-                        if let cg = img.cgImage, let path = PageFlattener.flattenToFile(CIImage(cgImage: cg), prefix: "apple") { pages.append(["path": path, "flat": true]); return }
+                        let t = CACurrentMediaTime()
+                        if let cg = img.cgImage, let path = PageFlattener.flattenToFile(CIImage(cgImage: cg), prefix: "apple") { pages.append(["path": path, "flat": true]); nlog(String(format: "sayfa %d düzleştirildi %.0f ms (%dx%d)", i + 1, (CACurrentMediaTime() - t) * 1000, Int(img.size.width), Int(img.size.height))); return }
+                        nlog("sayfa \(i + 1) düzleştirilemedi (cgImage \(img.cgImage != nil), model \(PageFlattener.ready))")
                         // düzleştirilemedi: Apple'ın kırptığı sayfa (uzun kenar ≤2600)
                         let s = min(1, 2600 / max(img.size.width, img.size.height))
                         let sz = CGSize(width: (img.size.width * s).rounded(), height: (img.size.height * s).rounded())
@@ -1025,7 +1055,8 @@ final class AppleScanDelegate: NSObject, VNDocumentCameraViewControllerDelegate 
                         if (try? jpg.write(to: url)) != nil { pages.append(["path": url.absoluteString, "flat": true]) }
                     }
                 }
-                DispatchQueue.main.async { pv.dismiss(animated: true) { self.done(pages) } }
+                nlog("düzleştirme bitti: \(pages.count) sayfa")
+                DispatchQueue.main.async { pv.dismiss(animated: true) { nlog("sonuç web'e veriliyor"); self.done(pages) } }
             }
         }
     }
@@ -1115,20 +1146,56 @@ enum PageFlattener {
         lock.lock(); defer { lock.unlock() }
         if !tried {
             tried = true
-            if let url = Bundle.main.url(forResource: "UVDoc", withExtension: "mlmodelc") { dw = try? Dewarper(url: url) }
+            if let url = Bundle.main.url(forResource: "UVDoc", withExtension: "mlmodelc") {
+                let t = CACurrentMediaTime()
+                do { dw = try Dewarper(url: url); nlog(String(format: "UVDoc modeli yüklendi %.0f ms", (CACurrentMediaTime() - t) * 1000)) }
+                catch { nlog("UVDoc modeli yüklenemedi: \(error)") }
+            } else { nlog("UVDoc.mlmodelc bulunamadı") }
         }
         return dw
     }
+    /// sayfayı dik çevirmek için gereken yön. Apple'ın doğru (accurate) metin tanıması yazıyı her yönde okur ve satır
+    /// köşelerini verir: okuma yönü vektörü (sol-üst → sağ-üst, kelime uzunluğuyla ağırlıklı) yazının nereye baktığını söyler.
+    /// (Hızlı mod ve güven puanı ters / yan yazıyı ayırt edemiyor — Mac'te dört yönle doğrulandı.) Yazısız sayfada .up
+    static func uprightOrientation(_ cg: CGImage) -> CGImagePropertyOrientation {
+        var im = CIImage(cgImage: cg)
+        let k = min(1, 1000 / max(im.extent.width, im.extent.height))
+        im = im.transformed(by: CGAffineTransform(scaleX: k, y: k))
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = false
+        req.recognitionLanguages = ["tr-TR", "en-US"]
+        try? VNImageRequestHandler(ciImage: im, orientation: .up, options: [:]).perform([req])
+        var dx = 0.0, dy = 0.0
+        for r in req.results ?? [] {
+            let w = Double(r.topRight.x - r.topLeft.x), h = Double(r.topRight.y - r.topLeft.y)
+            let L = (w * w + h * h).squareRoot(); if L < 1e-6 { continue }
+            let c = Double(r.topCandidates(1).first?.string.count ?? 0)
+            dx += w / L * c; dy += h / L * c
+        }
+        if max(abs(dx), abs(dy)) < 40 { return .up }            // yazı çok az: dokunulmaz
+        if abs(dx) >= abs(dy) { return dx > 0 ? .up : .down }
+        return dy > 0 ? .right : .left                          // (CIImage.oriented ile doğrulanmış eşleme)
+    }
+
     /// görüntüyü düzleştirip (uzun kenar ≤2600) JPEG olarak geçici klasöre yazar → yol; başarısızsa nil
     static func flattenToFile(_ img: CIImage, prefix: String = "duz") -> String? {
         guard let d = get_() else { return nil }
         var img = img
         // düzleştirme 2000 px'te (okunaklılık için yeterli; yeniden örnekleme ~%40 daha hızlı)
-        let k = min(1, 2000 / max(img.extent.width, img.extent.height))
+        let k = min(1, 1800 / max(img.extent.width, img.extent.height))
         if k < 1 { img = img.transformed(by: CGAffineTransform(scaleX: k, y: k)) }
         let e = img.extent
         guard let cg = ci.createCGImage(img, from: e.integral) else { return nil }
-        guard let out = try? d.unwarp(cg, maxSide: 2000) else { return nil }
+        guard var out = try? d.unwarp(cg, maxSide: 1800) else { return nil }
+        // yazı yan / ters ise düz çevrilir (yan tutulmuş açık kitap → yatay → web ikiye böler; PDF'te hepsi dik)
+        let o = uprightOrientation(out)
+        if o != .up {
+            var r = CIImage(cgImage: out).oriented(o)
+            r = r.transformed(by: CGAffineTransform(translationX: -r.extent.minX, y: -r.extent.minY))
+            if let c2 = ci.createCGImage(r, from: r.extent.integral) { out = c2 }
+            nlog("sayfa yönü düzeltildi (\(o.rawValue))")
+        }
         guard let jpg = UIImage(cgImage: out).jpegData(compressionQuality: 0.92) else { return nil }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString).jpg")
         return (try? jpg.write(to: url)) != nil ? url.absoluteString : nil

@@ -506,6 +506,8 @@
 
   <!-- SONUÇLAR -->
   <section class="card" id="resultCard" hidden>
+    <!-- yeni taramaya başlama: en üstte, büyük ve sayfa kaydırılsa da görünür -->
+    <button class="btn" id="btnReset" style="position:sticky; top:calc(env(safe-area-inset-top) + 6px); z-index:20; display:block; width:100%; margin:0 0 14px; padding:16px; font-size:20px; font-weight:800; background:var(--accent2); color:#08301c; border:0; border-radius:14px; box-shadow:0 4px 14px rgba(0,0,0,.35)" data-t>🔁 Baştan çek</button>
     <h2><span data-t>2 · Sayfalar</span> <span id="pageCount" style="color:var(--accent2)"></span></h2>
     <p class="sub" data-t>Dokunarak büyüt · 📷 yeniden çek · 🔄 döndür · 🗑 sil.
       <b style="color:var(--danger)">Kırmızı</b> çerçeve: sayfada eksik/sorun var.
@@ -523,7 +525,6 @@
       <button class="btn gray" id="btnDocx" data-t>📃 Word</button>
       <button class="btn gray" id="btnMoreLive" data-t>📷 Sayfa Ekle</button>
       <button class="btn gray" id="btnMore" data-t>➕ Dosya Ekle</button>
-      <button class="btn gray" id="btnReset" data-t>🔁 Baştan</button>
     </div>
     <button class="linkbtn" id="btnRaw" data-t>🐞 Sorun mu var? Ham kareleri paylaş (kameranın gördüğü hâli)</button>
   </section>
@@ -1891,7 +1892,8 @@ const trk = {
     else this.pend = q;
   },
 };
-trk.init();
+// iPhone uygulamasında web kamerası kullanılmaz (Apple tarayıcısı): takip işçisi ve köşe modeli yüklenmez (bellek)
+if(!native.has('NativeScanner')) trk.init(); else trk.dead = true;
 
 const median = a => { if(!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; };
 const otherSide = s => s === 'L' ? 'R' : s === 'R' ? 'L' : null;
@@ -3051,14 +3053,24 @@ async function splitIfSpread(blob){
   }catch(e){ diagLog.push('çift sayfa denetimi hata: ' + (e && e.message)); }
   return null;
 }
+let nativeBusy = false;
 async function nativeScan(method){
   method = method || 'scan';
+  nativeBusy = true;
+  try{ await nativeScanRun(method); } finally { nativeBusy = false; }
+}
+async function nativeScanRun(method){
   const strings = {show: T('Sayfayı göster — kendiliğinden çekilir'), hold: T('Sabit tut — çekiliyor…'), next: T('✓ Tamam — sonraki sayfa'),
                    corners: T('Dört köşe kadrajda olsun — telefonu biraz uzaklaştır'), count: T('{n} sayfa'), done: T('Bitti ✓'),
                    analyzing: T('Video analiz ediliyor…'), progress: T('Kareler inceleniyor… {p}%'), found: T('{n} sayfa bulundu'), cancel: T('Vazgeç'),
                    preparing: T('Sayfalar düzleştiriliyor…')};
   let r;
-  try{ r = await native.call('NativeScanner', method, {strings}); }
+  console.log('[tarama] yerel ' + method + ' başladı');
+  try{
+    r = await native.call('NativeScanner', method, {strings});
+    console.log('[tarama] yerelden döndü: ' + ((r && r.pages) || []).length + ' sayfa');
+    await native.call('NativeScanner', 'takePending', {}).catch(() => {});   // diskteki kopya artık gerekmez
+  }
   catch(e){
     const m = String(e && e.message || e);
     if(/denied/i.test(m)) toast(T('Kameraya erişilemedi ({e}). Video kaydı ile devam edebilirsin.', {e: m}));
@@ -3067,6 +3079,10 @@ async function nativeScan(method){
     else toast(m);
     return;
   }
+  await importNativePages(r);
+}
+/* yerel tarayıcıdan gelen sayfaları içe al (açık kitap bölünür, düzleştirilmiş sayfa yeniden kırpılmaz) */
+async function importNativePages(r){
   const items = [], list = (r && r.pages) || [];
   // sayfalar alınırken / açık kitap denetlenirken ekranda ilerleme (yoksa uygulama donmuş sanılıyordu)
   if(list.length) showOverlay(T('Hazırlanıyor…'));
@@ -3078,20 +3094,34 @@ async function nativeScan(method){
       // flat: Apple tarayıcısı sayfayı zaten kırpıp düzleştirdi → burada yeniden kırpılmaz, yalnız temizlenir
       if(hv) hv.forEach((h, k) => items.push({file: new File([h], 'sayfa-' + k + '.jpg', {type: 'image/jpeg'}), hint: null, flat: !!pg.flat}));
       else items.push({file: new File([b], 'sayfa.jpg', {type: 'image/jpeg'}), hint: pg.quad || null, flat: !!pg.flat});
-    }catch(_){}
+    }catch(e){ console.log('[tarama] sayfa alınamadı: ' + (e && e.message || e)); }
   }
   if(list.length) hideOverlay();
   for(const l of (r && r.log) || []) diagLog.push(l);
+  console.log('[tarama] ' + items.length + ' sayfa işlemeye gidiyor (meşgul: ' + state.busy + ')');
   if(items.length) runFiles(items);
 }
-// iPhone uygulaması: canlı tarama Apple'ın belge tarayıcısıyla (VisionKit — otomatik çekim, köşe, perspektif, ışık düzeltmesi)
-$('btnLive').onclick = () => native.has('NativeScanner') ? nativeScan('appleScan') : cam.open();
+// iPhone uygulaması: canlı tarama yerel hızlı tarayıcıyla (Apple belge modeli her karede köşe bulur, sayfa ~0.3 sn durunca
+// çeker; kırpma + kıvrık sayfa düzleştirme UVDoc ile). Apple'ın kendi tarayıcısı sayfa başına 2-3 sn beklettiği için yedek.
+$('btnLive').onclick = () => native.has('NativeScanner') ? nativeScan('scan') : cam.open();
 // iPhone uygulaması: galeriden seçilen / kamerayla kaydedilen video ve fotoğraflar yerelde (Apple belge modeli) incelenir
 if(native.has('NativeScanner')){
   $('btnPick').onclick = () => nativeScan('pick');
   $('btnRecord').onclick = () => nativeScan('record');
 }
 if(native.on) console.log('[scan] yerel tarayıcı (Apple belge modeli): ' + (native.has('NativeScanner') ? 'var' : 'yok'));
+/* Apple tarayıcısı açıkken iOS bellek için bu web görünümünü kapatıp yeniden açabilir: sonuç yerel tarafta diske yazılır,
+   burada düzenli aralıkla bekleyen sayfa var mı bakılır (tarama sürmüyorken) */
+if(native.has('NativeScanner')){
+  const pull = async () => {
+    if(nativeBusy || state.busy) return;
+    try{
+      const r = await native.call('NativeScanner', 'takePending', {});
+      if(r && r.pages && r.pages.length){ console.log('[tarama] bekleyen ' + r.pages.length + ' sayfa alındı'); diagLog.push('yarım kalan tarama kurtarıldı: ' + r.pages.length + ' sayfa'); await importNativePages(r); }
+    }catch(_){}
+  };
+  setTimeout(pull, 800); setInterval(pull, 1500);
+}
 /* gizlilik / KVKK ve kullanım koşulları: uygulamanın içinde gösterilir (çevrimdışı da açılır) */
 function showLegal(page){
   $('legalFrame').src = 'legal/' + page + '.html?lang=' + encodeURIComponent(I18N.lang);

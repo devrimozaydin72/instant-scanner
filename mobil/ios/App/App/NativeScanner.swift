@@ -1564,6 +1564,14 @@ enum PagePipeline {
             }
         }
 
+        // yan sayfa da görünüyor diye birleştirildi ama sırttan ikiye ayrılamadı: o yan sayfa tam bir sayfa değildi (kenarda
+        // birkaç satırı görünen önceki sayfa) → yalnız köşelerin bulduğu sayfa
+        if cuts.count == 1, let q = quad, info.contains(where: { $0.hasPrefix("köşeler tek sayfayı buldu") }) {
+            let cx = q.map { $0.x }.reduce(0, +) / 4, cy = q.map { $0.y }.reduce(0, +) / 4
+            persp = q.map { CGPoint(x: min(1, max(0, cx + ($0.x - cx) * 1.06)), y: min(1, max(0, cy + ($0.y - cy) * 1.06))) }
+            info.append("açık kitap bulunamadı → yalnız köşelerdeki sayfa")
+        }
+
         // 4) her sayfa ayrı düzleştirilir
         var outs: [CGImage] = []
         for c in cuts {
@@ -2023,7 +2031,8 @@ enum Straighten {
                 let i = y * cw + x
                 // yazı alanının kendisi (payısız): okunan parçalar ayrıca korunuyor; yazıya çok yakın kenar çizgisi de silinsin
                 let fx = (CGFloat(x) + 0.5) / CGFloat(cw), fy = (CGFloat(y) + 0.5) / CGFloat(ch)
-                if pmask[i] == 1 || (fx >= rawBox.0 && fx <= rawBox.1 && fy >= rawBox.2 && fy <= rawBox.3) { continue }
+                if pmask[i] == 1 { continue }
+                let inText = fx >= rawBox.0 && fx <= rawBox.1 && fy >= rawBox.2 && fy <= rawBox.3
                 let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2]), l = max(1, lum[i])
                 let cdist = ((r / l - pR / pL) * (r / l - pR / pL) + (g / l - pG / pL) * (g / l - pG / pL) + (b / l - pB / pL) * (b / l - pB / pL)).squareRoot()
                 // yalnız düz (desensiz) koyuluk: gölge / kenar çizgisi. Yazı (bulanık da olsa) desenlidir → asla boyanmaz
@@ -2033,7 +2042,7 @@ enum Straighten {
                 func dk(_ xx: Int, _ yy: Int) -> Bool { guard xx >= 0, yy >= 0, xx < cw, yy < ch else { return false }; return lum[yy * cw + xx] < pL * 0.92 }
                 let lineV = dk(x, y - 1) && dk(x, y + 1) && dk(x, y - 2) && dk(x, y + 2) && !dk(x - 2, y) && !dk(x + 2, y)
                 let lineH = dk(x - 1, y) && dk(x + 1, y) && dk(x - 2, y) && dk(x + 2, y) && !dk(x, y - 2) && !dk(x, y + 2)
-                if dark && (tmax < 9 || lineV || lineH) { grow[i] = 1; nb += 1 }
+                if !inText && dark && (tmax < 9 || lineV || lineH) { grow[i] = 1; nb += 1 }
             } }
             if nb > 0 { log.append(String(format: "kenar bandı %%%.1f", Double(nb) * 100 / Double(cw * ch))) }
         }

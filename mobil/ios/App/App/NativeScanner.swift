@@ -11,7 +11,14 @@ import VisionKit
 import UniformTypeIdentifiers
 
 /// tanı kaydı (Mac'e bağlıyken konsolda görünür)
-func nlog(_ s: String) { print("[yerel] " + s); fflush(stdout) }
+func nlog(_ s: String) {
+    print("[yerel] " + s); fflush(stdout)
+    // tanı için geçici klasörde günlük (kablo bağlı değilken de sorun incelenebilsin)
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("gunluk.txt")
+    let line = ISO8601DateFormatter().string(from: Date()) + " " + s + "\n"
+    if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() }
+    else { try? line.data(using: .utf8)!.write(to: url) }
+}
 
 /// Capacitor köprüsü: yerel eklentiyi (NativeScanner) kaydeder
 class MainViewController: CAPBridgeViewController {
@@ -246,7 +253,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
 
     // ana iş parçacığı
     /// her çekim bir grup: tek sayfa ya da açık kitabın iki sayfası + kelimeleri (aynı sayfa ikinci kez çekildi mi)
-    private var caps: [(pages: [[String: Any]], words: Set<String>)] = []
+    private var caps: [(pages: [[String: Any]], words: Set<String>, graphic: Bool)] = []
     private var pages: [[String: Any]] { caps.flatMap { $0.pages } }
     private var log: [String] = []
     private var pending = 0
@@ -532,9 +539,10 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                     // aynı sayfa ikinci kez çekildiyse (son 3 çekimle kelime karşılaştırması) daha dolu olan kalır
                     let lo = max(0, self.caps.count - 3)
                     for q in lo..<self.caps.count { let o = self.caps[q].words; nlog("tekrar denetimi: çekim \(q + 1) kelime \(o.count)/\(fr.words.count) ortak \(o.intersection(fr.words).count) → \(String(describing: PageText.same(fr.words, o)))") }
-                    if let k = (lo..<self.caps.count).last(where: { PageText.same(fr.words, self.caps[$0].words) == true }) {
+                    // kapak ile iç başlık sayfası aynı kelimeleri taşır: biri grafik (kapak) diğeri değilse aynı sayfa değildir
+                    if let k = (lo..<self.caps.count).last(where: { self.caps[$0].graphic == fr.graphic && PageText.same(fr.words, self.caps[$0].words) == true }) {
                         if fr.words.count > Int(Double(self.caps[k].words.count) * 1.1) || fr.paths.count > self.caps[k].pages.count {
-                            self.caps[k] = (grp, fr.words)
+                            self.caps[k] = (grp, fr.words, fr.graphic)
                             self.note(String(format: "tekrar çekim: %d. çekimin yerine geçti (%d kelime, %d sayfa, %.0f ms)", k + 1, fr.words.count, grp.count, ms))
                         } else {
                             self.note(String(format: "tekrar çekim atıldı (%d. çekim daha dolu, %.0f ms)", k + 1, ms))
@@ -543,7 +551,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                         // yazı sayfasından hemen sonra yazısız kare: büyük olasılıkla masa / el / sayfa çevrilirken → atılır
                         self.note("yazısız kare atıldı (masa / çevirme anı)")
                     } else {
-                        self.caps.append((grp, fr.words))
+                        self.caps.append((grp, fr.words, fr.graphic))
                         self.note(String(format: "çekim %d: %d sayfa, %.0f ms (%d kelime)", self.caps.count, grp.count, ms, fr.words.count))
                     }
                     self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
@@ -568,7 +576,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             DispatchQueue.main.async {
                 var page: [String: Any] = ["path": url.absoluteString]
                 if let q = quad { page["quad"] = q.json }
-                self.caps.append(([page], []))
+                self.caps.append(([page], [], false))
                 self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
                 self.thumb.image = thumbImg
             }
@@ -1033,6 +1041,9 @@ enum PageText {
         let r = lo > 0 ? Double(a.intersection(b).count) / Double(lo) : 0
         // dolu yazı sayfası: kısmi görüntü (kamera sayfanın üzerinde kaydı) aynı sayfanın alt kümesidir
         if lo >= 40 && r >= 0.4 { return true }
+        // çok dolu sayfalar (açık kitap ≈ 400 kelime): iki çekim arasında okunan kelimeler daha çok değişir; farklı sayfalar
+        // en çok %16-20 ortak kelime paylaşıyor (ölçüldü)
+        if lo >= 150 && r >= 0.3 { return true }
         // kelime sayıları çok farklı (dolu sayfa / az yazılı sayfa; iç kapak / imzalı sayfa): farklı sayfa
         if hi >= 15 && Double(lo) < Double(hi) * 0.3 { return false }
         if hi >= 8 && lo < 40 && Double(lo) < Double(hi) * 0.5 { return false }
@@ -1225,6 +1236,7 @@ struct PipeResult {
     var words: Set<String>
     var blurry: Bool
     var info: String
+    var graphic: Bool = false     // kapak / fotoğraf (koyu oranı > %25): tekrar denetiminde yazı sayfasıyla karıştırılmaz
 }
 
 enum PagePipeline {
@@ -1299,6 +1311,76 @@ enum PagePipeline {
         return cg.cropping(to: r) ?? cg
     }
 
+
+
+    /// ışık eşitleme (yazı sayfası): yerel kağıt rengi (küçük ölçekte her kanalın 5×5 en büyüğü → harfler kaybolur,
+    /// sonra yumuşatma) ile bölünür, hedef temiz kağıt rengi. Üstten gelen sarı ışık, sırta doğru koyulaşan gölge ve
+    /// kenara vuran renkli ışık düzelir; yazı, işaretleme (fosforlu kalem) ve çizgiler korunur
+    static func evenLight(_ cg: CGImage, _ info: inout [String]) -> CGImage {
+        let W = cg.width, H = cg.height
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let d = ctx.data else { return cg }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: W, height: H))
+        let p = d.bindMemory(to: UInt8.self, capacity: W * H * 4)
+        let S = 6, sw = (W + S - 1) / S, sh = (H + S - 1) / S
+        // küçük ölçek: hücre içi en parlak (mürekkep atılır)
+        var sm = [Float](repeating: 0, count: sw * sh * 3)
+        for cy in 0..<sh { for cx in 0..<sw {
+            var m: (Float, Float, Float) = (0, 0, 0)
+            for y in (cy * S)..<min(H, cy * S + S) { for x in (cx * S)..<min(W, cx * S + S) {
+                let o = (y * W + x) * 4; m.0 = max(m.0, Float(p[o])); m.1 = max(m.1, Float(p[o + 1])); m.2 = max(m.2, Float(p[o + 2])) } }
+            let i = (cy * sw + cx) * 3; sm[i] = m.0; sm[i + 1] = m.1; sm[i + 2] = m.2
+        } }
+        func filt(_ a: [Float], _ r: Int, _ useMax: Bool) -> [Float] {
+            var o = a
+            for cy in 0..<sh { for cx in 0..<sw { for c in 0..<3 {
+                var v: Float = useMax ? 0 : 0, n: Float = 0
+                for dy in -r...r { let yy = cy + dy; if yy < 0 || yy >= sh { continue }
+                    for dx in -r...r { let xx = cx + dx; if xx < 0 || xx >= sw { continue }
+                        let q = a[(yy * sw + xx) * 3 + c]; if useMax { v = max(v, q) } else { v += q; n += 1 } } }
+                o[(cy * sw + cx) * 3 + c] = useMax ? v : v / max(1, n)
+            } } }
+            return o
+        }
+        let bg = filt(filt(sm, 2, true), 2, false)
+        // hedef: arka planın parlak ucu (%90)
+        var lv: [Float] = []; for i in stride(from: 0, to: sw * sh, by: 3) { lv.append(0.299 * bg[i * 3] + 0.587 * bg[i * 3 + 1] + 0.114 * bg[i * 3 + 2]) }
+        lv.sort(); let tL = lv[lv.count * 9 / 10]
+        var tr: Float = 0, tg: Float = 0, tb: Float = 0, tn: Float = 0
+        for i in 0..<(sw * sh) { let l = 0.299 * bg[i * 3] + 0.587 * bg[i * 3 + 1] + 0.114 * bg[i * 3 + 2]; if l >= tL { tr += bg[i * 3]; tg += bg[i * 3 + 1]; tb += bg[i * 3 + 2]; tn += 1 } }
+        guard tn > 0 else { return cg }
+        let target = (tr / tn, tg / tn, tb / tn)
+        bg.withUnsafeBufferPointer { b in
+            DispatchQueue.concurrentPerform(iterations: H) { y in
+                let fy = min(Float(sh - 1), max(0, (Float(y) + 0.5) / Float(S) - 0.5)), y0 = min(sh - 2, Int(fy)), ty = fy - Float(y0)
+                for x in 0..<W {
+                    let fx = min(Float(sw - 1), max(0, (Float(x) + 0.5) / Float(S) - 0.5)), x0 = min(sw - 2, Int(fx)), tx = fx - Float(x0)
+                    let o = (y * W + x) * 4
+                    let tgt = [target.0, target.1, target.2]
+                    for c in 0..<3 {
+                        let i00 = (y0 * sw + x0) * 3 + c, i01 = i00 + 3, i10 = i00 + sw * 3, i11 = i10 + 3
+                        let v = (b[i00] * (1 - tx) + b[i01] * tx) * (1 - ty) + (b[i10] * (1 - tx) + b[i11] * tx) * ty
+                        guard v > 60 else { continue }          // çok koyu alan (resim, kalıntı): dokunulmaz
+                        p[o + c] = UInt8(max(0, min(255, Float(p[o + c]) * tgt[c] / v + 0.5)))
+                    }
+                }
+            }
+        }
+        info.append("ışık eşitlendi")
+        return ctx.makeImage() ?? cg
+    }
+    /// en parlak %10'a göre koyu piksel oranı (kapak ≈ %30-40, yazı sayfası ≤ %19)
+    static func darkFraction(_ cg: CGImage) -> Double {
+        let w = 120, h = max(8, cg.height * 120 / max(1, cg.width))
+        var g = [UInt8](repeating: 0, count: w * h)
+        guard let ctx = CGContext(data: &g, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else { return 0 }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var v: [UInt8] = []
+        for y in (h * 8 / 100)..<(h * 92 / 100) { for x in (w * 8 / 100)..<(w * 92 / 100) { v.append(g[y * w + x]) } }
+        guard !v.isEmpty else { return 0 }
+        let p90 = Double(v.sorted()[v.count * 9 / 10])
+        return Double(v.filter { Double($0) < p90 * 0.6 }.count) / Double(v.count)
+    }
     static func run(_ img0: CIImage, dewarper d: Dewarper, detect: Bool = true, maxSide: Int = 2200, stopIfBlurry: Bool = false) -> PipeResult? {
         let img = img0.transformed(by: CGAffineTransform(translationX: -img0.extent.minX, y: -img0.extent.minY))
         let W = img.extent.width, H = img.extent.height
@@ -1512,10 +1594,11 @@ enum PagePipeline {
             if debugSpine { debugPre.append(cg) }
             var flat = (try? d.unwarp(cg, maxSide: maxSide)) ?? cg
             if cuts.count == 2 && padSpine { flat = trimPad(flat, left: c.minX > region.minX + 1e-6); flat = paintPad(flat, left: c.minX > region.minX + 1e-6) }
-            outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(flat, &info) : flat, &info))
+            let ce = Straighten.cleanEdges(straighten ? Straighten.apply(flat, &info) : flat, &info)
+            outs.append(darkFraction(ce) < 0.15 ? evenLight(ce, &info) : ce)
         }
         guard !outs.isEmpty else { return nil }
-        return PipeResult(images: outs, words: words, blurry: blurry, info: info.joined(separator: "; "))
+        return PipeResult(images: outs, words: words, blurry: blurry, info: info.joined(separator: "; "), graphic: darkFraction(outs[0]) > 0.25)
     }
 }
 
@@ -1784,10 +1867,15 @@ enum Straighten {
         let segs = lastSegs
         // güvenle okunmuş parçalar (masa örtüsü deseni de bazen "yazı" okunur: düşük güvenli okuma içerik sayılmaz)
         func content(_ q: Seg) -> Bool { let t = q.text.trimmingCharacters(in: .whitespaces); return q.conf >= 0.5 && (t.count >= 3 || t.contains(where: { $0.isNumber })) }
-        let cs = segs.filter(content)
-        guard cs.count >= 2 else { return cg }
+        // az yazılı sayfa (iç başlık, ithaf): güvenle okunan parça azsa okunan her parça yazı alanı sayılır;
+        // hiç yazı yoksa sayfanın ortası (%30-%70) korunur
+        var cs = segs.filter(content)
+        if cs.count < 2 { cs = segs.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty } }
+        if cs.isEmpty { cs = [Seg(text: "", x0: 0.3, x1: 0.7, y0: 0.3, y1: 0.7)] }
         var cx0 = cs.map { $0.x0 }.min()!, cx1 = cs.map { $0.x1 }.max()!, cy0 = cs.map { $0.y0 }.min()!, cy1 = cs.map { $0.y1 }.max()!
         cx0 = max(0, cx0 - 0.012); cx1 = min(1, cx1 + 0.012); cy0 = max(0, cy0 - 0.012); cy1 = min(1, cy1 + 0.012)
+        // kağıt rengi örneği: yazı alanı ∪ sayfanın ortası (az yazılı sayfada yazı alanı çok küçük)
+        let sx0 = min(cx0, 0.25), sx1 = max(cx1, 0.75), sy0 = min(cy0, 0.25), sy1 = max(cy1, 0.75)
         var out = cleanBleed(cg, rows: rws, &log)
         // küçük gri kopya: sütun / satır kağıt düzeyi (üst %20)
         let w = 500, h = max(8, out.height * 500 / max(1, out.width))
@@ -1796,7 +1884,7 @@ enum Straighten {
         gctx.draw(out, in: CGRect(x: 0, y: 0, width: w, height: h))
         func px(_ x: Int, _ y: Int) -> UInt8 { g[y * w + x] }     // bit eşlem belleği üstten başlar
         var ref: [UInt8] = []
-        for y in stride(from: Int(cy0 * CGFloat(h)), to: Int(cy1 * CGFloat(h)), by: 4) { for x in stride(from: Int(cx0 * CGFloat(w)), to: Int(cx1 * CGFloat(w)), by: 4) { ref.append(px(x, y)) } }
+        for y in stride(from: Int(sy0 * CGFloat(h)), to: Int(sy1 * CGFloat(h)), by: 4) { for x in stride(from: Int(sx0 * CGFloat(w)), to: Int(sx1 * CGFloat(w)), by: 4) { ref.append(px(x, y)) } }
         guard ref.count > 50 else { return out }
         ref.sort(); let paper = Double(ref[ref.count * 8 / 10])
         // kapak / fotoğraflı sayfa: yazı alanında kağıttan belirgin koyu piksel çoksa dokunulmaz (kapak zemini kağıt değil)
@@ -1831,7 +1919,7 @@ enum Straighten {
         // kağıt rengi: yazı alanındaki parlak piksellerin ortancası
         let p8 = data.bindMemory(to: UInt8.self, capacity: out.width * out.height * 4)
         var rs: [Int] = [], gs: [Int] = [], bs: [Int] = []
-        for y in stride(from: Int(cy0 * H), to: Int(cy1 * H), by: 9) { for x in stride(from: Int(cx0 * W), to: Int(cx1 * W), by: 9) {
+        for y in stride(from: Int(sy0 * H), to: Int(sy1 * H), by: 9) { for x in stride(from: Int(sx0 * W), to: Int(sx1 * W), by: 9) {
             let o = (y * out.width + x) * 4; let l = 0.299 * Double(p8[o]) + 0.587 * Double(p8[o + 1]) + 0.114 * Double(p8[o + 2])
             if l >= paper * 0.97 * 1.0 { rs.append(Int(p8[o])); gs.append(Int(p8[o + 1])); bs.append(Int(p8[o + 2])) } } }
         guard rs.count > 20 else { return out }
@@ -1848,7 +1936,7 @@ enum Straighten {
         for i in 0..<(cw * ch) { lum[i] = 0.299 * Double(rgb[i * 4]) + 0.587 * Double(rgb[i * 4 + 1]) + 0.114 * Double(rgb[i * 4 + 2]) }
         // kağıt rengi (yazı alanının parlak kısmı)
         var pr: [Int] = [], pg: [Int] = [], pb: [Int] = [], pl: [Double] = []
-        for y in Int(cy0 * CGFloat(ch))..<max(Int(cy0 * CGFloat(ch)) + 1, Int(cy1 * CGFloat(ch))) { for x in Int(cx0 * CGFloat(cw))..<max(Int(cx0 * CGFloat(cw)) + 1, Int(cx1 * CGFloat(cw))) where x < cw && y < ch {
+        for y in Int(sy0 * CGFloat(ch))..<max(Int(sy0 * CGFloat(ch)) + 1, Int(sy1 * CGFloat(ch))) { for x in Int(sx0 * CGFloat(cw))..<max(Int(sx0 * CGFloat(cw)) + 1, Int(sx1 * CGFloat(cw))) where x < cw && y < ch {
             let i = y * cw + x; pl.append(lum[i]); pr.append(Int(rgb[i * 4])); pg.append(Int(rgb[i * 4 + 1])); pb.append(Int(rgb[i * 4 + 2])) } }
         guard pl.count > 50 else { return out }
         pl.sort(); pr.sort(); pg.sort(); pb.sort()
@@ -1893,16 +1981,36 @@ enum Straighten {
                 if mask[j] == 0 && nonPaper(j) { mask[j] = 1; queue.append(j) }
             }
         }
-        let frac = Double(queue.count) / Double(cw * ch)
+        // 2. aşama: kağıt dışı bölgeye bitişik düz (desensiz) ama temiz kağıt olmayan hücreler (gölge, sayfa yığınının
+        // sarımsı kenarı, kapaktan vuran mavi ışık) da bölgeye katılır; temiz kağıda gelince durur. Desenli hücrelere
+        // (yazı, el yazısı, çizim) girilmez → bunlar korunur. Boyanan alan temiz kağıtla birleştiği için iz / basamak kalmaz
+        func cleanPaper(_ i: Int) -> Bool {
+            let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2]), l = max(1, lum[i])
+            let cdist = ((r / l - pR / pL) * (r / l - pR / pL) + (g / l - pG / pL) * (g / l - pG / pL) + (b / l - pB / pL) * (b / l - pB / pL)).squareRoot()
+            return l >= pL * 0.93 && cdist < 0.05
+        }
+        var q2 = queue, k2 = 0
+        while k2 < q2.count {
+            let i = q2[k2]; k2 += 1
+            let x = i % cw, y = i / cw
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = x + dx, ny = y + dy
+                guard nx >= 0, ny >= 0, nx < cw, ny < ch else { continue }
+                let j = ny * cw + nx
+                guard mask[j] == 0, !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) else { continue }
+                if tex[j] < 6 && !cleanPaper(j) { mask[j] = 3; q2.append(j) }
+            }
+        }
+        let frac = Double(q2.count) / Double(cw * ch)
         guard frac < 0.5 else { return out }       // yarıdan fazlası "kağıt dışı" ise ölçüm şüpheli: dokunulmaz
         // 1 hücre genişlet, yumuşak kenarlı maske → parlak kağıt rengi
-        var grow = mask
+        var grow = mask.map { $0 > 0 ? UInt8(1) : 0 }
         // en dış ince kenar (≈ %0.8): sayfa / sırt kenarı çizgisi kalıntısı; yazı alanı hariç
         let edge = 3     // ≈ %1.2 (yumuşatmadan sonra da tam örtsün)
         for y in 0..<ch { for x in 0..<cw where (x < edge || x >= cw - edge || y < edge || y >= ch - edge) && !(x >= bx0 && x <= bx1 && y >= by0 && y <= by1) { grow[y * cw + x] = 1 } }
         // parmak / masa gibi renkli alanın kenarı (yarı karışmış pikseller) iz bırakmasın: daha geniş genişletilir
         for y in 0..<ch { for x in 0..<cw where mask[y * cw + x] == 1 && colored(y * cw + x) { for dy in -7...7 { for dx in -7...7 { let nx = x + dx, ny = y + dy; if nx >= 0 && ny >= 0 && nx < cw && ny < ch && !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) { grow[ny * cw + nx] = 1 } } } } }
-        for y in 0..<ch { for x in 0..<cw where mask[y * cw + x] == 1 { for dy in -3...3 { for dx in -3...3 { let nx = x + dx, ny = y + dy; if nx >= 0 && ny >= 0 && nx < cw && ny < ch && !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) { grow[ny * cw + nx] = 1 } } } } }
+        for y in 0..<ch { for x in 0..<cw where mask[y * cw + x] > 0 { for dy in -3...3 { for dx in -3...3 { let nx = x + dx, ny = y + dy; if nx >= 0 && ny >= 0 && nx < cw && ny < ch && !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) { grow[ny * cw + nx] = 1 } } } } }
         guard let mctx = CGContext(data: nil, width: cw, height: ch, bitsPerComponent: 8, bytesPerRow: cw, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0), let md = mctx.data else { return out }
         let mp = md.bindMemory(to: UInt8.self, capacity: cw * ch)
         for i in 0..<(cw * ch) { mp[i] = grow[i] == 1 ? 255 : 0 }
@@ -2001,18 +2109,18 @@ enum PageFlattener {
 
     /// PagePipeline: yazı yönü + köşeler ∪ yazı alanı ile kırpma + açık kitabı sırttan ayırma + her sayfayı ayrı UVDoc.
     /// rejectBlurry: bulanık karede düzleştirme yapılmaz, paths boş döner (çağıran yeniden çeker)
-    static func flatten(_ img: CIImage, prefix: String = "duz", detect: Bool = true, rejectBlurry: Bool = false) -> (paths: [String], words: Set<String>, blurry: Bool)? {
+    static func flatten(_ img: CIImage, prefix: String = "duz", detect: Bool = true, rejectBlurry: Bool = false) -> (paths: [String], words: Set<String>, blurry: Bool, graphic: Bool)? {
         guard let d = get_() else { return nil }
         guard let r = PagePipeline.run(img, dewarper: d, detect: detect, maxSide: 2200, stopIfBlurry: rejectBlurry) else { return nil }
         nlog("boru hattı: " + r.info)
-        if r.images.isEmpty { return ([], r.words, r.blurry) }
+        if r.images.isEmpty { return ([], r.words, r.blurry, r.graphic) }
         var paths: [String] = []
         for cg in r.images {
             guard let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.92) else { continue }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString).jpg")
             if (try? jpg.write(to: url)) != nil { paths.append(url.absoluteString) }
         }
-        return paths.isEmpty ? nil : (paths, r.words, r.blurry)
+        return paths.isEmpty ? nil : (paths, r.words, r.blurry, r.graphic)
     }
 }
 

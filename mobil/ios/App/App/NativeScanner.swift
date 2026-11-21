@@ -1237,6 +1237,45 @@ enum PagePipeline {
 
     struct Line { var x0, x1, y0, y1: CGFloat; var n: Int }
 
+
+    /// dolgu kalıntısı: sırt kenarından içeri, dolgu rengindeki (koyu, nötr gri ≈ 41) ve kenara bitişik pikseller kağıt
+    /// rengine boyanır (satır satır; ilk kağıt pikselinde durulur → yazıya ulaşılmaz). En çok %4 genişlik
+    static func paintPad(_ cg: CGImage, left: Bool) -> CGImage {
+        let W = cg.width, H = cg.height
+        guard let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let d = ctx.data else { return cg }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: W, height: H))
+        let p = d.bindMemory(to: UInt8.self, capacity: W * H * 4)
+        // kağıt rengi: orta şeritteki parlak piksellerin %85'i
+        var rs: [UInt8] = [], gs: [UInt8] = [], bs: [UInt8] = []
+        for y in stride(from: H / 4, to: H * 3 / 4, by: 11) { for x in stride(from: W / 3, to: W * 2 / 3, by: 11) { let o = (y * W + x) * 4; rs.append(p[o]); gs.append(p[o + 1]); bs.append(p[o + 2]) } }
+        rs.sort(); gs.sort(); bs.sort()
+        let pr = rs[rs.count * 85 / 100], pg = gs[gs.count * 85 / 100], pb = bs[bs.count * 85 / 100]
+        let maxW = W * 4 / 100
+        var n = 0
+        // dolgu satır boyunca kesintili olabilir (yalnız birkaç satırda 1-2 piksel): komşu satırlardaki kalıntı da dahil,
+        // her satırda dolgunun bittiği yerden sonraki 3 geçiş pikseli de (dolgu ile kağıdın karıştığı yumuşak kenar) boyanır
+        var runs = [Int](repeating: 0, count: H)
+        for y in 0..<H {
+            var k = 0
+            while k < maxW {
+                let x = left ? k : W - 1 - k, o = (y * W + x) * 4
+                let r = Int(p[o]), g = Int(p[o + 1]), b = Int(p[o + 2])
+                let l = (r * 299 + g * 587 + b * 114) / 1000
+                guard l < 75 && abs(r - g) < 14 && abs(g - b) < 14 else { break }
+                k += 1
+            }
+            runs[y] = k
+        }
+        for y in 0..<H {
+            var m = 0; for dy in -2...2 { let yy = y + dy; if yy >= 0 && yy < H { m = max(m, runs[yy]) } }
+            guard m > 0 else { continue }
+            for k in 0..<min(maxW, m + 3) {
+                let x = left ? k : W - 1 - k, o = (y * W + x) * 4
+                p[o] = pr; p[o + 1] = pg; p[o + 2] = pb; n += 1
+            }
+        }
+        return n > 0 ? (ctx.makeImage() ?? cg) : cg
+    }
     /// sırt tarafına eklenen koyu şeridin düzleştirmeden sonra kalan kısmı: kenardan içeri, sütun ortancası kağıdın
     /// %60'ından koyu olan sütunlar kesilir (en çok %8). left: şerit sol kenarda (sağ sayfa)
     static func trimPad(_ cg: CGImage, left: Bool) -> CGImage {
@@ -1364,6 +1403,28 @@ enum PagePipeline {
             region = CGRect(x: 0, y: 0, width: 1, height: 1)
         }
 
+        // köşeler yazının tamamını kapsıyorsa: köşelerin (%2.5 dışa) dışındaki her şey koyu zeminle örtülür. Kırpma payında
+        // görünen masa örtüsü / masa deseni böylece sayfaya karışmaz; UVDoc sayfa kenarını net görür
+        var unionUsed = info.contains { $0.hasPrefix("köşeler tek sayfayı buldu") }
+        if let q = quad, !unionUsed {
+            let cx = q.map { $0.x }.reduce(0, +) / 4, cy = q.map { $0.y }.reduce(0, +) / 4
+            let m = q.map { CGPoint(x: (cx + ($0.x - cx) * 1.05) * UW, y: (cy + ($0.y - cy) * 1.05) * UH) }
+            let mw = 512, mh = max(8, Int(512 * UH / UW))
+            if let mctx = CGContext(data: nil, width: mw, height: mh, bitsPerComponent: 8, bytesPerRow: mw, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) {
+                mctx.setFillColor(gray: 0, alpha: 1); mctx.fill(CGRect(x: 0, y: 0, width: mw, height: mh))
+                mctx.setFillColor(gray: 1, alpha: 1)
+                let sx = CGFloat(mw) / UW, sy = CGFloat(mh) / UH
+                mctx.beginPath(); mctx.move(to: CGPoint(x: m[0].x * sx, y: m[0].y * sy)); for k in 1..<4 { mctx.addLine(to: CGPoint(x: m[k].x * sx, y: m[k].y * sy)) }; mctx.closePath(); mctx.fillPath()
+                if let mcg = mctx.makeImage(), let blend = CIFilter(name: "CIBlendWithMask") {
+                    let mask = CIImage(cgImage: mcg).transformed(by: CGAffineTransform(scaleX: UW / CGFloat(mw), y: UH / CGFloat(mh)))
+                    let bg = CIImage(color: CIColor(red: 0.16, green: 0.16, blue: 0.16)).cropped(to: U.extent)
+                    blend.setValue(U, forKey: kCIInputImageKey); blend.setValue(bg, forKey: kCIInputBackgroundImageKey); blend.setValue(mask, forKey: kCIInputMaskImageKey)
+                    if let o = blend.outputImage { U = o.cropped(to: U.extent); info.append("köşe dışı örtüldü") }
+                }
+            }
+        }
+        _ = unionUsed; unionUsed = false
+
         // 3) açık kitap mı: kırpma alanı yatay ve yazı sütunları arasında satırların kesmediği bir boşluk var
         var cuts: [CGRect] = [region]
         let rwPx = region.width * UW, rhPx = region.height * UH
@@ -1450,7 +1511,7 @@ enum PagePipeline {
             guard let cg = ci.createCGImage(page, from: page.extent.integral) else { continue }
             if debugSpine { debugPre.append(cg) }
             var flat = (try? d.unwarp(cg, maxSide: maxSide)) ?? cg
-            if cuts.count == 2 && padSpine { flat = trimPad(flat, left: c.minX > region.minX + 1e-6) }
+            if cuts.count == 2 && padSpine { flat = trimPad(flat, left: c.minX > region.minX + 1e-6); flat = paintPad(flat, left: c.minX > region.minX + 1e-6) }
             outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(flat, &info) : flat, &info))
         }
         guard !outs.isEmpty else { return nil }
@@ -1464,7 +1525,7 @@ enum PagePipeline {
 /// Ölçüm yetersizse (az satır) görüntüye dokunulmaz.
 enum Straighten {
     struct Row { var xs: [CGFloat]; var ys: [CGFloat]; var t: CGFloat; var h: CGFloat; var x0: CGFloat; var x1: CGFloat; var text: String = "" }
-    struct Seg { var text: String; var x0, x1, y0, y1: CGFloat }
+    struct Seg { var text: String; var x0, x1, y0, y1: CGFloat; var conf: Float = 1 }
     static var lastSegs: [Seg] = []
 
     /// satırlar: kelime merkezleri (normalize, sol-üst orijin)
@@ -1483,7 +1544,7 @@ enum Straighten {
         for r in req.results ?? [] {
             guard let c = r.topCandidates(1).first else { continue }
             let bb = r.boundingBox
-            lastSegs.append(Seg(text: c.string, x0: bb.minX, x1: bb.maxX, y0: 1 - bb.maxY, y1: 1 - bb.minY))
+            lastSegs.append(Seg(text: c.string, x0: bb.minX, x1: bb.maxX, y0: 1 - bb.maxY, y1: 1 - bb.minY, conf: c.confidence))
             guard c.confidence >= 0.4 else { continue }
             let str = c.string
             var xs: [CGFloat] = [], ys: [CGFloat] = [], hs: [CGFloat] = []
@@ -1721,7 +1782,8 @@ enum Straighten {
     static func cleanEdges(_ cg: CGImage, _ log: inout [String]) -> CGImage {
         let rws = rows(cg)
         let segs = lastSegs
-        func content(_ q: Seg) -> Bool { let t = q.text.trimmingCharacters(in: .whitespaces); return t.count >= 3 || t.contains(where: { $0.isNumber }) }
+        // güvenle okunmuş parçalar (masa örtüsü deseni de bazen "yazı" okunur: düşük güvenli okuma içerik sayılmaz)
+        func content(_ q: Seg) -> Bool { let t = q.text.trimmingCharacters(in: .whitespaces); return q.conf >= 0.5 && (t.count >= 3 || t.contains(where: { $0.isNumber })) }
         let cs = segs.filter(content)
         guard cs.count >= 2 else { return cg }
         var cx0 = cs.map { $0.x0 }.min()!, cx1 = cs.map { $0.x1 }.max()!, cy0 = cs.map { $0.y0 }.min()!, cy1 = cs.map { $0.y1 }.max()!
@@ -1762,11 +1824,6 @@ enum Straighten {
             return n >= 3
         }
         // kenardan içeri: kağıttan %12+ koyu sütun / satırlar (yazı alanına girmeden)
-        var L = 0; while L < Int(cx0 * CGFloat(w)) && colPaper(L) < paper * 0.88 && !colInk(L) { L += 1 }
-        var R = 0; while R < Int((1 - cx1) * CGFloat(w)) && colPaper(w - 1 - R) < paper * 0.88 && !colInk(w - 1 - R) { R += 1 }
-        var T = 0; while T < Int(cy0 * CGFloat(h)) && rowPaper(T) < paper * 0.88 && !rowInk(T) { T += 1 }
-        var B = 0; while B < Int((1 - cy1) * CGFloat(h)) && rowPaper(h - 1 - B) < paper * 0.88 && !rowInk(h - 1 - B) { B += 1 }
-        guard L + R + T + B > 0 else { return out }
         let W = CGFloat(out.width), H = CGFloat(out.height)
         let space = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil, width: out.width, height: out.height, bitsPerComponent: 8, bytesPerRow: out.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let data = ctx.data else { return out }
@@ -1779,16 +1836,88 @@ enum Straighten {
             if l >= paper * 0.97 * 1.0 { rs.append(Int(p8[o])); gs.append(Int(p8[o + 1])); bs.append(Int(p8[o + 2])) } } }
         guard rs.count > 20 else { return out }
         rs.sort(); gs.sort(); bs.sort()
-        ctx.setFillColor(CGColor(colorSpace: space, components: [CGFloat(rs[rs.count * 9 / 10]) / 255, CGFloat(gs[gs.count * 9 / 10]) / 255, CGFloat(bs[bs.count * 9 / 10]) / 255, 1])!)
-        let sx = W / CGFloat(w), sy = H / CGFloat(h)
-        if L > 0 { ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(L + 1) * sx, height: H)) }
-        if R > 0 { ctx.fill(CGRect(x: W - CGFloat(R + 1) * sx, y: 0, width: CGFloat(R + 1) * sx, height: H)) }
-        if T > 0 { ctx.fill(CGRect(x: 0, y: H - CGFloat(T + 1) * sy, width: W, height: CGFloat(T + 1) * sy)) }
-        if B > 0 { ctx.fill(CGRect(x: 0, y: 0, width: W, height: CGFloat(B + 1) * sy)) }
-        log.append(String(format: "kenar gölgesi temizlendi (sol %d sağ %d üst %d alt %d / %d px)", L, R, T, B, w))
-        out = ctx.makeImage() ?? out
-        return out
+        // kağıt dışı alan: görüntü kenarından başlayıp kağıda benzemeyen (desenli: masa örtüsü; farklı renkli: masa, parmak;
+        // çok koyu: zemin) hücreler boyunca yayılan bölge. Yazı alanı (okunan her parça) ve kağıtla çevrili her şey (çizimler)
+        // bu bölgeye giremez. Bölge, yumuşak kenarla parlak kağıt rengine boyanır
+        let cw = 240, ch = max(8, out.height * 240 / max(1, out.width))
+        var rgb = [UInt8](repeating: 0, count: cw * ch * 4)
+        guard let sctx = CGContext(data: &rgb, width: cw, height: ch, bitsPerComponent: 8, bytesPerRow: cw * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return out }
+        sctx.interpolationQuality = .medium
+        sctx.draw(out, in: CGRect(x: 0, y: 0, width: cw, height: ch))
+        var lum = [Double](repeating: 0, count: cw * ch)
+        for i in 0..<(cw * ch) { lum[i] = 0.299 * Double(rgb[i * 4]) + 0.587 * Double(rgb[i * 4 + 1]) + 0.114 * Double(rgb[i * 4 + 2]) }
+        // kağıt rengi (yazı alanının parlak kısmı)
+        var pr: [Int] = [], pg: [Int] = [], pb: [Int] = [], pl: [Double] = []
+        for y in Int(cy0 * CGFloat(ch))..<max(Int(cy0 * CGFloat(ch)) + 1, Int(cy1 * CGFloat(ch))) { for x in Int(cx0 * CGFloat(cw))..<max(Int(cx0 * CGFloat(cw)) + 1, Int(cx1 * CGFloat(cw))) where x < cw && y < ch {
+            let i = y * cw + x; pl.append(lum[i]); pr.append(Int(rgb[i * 4])); pg.append(Int(rgb[i * 4 + 1])); pb.append(Int(rgb[i * 4 + 2])) } }
+        guard pl.count > 50 else { return out }
+        pl.sort(); pr.sort(); pg.sort(); pb.sort()
+        let pL = pl[pl.count * 7 / 10], pR = Double(pr[pr.count * 7 / 10]), pG = Double(pg[pg.count * 7 / 10]), pB = Double(pb[pb.count * 7 / 10])
+        // yerel desen: 5×5 komşulukta parlaklık sapması
+        var tex = [Double](repeating: 0, count: cw * ch)
+        for y in 2..<(ch - 2) { for x in 2..<(cw - 2) {
+            var sm = 0.0, sq = 0.0
+            for dy in -2...2 { for dx in -2...2 { let v = lum[(y + dy) * cw + x + dx]; sm += v; sq += v * v } }
+            let m = sm / 25; tex[y * cw + x] = (max(0, sq / 25 - m * m)).squareRoot()
+        } }
+        // desen bölgesindeki düz beyaz parçalar (dantel boşlukları) da desene dahil: 7×7 komşulukta en yüksek desen
+        var texM = tex
+        for y in 3..<(ch - 3) { for x in 3..<(cw - 3) { var mx = 0.0; for dy in -3...3 { for dx in -3...3 { mx = max(mx, tex[(y + dy) * cw + x + dx]) } }; texM[y * cw + x] = mx } }
+        let bx0 = Int((cx0 - 0.01) * CGFloat(cw)), bx1 = Int((cx1 + 0.01) * CGFloat(cw)), by0 = Int((cy0 - 0.01) * CGFloat(ch)), by1 = Int((cy1 + 0.01) * CGFloat(ch))
+        func nonPaper(_ i: Int) -> Bool {
+            let x = i % cw, y = i / cw
+            if x >= bx0 && x <= bx1 && y >= by0 && y <= by1 { return false }          // yazı alanı: asla
+            let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2])
+            let cd = ((r / max(1, lum[i]) - pR / pL) * (r / max(1, lum[i]) - pR / pL) + (g / max(1, lum[i]) - pG / pL) * (g / max(1, lum[i]) - pG / pL) + (b / max(1, lum[i]) - pB / pL) * (b / max(1, lum[i]) - pB / pL)).squareRoot()
+            return texM[i] > 14 || lum[i] < pL * 0.55 || cd > 0.22
+        }
+        func colored(_ i: Int) -> Bool {
+            let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2])
+            let l = max(1, lum[i])
+            return ((r / l - pR / pL) * (r / l - pR / pL) + (g / l - pG / pL) * (g / l - pG / pL) + (b / l - pB / pL) * (b / l - pB / pL)).squareRoot() > 0.22
+        }
+        var mask = [UInt8](repeating: 0, count: cw * ch)
+        var queue: [Int] = []
+        // tohum: kenara %2 mesafedeki kağıt dışı hücreler (kenara tam değmeyen sırt / sayfa kenarı izleri de)
+        let band = max(1, cw * 2 / 100)
+        for y in 0..<ch { for x in 0..<cw where x < band || x >= cw - band || y < band || y >= ch - band {
+            let i = y * cw + x; if mask[i] == 0 && nonPaper(i) { mask[i] = 1; queue.append(i) } } }
+        var qi = 0
+        while qi < queue.count {
+            let i = queue[qi]; qi += 1
+            let x = i % cw, y = i / cw
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = x + dx, ny = y + dy
+                guard nx >= 0, ny >= 0, nx < cw, ny < ch else { continue }
+                let j = ny * cw + nx
+                if mask[j] == 0 && nonPaper(j) { mask[j] = 1; queue.append(j) }
+            }
+        }
+        let frac = Double(queue.count) / Double(cw * ch)
+        guard frac < 0.5 else { return out }       // yarıdan fazlası "kağıt dışı" ise ölçüm şüpheli: dokunulmaz
+        // 1 hücre genişlet, yumuşak kenarlı maske → parlak kağıt rengi
+        var grow = mask
+        // en dış ince kenar (≈ %0.8): sayfa / sırt kenarı çizgisi kalıntısı; yazı alanı hariç
+        let edge = 3     // ≈ %1.2 (yumuşatmadan sonra da tam örtsün)
+        for y in 0..<ch { for x in 0..<cw where (x < edge || x >= cw - edge || y < edge || y >= ch - edge) && !(x >= bx0 && x <= bx1 && y >= by0 && y <= by1) { grow[y * cw + x] = 1 } }
+        // parmak / masa gibi renkli alanın kenarı (yarı karışmış pikseller) iz bırakmasın: daha geniş genişletilir
+        for y in 0..<ch { for x in 0..<cw where mask[y * cw + x] == 1 && colored(y * cw + x) { for dy in -7...7 { for dx in -7...7 { let nx = x + dx, ny = y + dy; if nx >= 0 && ny >= 0 && nx < cw && ny < ch && !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) { grow[ny * cw + nx] = 1 } } } } }
+        for y in 0..<ch { for x in 0..<cw where mask[y * cw + x] == 1 { for dy in -3...3 { for dx in -3...3 { let nx = x + dx, ny = y + dy; if nx >= 0 && ny >= 0 && nx < cw && ny < ch && !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) { grow[ny * cw + nx] = 1 } } } } }
+        guard let mctx = CGContext(data: nil, width: cw, height: ch, bitsPerComponent: 8, bytesPerRow: cw, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0), let md = mctx.data else { return out }
+        let mp = md.bindMemory(to: UInt8.self, capacity: cw * ch)
+        for i in 0..<(cw * ch) { mp[i] = grow[i] == 1 ? 255 : 0 }
+        guard let mcg = mctx.makeImage() else { return out }
+        let Wf = CGFloat(out.width), Hf = CGFloat(out.height)
+        var m = CIImage(cgImage: mcg).transformed(by: CGAffineTransform(scaleX: Wf / CGFloat(cw), y: Hf / CGFloat(ch)))
+        m = m.clampedToExtent().applyingGaussianBlur(sigma: Double(Wf) / Double(cw) * 1.2).cropped(to: CGRect(x: 0, y: 0, width: Wf, height: Hf))
+        let fill = CIImage(color: CIColor(red: CGFloat(rs[rs.count * 9 / 10]) / 255, green: CGFloat(gs[gs.count * 9 / 10]) / 255, blue: CGFloat(bs[bs.count * 9 / 10]) / 255)).cropped(to: CGRect(x: 0, y: 0, width: Wf, height: Hf))
+        guard let blend = CIFilter(name: "CIBlendWithMask") else { return out }
+        blend.setValue(fill, forKey: kCIInputImageKey); blend.setValue(CIImage(cgImage: out), forKey: kCIInputBackgroundImageKey); blend.setValue(m, forKey: kCIInputMaskImageKey)
+        guard let bo = blend.outputImage, let res = PagePipeline.ci.createCGImage(bo, from: CGRect(x: 0, y: 0, width: Wf, height: Hf)) else { return out }
+        log.append(String(format: "kağıt dışı alan boyandı (%%%.0f)", frac * 100))
+        return res
     }
+
     /// ölçüm (test): satır içi en büyük sapmaların ortancası ve kenar sapması
     static func measure(_ cg: CGImage) -> (CGFloat, CGFloat) {
         let rs = rows(cg).filter { $0.xs.count >= 3 && $0.x1 - $0.x0 > 0.25 }

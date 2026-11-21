@@ -3736,7 +3736,7 @@ function processCanvas(src, opts){
     }
   }
   T('maske');
-  const skinT = TX && !quick && opts.smartCrop ? skinMaskTX(pageData, fw, fhR) : null;
+  const skinT = TX && !quick && (opts.smartCrop || opts.flat) ? skinMaskTX(pageData, fw, fhR) : null;   // düz sayfada da parmak silinir
   if(graphic) enhanceGraphic(pageData, fw, fhR, opts.mode);
   else enhanceRGBA(pageData, fw, fhR, opts.mode, mode === 'yazı');
   if(fillQ){
@@ -3787,7 +3787,7 @@ function processCanvas(src, opts){
     // kenardaki parmak sessizce silinir; yazının belirgin kısmını örtmüşse (altındaki harfler hiç görünmedi) işaretlenir
     if(onText > sw*sh*0.01) issues.push({code:'finger', side:-1});
   }
-  if(opts.flat && !graphic && !quick && opts.mode !== 'orig') cleanSideStrips(pageData, fw, fhR, dbg);
+  if(opts.flat && !graphic && !quick && opts.mode !== 'orig') cleanSideStrips(pageData, fw, fhR, dbg, true);
   T('iyileştir');
   const pageCanvas = quick ? null : putRGBA(pageData, fw, fh);
   let fbox = {x0:0,y0:0,x1:fw,y1:fhR};
@@ -4621,7 +4621,7 @@ function flatSpreadCuts(src, g){
 }
 /* düz sayfa kenarındaki şeritler (sırt çizgisi, yan / alttaki sayfanın kenarı ve yazısı): sayfanın kendi yazısından boş bir
    şeritle ayrılmış, kenara yapışık ve sayfa boyunca uzanan koyu iz beyaza boyanır. Sayfa düzeni (boyut, konum) değişmez */
-function cleanSideStrips(d, w, h, dbg){
+function cleanSideStrips(d, w, h, dbg, opts_flatTouch){
   const col = new Float32Array(w), span = new Uint8Array(w), B = 24;
   const y0 = Math.round(h*0.02), y1 = Math.round(h*0.98);
   for(let x=0; x<w; x++){
@@ -4648,7 +4648,8 @@ function cleanSideStrips(d, w, h, dbg){
       if(empty(x)){ run++; if(run >= gapMin && ink > 0){ cut = x - dir*Math.floor(run/2); break; } }
       else { if(run >= gapMin && ink === 0){ /* kenarda önce boşluk: iz yok */ } run = 0; ink++; maxSpan = Math.max(maxSpan, span[x]); }
     }
-    if(cut < 0 || maxSpan < B*0.35) return 0;
+    // kenara değen ince iz kısa da olsa silinir (düz sayfada kenar boşluğudur); değmeyen iz sayfa boyunca uzanmalı
+    if(cut < 0 || (maxSpan < B*0.35 && !(opts_flatTouch && first <= touch))) return 0;
     if(ink > narrow) return 0;          // geniş iz: içerik olabilir (içindekilerde sayfa numarası sütunu); yalnız ince iz silinir
     const xa = dir > 0 ? 0 : cut, xb = dir > 0 ? cut : w - 1;
     for(let y=0; y<h; y++) for(let x=xa; x<=xb; x++){ const j = (y*w + x)*4; d[j] = d[j+1] = d[j+2] = 255; }

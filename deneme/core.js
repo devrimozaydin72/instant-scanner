@@ -3416,8 +3416,23 @@ function processCanvas(src, opts){
       const q = PP.toSrc(X, Y);
       if(isFinite(q[0]) && isFinite(q[1]) && q[0] >= -mgW && q[1] >= -mgH && q[0] <= W + mgW && q[1] <= H + mgH){ if(X < x0) x0 = X; if(X > x1) x1 = X; if(Y < y0) y0 = Y; if(Y > y1) y1 = Y; }
     }
-    if(x1 - x0 > PP.bw*0.3 && y1 - y0 > PP.bh*0.3){ flatBox = {x0, y0, w: x1 - x0, h: y1 - y0}; dbg.push(`düz sayfa: satırlar düzlendi, düzen korundu (düzlem ${x0|0}-${x1|0} × ${y0|0}-${y1|0} / ${PP.bw|0}×${PP.bh|0})`); }
-    else { dbg.push('düz sayfa: düzlem görüntüyü kapsamıyor → satır düzleştirme yok'); TX = null; }
+    // güvenlik: düzlemin kapsadığı kaynak alanın dışında yazı kalıyorsa (düzlem son satırın ortasında bitiyor) düz sayfa
+    // olduğu gibi kullanılır — satır düzleştirme uğruna yazı kaybedilmez
+    let lost = 0;
+    if(x1 - x0 > PP.bw*0.3 && y1 - y0 > PP.bh*0.3){
+      let sx0 = 1e9, sy0 = 1e9, sx1 = -1e9, sy1 = -1e9;
+      for(let Y=y0; Y<=y1; Y+=(y1-y0)/40) for(let X=x0; X<=x1; X+=(x1-x0)/40){ const q = PP.toSrc(X, Y); if(isFinite(q[0]) && isFinite(q[1])){ sx0 = Math.min(sx0, q[0]); sx1 = Math.max(sx1, q[0]); sy0 = Math.min(sy0, q[1]); sy1 = Math.max(sy1, q[1]); } }
+      const Ls = []; for(let i=0; i<W*H; i+=97){ const j = i*4; Ls.push(0.299*sd[j] + 0.587*sd[j+1] + 0.114*sd[j+2]); }
+      const paper = quantile(Ls, 0.9);
+      const st = 3, xa = Math.max(0, sx0|0), xb = Math.min(W-1, sx1|0);
+      for(let y=0; y<H; y+=st){
+        if(y >= sy0 - H*0.004 && y <= sy1 + H*0.004) continue;
+        for(let x=xa; x<=xb; x+=st){ const j = (y*W + x)*4; if(0.299*sd[j] + 0.587*sd[j+1] + 0.114*sd[j+2] < paper*0.55) lost++; }
+      }
+      if(lost > 40){ dbg.push(`düz sayfa: düzlem dışında yazı var (${lost}) → satır düzleştirme yok`); TX = null; }
+    }
+    if(TX && x1 - x0 > PP.bw*0.3 && y1 - y0 > PP.bh*0.3){ flatBox = {x0, y0, w: x1 - x0, h: y1 - y0}; dbg.push(`düz sayfa: satırlar düzlendi, düzen korundu (düzlem ${x0|0}-${x1|0} × ${y0|0}-${y1|0} / ${PP.bw|0}×${PP.bh|0})`); }
+    else if(TX){ dbg.push('düz sayfa: düzlem görüntüyü kapsamıyor → satır düzleştirme yok'); TX = null; }
   }
 
   // çift sayfanın yarısı: yazı yoksa (şekil/grafik sayfası) ağır sayfa analizi yapılmaz
@@ -3747,7 +3762,8 @@ function processCanvas(src, opts){
     for(let i=0;i<qw*qh;i++) alpha[i] = Math.min(1, alpha[i]*1.5);
     fillAlphaQ(pageData, fw, fh, alpha, qw, qh, Q, paperColor(pageData, fw, fh));
   }
-  if(mode === 'yazı' && content.env){
+  // düz sayfada (iPhone'da kenarlar zaten temizlendi) yazı zarfı dışı beyazlatılmaz: zarf son satırı kesebiliyordu
+  if(mode === 'yazı' && content.env && !opts.flat){
     // satır uçlarının zarfı dışında kalan her şey (sırt gölgesi, sayfa kenarı, dantel) kağıt rengine boyanır
     const pc = opts.mode === 'orig' ? paperColor(pageData, fw, fhR) : [255, 255, 255];
     const pad = content.envPad*s, fade = Math.max(2, content.pitch*0.3*s);

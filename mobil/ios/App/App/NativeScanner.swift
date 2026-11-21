@@ -1873,6 +1873,7 @@ enum Straighten {
         if cs.count < 2 { cs = segs.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty } }
         if cs.isEmpty { cs = [Seg(text: "", x0: 0.3, x1: 0.7, y0: 0.3, y1: 0.7)] }
         var cx0 = cs.map { $0.x0 }.min()!, cx1 = cs.map { $0.x1 }.max()!, cy0 = cs.map { $0.y0 }.min()!, cy1 = cs.map { $0.y1 }.max()!
+        let rawBox = (cx0, cx1, cy0, cy1)
         cx0 = max(0, cx0 - 0.012); cx1 = min(1, cx1 + 0.012); cy0 = max(0, cy0 - 0.012); cy1 = min(1, cy1 + 0.012)
         // kağıt rengi örneği: yazı alanı ∪ sayfanın ortası (az yazılı sayfada yazı alanı çok küçük)
         let sx0 = min(cx0, 0.25), sx1 = max(cx1, 0.75), sy0 = min(cy0, 0.25), sy1 = max(cy1, 0.75)
@@ -2005,6 +2006,37 @@ enum Straighten {
         guard frac < 0.5 else { return out }       // yarıdan fazlası "kağıt dışı" ise ölçüm şüpheli: dokunulmaz
         // 1 hücre genişlet, yumuşak kenarlı maske → parlak kağıt rengi
         var grow = mask.map { $0 > 0 ? UInt8(1) : 0 }
+        // dış kenar bandı (%10): yazı alanı dışında ve okunan hiçbir parçanın üstünde olmayan, temiz kağıt olmayan her hücre
+        // boyanır (sayfa yığınının kenar çizgisi / gölgesi, kırpma payı izi, yan sayfanın kesik yazısı). Okunan parçalar
+        // (sayfa numarası, başlık; güven ≥ 0.3) ve yazı alanı korunur
+        do {
+            let bx = cw * 14 / 100, byy = ch * 14 / 100
+            let prot = segs.filter { $0.conf >= 0.3 && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            var pmask = [UInt8](repeating: 0, count: cw * ch)
+            for q in prot {
+                let a0 = max(0, Int((q.x0 - 0.01) * CGFloat(cw))), a1 = min(cw - 1, Int((q.x1 + 0.01) * CGFloat(cw)))
+                let b0 = max(0, Int((q.y0 - 0.01) * CGFloat(ch))), b1 = min(ch - 1, Int((q.y1 + 0.01) * CGFloat(ch)))
+                if a0 <= a1 && b0 <= b1 { for y in b0...b1 { for x in a0...a1 { pmask[y * cw + x] = 1 } } }
+            }
+            var nb = 0
+            for y in 0..<ch { for x in 0..<cw where x < bx || x >= cw - bx || y < byy || y >= ch - byy {
+                let i = y * cw + x
+                // yazı alanının kendisi (payısız): okunan parçalar ayrıca korunuyor; yazıya çok yakın kenar çizgisi de silinsin
+                let fx = (CGFloat(x) + 0.5) / CGFloat(cw), fy = (CGFloat(y) + 0.5) / CGFloat(ch)
+                if pmask[i] == 1 || (fx >= rawBox.0 && fx <= rawBox.1 && fy >= rawBox.2 && fy <= rawBox.3) { continue }
+                let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2]), l = max(1, lum[i])
+                let cdist = ((r / l - pR / pL) * (r / l - pR / pL) + (g / l - pG / pL) * (g / l - pG / pL) + (b / l - pB / pL) * (b / l - pB / pL)).squareRoot()
+                // yalnız düz (desensiz) koyuluk: gölge / kenar çizgisi. Yazı (bulanık da olsa) desenlidir → asla boyanmaz
+                var tmax = 0.0; for dy in -1...1 { for dx in -1...1 { let xx = min(cw - 1, max(0, x + dx)), yy = min(ch - 1, max(0, y + dy)); tmax = max(tmax, tex[yy * cw + xx]) } }
+                let dark = l < pL * 0.92 || cdist > 0.06
+                // ince kenar çizgisi: desenli görünür ama çizgi boyunca süreklidir (yukarı-aşağı ya da sağa-sola 3 hücre koyu)
+                func dk(_ xx: Int, _ yy: Int) -> Bool { guard xx >= 0, yy >= 0, xx < cw, yy < ch else { return false }; return lum[yy * cw + xx] < pL * 0.92 }
+                let lineV = dk(x, y - 1) && dk(x, y + 1) && dk(x, y - 2) && dk(x, y + 2) && !dk(x - 2, y) && !dk(x + 2, y)
+                let lineH = dk(x - 1, y) && dk(x + 1, y) && dk(x - 2, y) && dk(x + 2, y) && !dk(x, y - 2) && !dk(x, y + 2)
+                if dark && (tmax < 9 || lineV || lineH) { grow[i] = 1; nb += 1 }
+            } }
+            if nb > 0 { log.append(String(format: "kenar bandı %%%.1f", Double(nb) * 100 / Double(cw * ch))) }
+        }
         // en dış ince kenar (≈ %0.8): sayfa / sırt kenarı çizgisi kalıntısı; yazı alanı hariç
         let edge = 3     // ≈ %1.2 (yumuşatmadan sonra da tam örtsün)
         for y in 0..<ch { for x in 0..<cw where (x < edge || x >= cw - edge || y < edge || y >= ch - edge) && !(x >= bx0 && x <= bx1 && y >= by0 && y <= by1) { grow[y * cw + x] = 1 } }

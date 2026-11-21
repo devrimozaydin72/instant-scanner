@@ -441,7 +441,9 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         case .waitChange:
             // sayfa çevrildi mi: görüntüde belirgin hareket (çevrilen yaprak, el), dörtgen kayboldu / oynadı
             if motion > 10 || wobble > 0.06 || (capQuad.map { $0.maxDist(q) > 0.12 } ?? false) { disturbed = true }
-            guard stable && inFrame else { setHint(S("next", "✓ Tamam — sonraki sayfa")); return }
+            // açık kitap kadrajı doldurabilir (köşeler dışarıda): sabitse yine de yeni sayfa denetimi yapılır
+            // (yoksa son açık kitapta 10 sn'den fazla bekleniyordu)
+            guard stable else { setHint(S("next", "✓ Tamam — sonraki sayfa")); return }
             if now - lastTextCheck < 0.35 { return }
             lastTextCheck = now
             // aynı sayfa mı: önce sayfadaki kelimeler (Apple metin tanıma, hızlı mod); yazısız sayfada görüntü imzası
@@ -461,9 +463,9 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             fallthrough
         case .hunting:
             if !inFrame {
-                // açık kitap kadrajı dolduruyor olabilir: köşe dışarıda ama sayfa 1 sn sabitse yine çekilir (kırpma yazıya göre yapılır)
+                // açık kitap kadrajı dolduruyor olabilir: köşe dışarıda ama sayfa 0.5 sn sabitse yine çekilir (kırpma yazıya göre yapılır)
                 if stable { if outSince == 0 { outSince = now } } else { outSince = 0 }
-                if outSince > 0 && now - outSince > 1.0 {
+                if outSince > 0 && now - outSince > 0.5 {
                     outSince = 0
                     note("köşe kadraj dışında ama 1 sn sabit → çekim")
                     shoot(q, pb: pb, now: now)
@@ -1602,11 +1604,18 @@ enum PagePipeline {
             if debugSpine { debugPre.append(cg) }
             var flat = (try? d.unwarp(cg, maxSide: maxSide)) ?? cg
             if cuts.count == 2 && padSpine { flat = trimPad(flat, left: c.minX > region.minX + 1e-6); flat = paintPad(flat, left: c.minX > region.minX + 1e-6) }
-            let ce = Straighten.cleanEdges(straighten ? Straighten.apply(flat, &info) : flat, &info)
-            outs.append(darkFraction(ce) < 0.15 ? evenLight(ce, &info) : ce)
+            // yazı sayfası mı: harf sayısı (sayfa başına ≥ 250) ya da az koyu piksel. Loş / sarı ışıkta gölgede kalan yazı
+            // sayfası çok koyu görünür; harf sayısı onu kapaktan ayırır. Önce ışık eşitlenir, sonra kenarlar temizlenir
+            // (eşit olmayan ışıkta temizlik büyük kağıt parçalarını "kağıt dışı" sanıp lekeli boyuyordu)
+            let textPage = chars / max(1, cuts.count) >= 250 || darkFraction(flat) < 0.15
+            // 1. geçiş (ışık eşitlemeden önce): yalnız renk ve desen (parmak, masa, masa örtüsü) — eşitleme bunların rengini
+            // kağıda yaklaştırıp tanınmaz yapıyordu. 2. geçiş (sonra): gölge, koyu kenar, çizgiler
+            let pre = textPage ? Straighten.cleanEdges(flat, &info, textPage: true, firstPass: true) : flat
+            let lit = textPage ? evenLight(pre, &info) : flat
+            outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(lit, &info) : lit, &info, textPage: textPage))
         }
         guard !outs.isEmpty else { return nil }
-        return PipeResult(images: outs, words: words, blurry: blurry, info: info.joined(separator: "; "), graphic: darkFraction(outs[0]) > 0.25)
+        return PipeResult(images: outs, words: words, blurry: blurry, info: info.joined(separator: "; "), graphic: chars / max(1, cuts.count) < 250 && darkFraction(outs[0]) > 0.25)
     }
 }
 
@@ -1870,7 +1879,7 @@ enum Straighten {
     /// kenar temizliği (düzleştirmeden sonra): yazı alanının dışındaki koyu kenar şeritleri (yan sayfanın kenarı, sırt
     /// gölgesi, masa) ve okunamayan ince izler kağıt rengine boyanır. Yazı alanı = satırlar + okunan her parça
     /// (sayfa numarası, başlık); onun içine hiç dokunulmaz
-    static func cleanEdges(_ cg: CGImage, _ log: inout [String]) -> CGImage {
+    static func cleanEdges(_ cg: CGImage, _ log: inout [String], textPage: Bool = false, firstPass: Bool = false) -> CGImage {
         let rws = rows(cg)
         let segs = lastSegs
         // güvenle okunmuş parçalar (masa örtüsü deseni de bazen "yazı" okunur: düşük güvenli okuma içerik sayılmaz)
@@ -1885,7 +1894,7 @@ enum Straighten {
         cx0 = max(0, cx0 - 0.012); cx1 = min(1, cx1 + 0.012); cy0 = max(0, cy0 - 0.012); cy1 = min(1, cy1 + 0.012)
         // kağıt rengi örneği: yazı alanı ∪ sayfanın ortası (az yazılı sayfada yazı alanı çok küçük)
         let sx0 = min(cx0, 0.25), sx1 = max(cx1, 0.75), sy0 = min(cy0, 0.25), sy1 = max(cy1, 0.75)
-        var out = cleanBleed(cg, rows: rws, &log)
+        var out = firstPass ? cg : cleanBleed(cg, rows: rws, &log)
         // küçük gri kopya: sütun / satır kağıt düzeyi (üst %20)
         let w = 500, h = max(8, out.height * 500 / max(1, out.width))
         var g = [UInt8](repeating: 0, count: w * h)
@@ -1904,7 +1913,7 @@ enum Straighten {
         let p90 = Double(allv[allv.count * 9 / 10])
         let darkFrac = Double(allv.filter { Double($0) < p90 * 0.6 }.count) / Double(max(1, allv.count))
         if PagePipeline.debugSpine { print(String(format: "  koyu oranı %.3f", darkFrac)) }
-        if darkFrac > 0.25 { log.append(String(format: "kenar temizliği yok (grafik sayfa, koyu %%%.0f)", darkFrac * 100)); return out }
+        if darkFrac > 0.25 && !textPage { log.append(String(format: "kenar temizliği yok (grafik sayfa, koyu %%%.0f)", darkFrac * 100)); return out }
         // renkli zemin (mavi gökyüzü gibi): kenar bandı renkliyse de dokunulmaz — aşağıda yalnız gri / kahverengi bant boyanır
         // sütun / satır: kağıt düzeyi (üst %20) ve içinde yazı (mürekkep) var mı. Mürekkep görülen ilk sütunda / satırda
         // durulur: gölgeli kağıttaki yazının üstüne asla boya gelmez (metin tanıma gölgedeki son harfleri okuyamayabilir)
@@ -1966,7 +1975,7 @@ enum Straighten {
             if x >= bx0 && x <= bx1 && y >= by0 && y <= by1 { return false }          // yazı alanı: asla
             let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2])
             let cd = ((r / max(1, lum[i]) - pR / pL) * (r / max(1, lum[i]) - pR / pL) + (g / max(1, lum[i]) - pG / pL) * (g / max(1, lum[i]) - pG / pL) + (b / max(1, lum[i]) - pB / pL) * (b / max(1, lum[i]) - pB / pL)).squareRoot()
-            return texM[i] > 14 || lum[i] < pL * 0.55 || cd > 0.22
+            return texM[i] > 14 || (!firstPass && lum[i] < pL * 0.55) || cd > 0.22
         }
         func colored(_ i: Int) -> Bool {
             let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2])
@@ -1999,7 +2008,7 @@ enum Straighten {
             return l >= pL * 0.93 && cdist < 0.05
         }
         var q2 = queue, k2 = 0
-        while k2 < q2.count {
+        while !firstPass && k2 < q2.count {
             let i = q2[k2]; k2 += 1
             let x = i % cw, y = i / cw
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -2017,7 +2026,7 @@ enum Straighten {
         // dış kenar bandı (%10): yazı alanı dışında ve okunan hiçbir parçanın üstünde olmayan, temiz kağıt olmayan her hücre
         // boyanır (sayfa yığınının kenar çizgisi / gölgesi, kırpma payı izi, yan sayfanın kesik yazısı). Okunan parçalar
         // (sayfa numarası, başlık; güven ≥ 0.3) ve yazı alanı korunur
-        do {
+        if !firstPass {
             let bx = cw * 14 / 100, byy = ch * 14 / 100
             let prot = segs.filter { $0.conf >= 0.3 && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
             var pmask = [UInt8](repeating: 0, count: cw * ch)
@@ -2048,7 +2057,7 @@ enum Straighten {
         }
         // en dış ince kenar (≈ %0.8): sayfa / sırt kenarı çizgisi kalıntısı; yazı alanı hariç
         let edge = 3     // ≈ %1.2 (yumuşatmadan sonra da tam örtsün)
-        for y in 0..<ch { for x in 0..<cw where (x < edge || x >= cw - edge || y < edge || y >= ch - edge) && !(x >= bx0 && x <= bx1 && y >= by0 && y <= by1) { grow[y * cw + x] = 1 } }
+        if !firstPass { for y in 0..<ch { for x in 0..<cw where (x < edge || x >= cw - edge || y < edge || y >= ch - edge) && !(x >= bx0 && x <= bx1 && y >= by0 && y <= by1) { grow[y * cw + x] = 1 } } }
         // parmak / masa gibi renkli alanın kenarı (yarı karışmış pikseller) iz bırakmasın: daha geniş genişletilir
         for y in 0..<ch { for x in 0..<cw where mask[y * cw + x] == 1 && colored(y * cw + x) { for dy in -7...7 { for dx in -7...7 { let nx = x + dx, ny = y + dy; if nx >= 0 && ny >= 0 && nx < cw && ny < ch && !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) { grow[ny * cw + nx] = 1 } } } } }
         for y in 0..<ch { for x in 0..<cw where mask[y * cw + x] > 0 { for dy in -3...3 { for dx in -3...3 { let nx = x + dx, ny = y + dy; if nx >= 0 && ny >= 0 && nx < cw && ny < ch && !(nx >= bx0 && nx <= bx1 && ny >= by0 && ny <= by1) { grow[ny * cw + nx] = 1 } } } } }

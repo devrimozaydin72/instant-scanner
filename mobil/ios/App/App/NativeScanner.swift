@@ -1400,6 +1400,38 @@ enum PagePipeline {
         return ctx.makeImage() ?? cg
     }
 
+
+    /// kelimeler + okunan yazının kapsadığı kutu (normalize, Vision koordinatı)
+    static func quickWordsBox(_ cg: CGImage) -> (Set<String>, CGRect) {
+        var im = CIImage(cgImage: cg)
+        let k = min(1, 1000 / max(im.extent.width, im.extent.height))
+        im = im.transformed(by: CGAffineTransform(scaleX: k, y: k))
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = false
+        req.recognitionLanguages = ["tr-TR", "en-US"]
+        try? VNImageRequestHandler(ciImage: im, orientation: .up, options: [:]).perform([req])
+        var w = Set<String>(), box = CGRect.null
+        for r in req.results ?? [] { guard let c = r.topCandidates(1).first, c.confidence >= 0.5 else { continue }
+            box = box.union(r.boundingBox)
+            for x in c.string.lowercased().split(whereSeparator: { !$0.isLetter }) where x.count >= 3 { w.insert(String(x)) } }
+        return (w, box.isNull ? CGRect(x: 0.5, y: 0.5, width: 0, height: 0) : box)
+    }
+    /// doğru-mod OCR kelimeleri (3+ harf, küçük harf) — 1000 px
+    static func quickWords(_ cg: CGImage) -> Set<String> {
+        var im = CIImage(cgImage: cg)
+        let k = min(1, 1000 / max(im.extent.width, im.extent.height))
+        im = im.transformed(by: CGAffineTransform(scaleX: k, y: k))
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = false
+        req.recognitionLanguages = ["tr-TR", "en-US"]
+        try? VNImageRequestHandler(ciImage: im, orientation: .up, options: [:]).perform([req])
+        var w = Set<String>()
+        for r in req.results ?? [] { guard let c = r.topCandidates(1).first, c.confidence >= 0.5 else { continue }
+            for x in c.string.lowercased().split(whereSeparator: { !$0.isLetter }) where x.count >= 3 { w.insert(String(x)) } }
+        return w
+    }
     /// en güçlü kenarların gradyanı (yatay + dikey, 2 piksel aralık, %99.9'luk değer) — 1000 px görüntüde
     static func sharpness(_ im: CIImage) -> Double {
         let w = Int(im.extent.width), h = Int(im.extent.height)
@@ -1470,7 +1502,12 @@ enum PagePipeline {
         let img = img0.transformed(by: CGAffineTransform(translationX: -img0.extent.minX, y: -img0.extent.minY))
         let W = img.extent.width, H = img.extent.height
         let k = min(1, 1000 / max(W, H))
-        let small = img.transformed(by: CGAffineTransform(scaleX: k, y: k))
+        // keskinlik ölçüsü ölçeğe duyarlı: telefonda 4032 px fotoğraftan doğrudan 1000'e inmek kenarları sert gösteriyordu
+        // (aynı kare telefonda ≈1.3 kat yüksek). Önce 2400'e (Mac'te denenen ham karelerle aynı) indirilir
+        var base = img
+        if max(W, H) > 2600, let c24 = ci.createCGImage(img.transformed(by: CGAffineTransform(scaleX: 2400 / max(W, H), y: 2400 / max(W, H))), from: CGRect(x: 0, y: 0, width: (W * 2400 / max(W, H)).rounded(.down), height: (H * 2400 / max(W, H)).rounded(.down))) { base = CIImage(cgImage: c24) }
+        let kb = min(1, 1000 / max(base.extent.width, base.extent.height))
+        let small = base.transformed(by: CGAffineTransform(scaleX: kb, y: kb))
         var info: [String] = []
 
         // 1) metin
@@ -1493,7 +1530,8 @@ enum PagePipeline {
         // kenar keskinliği (en güçlü %0.1 kenarın gradyanı): yazı miktarından bağımsız. Net karelerde 90-190, hareketle
         // çekilmiş karede ≈ 78; net karelerde en az 108 (telefonla, 4 oturumda ölçüldü). Yazısız / az yazılı sayfada (ithaf) OCR ölçüsü bulanıklığı görmüyordu
         let edgeSharp = sharpness(small)
-        let blurry = (chars >= 300 && Double(low) >= Double(chars) * 0.5) || edgeSharp < 95
+        // OCR güveni yan duran açık kitapta telefonda düşük çıkabiliyor: kenarlar keskinse (≥ 120) OCR'a göre bulanık sayılmaz
+        let blurry = (chars >= 300 && Double(low) >= Double(chars) * 0.5 && edgeSharp < 120) || edgeSharp < 95
         var o = CGImagePropertyOrientation.up
         // az yazılı sayfada da (imza / iç kapak): baskın eksen diğerinin 2 katıysa yön kesin sayılır
         let big = max(abs(dx), abs(dy)), small2 = min(abs(dx), abs(dy))
@@ -1689,6 +1727,19 @@ enum PagePipeline {
             guard let cg = ci.createCGImage(page, from: page.extent.integral) else { continue }
             if debugSpine { debugPre.append(cg) }
             var flat = (try? d.unwarp(cg, maxSide: maxSide)) ?? cg
+            // az yazılı sayfa (başlık, ithaf): UVDoc sayfa kenarına yakın harfi kesebiliyor (başlık sayfasında "M").
+            // Düzleştirmeden önce ve sonra okunan kelimeler karşılaştırılır; kayıp varsa perspektif kırpması kullanılır
+            if cuts.count == 1 && chars < 400 && darkFraction(flat) < 0.2 {     // kapakta değil (kapak düz; UVDoc kenarı temizler)
+                let (before, bx) = quickWordsBox(cg), (after, ax) = quickWordsBox(flat)
+                let lost = before.subtracting(after)
+                // kayıp: kelime sayısı azaldı ya da yazı düzleştirilmiş görüntüde kenara dayandı (önce payı vardı) — kesik harf
+                // OCR'da benzer bir "kelime" olarak kalabiliyor ("Mavi" → "лavi")
+                let touched = (ax.minX < 0.012 && bx.minX > 0.02) || (ax.maxX > 0.988 && bx.maxX < 0.98) || (ax.minY < 0.012 && bx.minY > 0.02) || (ax.maxY > 0.988 && bx.maxY < 0.98)
+                if !lost.isEmpty && (after.count < before.count || touched) {
+                    flat = cg
+                    info.append("düzleştirme kelime kaybettirdi (\(lost.prefix(3).joined(separator: ","))) → perspektif kırpması")
+                }
+            }
             if cuts.count == 2 && padSpine { flat = trimPad(flat, left: c.minX > region.minX + 1e-6); flat = paintPad(flat, left: c.minX > region.minX + 1e-6) }
             // yazı sayfası mı: harf sayısı (sayfa başına ≥ 250) ya da az koyu piksel. Loş / sarı ışıkta gölgede kalan yazı
             // sayfası çok koyu görünür; harf sayısı onu kapaktan ayırır. Önce ışık eşitlenir, sonra kenarlar temizlenir

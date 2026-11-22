@@ -253,7 +253,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
 
     // ana iş parçacığı
     /// her çekim bir grup: tek sayfa ya da açık kitabın iki sayfası + kelimeleri (aynı sayfa ikinci kez çekildi mi)
-    private var caps: [(pages: [[String: Any]], words: Set<String>, graphic: Bool)] = []
+    private var caps: [(pages: [[String: Any]], words: Set<String>, graphic: Bool, chars: Int)] = []
     /// bulanık çekilip geçici eklenen çekim (yeniden çekim gelince yerine geçilir)
     private var provisional: Int? = nil
     private var pages: [[String: Any]] { caps.flatMap { $0.pages } }
@@ -454,7 +454,9 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             let sameText = PageText.same(words, lastWords)
             let sig = Self.signature(img, q)
             let d = (sig != nil && lastSig != nil) ? Self.sigDiff(sig!, lastSig!) : 9
-            let isNew = sameText.map { !$0 } ?? (d > 0.55 || (disturbed && d > 0.30))
+            // hızlı yazı okuması (özellikle yan duran açık kitapta) aynı sayfada da farklı kelimeler verebiliyor: yazı "farklı"
+            // dese de telefon kıpırdamadıysa ve görüntü benzerse yeni sayfa sayılmaz (aynı sayfa 1 sn içinde iki kez çekiliyordu)
+            let isNew = sameText.map { !$0 && (disturbed || d > 0.4) } ?? (d > 0.55 || (disturbed && d > 0.30))
             if isNew {
                 note(String(format: "yeni sayfa (kelime %d/%d ortak %d, imza farkı %.2f%@)", words.count, lastWords.count, words.intersection(lastWords).count, d, disturbed ? ", hareket" : ""))
                 phase = .hunting; disturbed = false; newPageAt = now
@@ -539,8 +541,8 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                 DispatchQueue.main.async {
                     guard let fb = fb, !fb.paths.isEmpty else { self.note("bulanık kare: düzleştirilemedi"); return }
                     let grp: [[String: Any]] = fb.paths.map { ["path": $0, "flat": true] }
-                    if let k = self.provisional, k < self.caps.count { self.caps[k] = (grp, fb.words, fb.graphic) }
-                    else { self.caps.append((grp, fb.words, fb.graphic)); self.provisional = self.caps.count - 1 }
+                    if let k = self.provisional, k < self.caps.count { self.caps[k] = (grp, fb.words, fb.graphic, fb.chars) }
+                    else { self.caps.append((grp, fb.words, fb.graphic, fb.chars)); self.provisional = self.caps.count - 1 }
                     self.note("bulanık kare geçici olarak eklendi (\(self.caps.count). çekim) → yeniden çekilirse değişecek")
                     self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
                     if let last = fb.paths.last, let ui = UIImage(contentsOfFile: URL(string: last)!.path) { self.thumb.image = ui }
@@ -555,7 +557,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                     // (sayfa bu arada çevrildiyse — kelimeler açıkça farklı — geçici sayfa kalır, yeni sayfa eklenir)
                     if let k = self.provisional, k < self.caps.count, PageText.same(fr.words, self.caps[k].words) != false {
                         self.provisional = nil
-                        self.caps[k] = (grp, fr.words, fr.graphic)
+                        self.caps[k] = (grp, fr.words, fr.graphic, fr.chars)
                         self.note(String(format: "net çekim: %d. çekimdeki bulanık sayfanın yerine geçti (%.0f ms)", k + 1, ms))
                         self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
                         self.thumb.image = ui
@@ -567,8 +569,9 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                     for q in lo..<self.caps.count { let o = self.caps[q].words; nlog("tekrar denetimi: çekim \(q + 1) kelime \(o.count)/\(fr.words.count) ortak \(o.intersection(fr.words).count) → \(String(describing: PageText.same(fr.words, o)))") }
                     // kapak ile iç başlık sayfası aynı kelimeleri taşır: biri grafik (kapak) diğeri değilse aynı sayfa değildir
                     if let k = (lo..<self.caps.count).last(where: { self.caps[$0].graphic == fr.graphic && PageText.same(fr.words, self.caps[$0].words) == true }) {
-                        if fr.words.count > Int(Double(self.caps[k].words.count) * 1.1) || fr.paths.count > self.caps[k].pages.count {
-                            self.caps[k] = (grp, fr.words, fr.graphic)
+                        // daha tam olan kalır: okunan harf + rakam sayısı (kelime sayısı sayfa numarası sütununu görmüyordu)
+                        if fr.chars > Int(Double(self.caps[k].chars) * 1.03) || fr.paths.count > self.caps[k].pages.count {
+                            self.caps[k] = (grp, fr.words, fr.graphic, fr.chars)
                             self.note(String(format: "tekrar çekim: %d. çekimin yerine geçti (%d kelime, %d sayfa, %.0f ms)", k + 1, fr.words.count, grp.count, ms))
                         } else {
                             self.note(String(format: "tekrar çekim atıldı (%d. çekim daha dolu, %.0f ms)", k + 1, ms))
@@ -577,7 +580,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                         // yazı sayfasından hemen sonra yazısız kare: büyük olasılıkla masa / el / sayfa çevrilirken → atılır
                         self.note("yazısız kare atıldı (masa / çevirme anı)")
                     } else {
-                        self.caps.append((grp, fr.words, fr.graphic))
+                        self.caps.append((grp, fr.words, fr.graphic, fr.chars))
                         self.note(String(format: "çekim %d: %d sayfa, %.0f ms (%d kelime)", self.caps.count, grp.count, ms, fr.words.count))
                     }
                     self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
@@ -602,7 +605,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             DispatchQueue.main.async {
                 var page: [String: Any] = ["path": url.absoluteString]
                 if let q = quad { page["quad"] = q.json }
-                self.caps.append(([page], [], false))
+                self.caps.append(([page], [], false, 0))
                 self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
                 self.thumb.image = thumbImg
             }
@@ -1069,7 +1072,7 @@ enum PageText {
         if lo >= 40 && r >= 0.4 { return true }
         // çok dolu sayfalar (açık kitap ≈ 400 kelime): iki çekim arasında okunan kelimeler daha çok değişir; farklı sayfalar
         // en çok %16-20 ortak kelime paylaşıyor (ölçüldü)
-        if lo >= 150 && r >= 0.3 { return true }
+        if lo >= 100 && r >= 0.3 { return true }
         // kelime sayıları çok farklı (dolu sayfa / az yazılı sayfa; iç kapak / imzalı sayfa): farklı sayfa
         if hi >= 15 && Double(lo) < Double(hi) * 0.3 { return false }
         if hi >= 8 && lo < 40 && Double(lo) < Double(hi) * 0.5 { return false }
@@ -1263,6 +1266,7 @@ struct PipeResult {
     var blurry: Bool
     var info: String
     var graphic: Bool = false     // kapak / fotoğraf (koyu oranı > %25): tekrar denetiminde yazı sayfasıyla karıştırılmaz
+    var chars: Int = 0            // okunan harf + rakam sayısı (aynı sayfanın iki çekiminden daha tam olanı seçmek için)
 }
 
 enum PagePipeline {
@@ -1438,7 +1442,7 @@ enum PagePipeline {
         if big >= 40 || (big >= 12 && big >= small2 * 2) { o = abs(dx) >= abs(dy) ? (dx > 0 ? .up : .down) : (dy > 0 ? .right : .left) }
         info.append("yön \(o.rawValue) harf \(chars)" + (blurry ? " BULANIK" : ""))
         // bulanık kare düzleştirilmez (zaman kaybı): çağıran yeniden çeker
-        if blurry && stopIfBlurry { return PipeResult(images: [], words: words, blurry: true, info: info.joined(separator: "; ")) }
+        if blurry && stopIfBlurry { return PipeResult(images: [], words: words, blurry: true, info: info.joined(separator: "; "), chars: chars) }
 
         // dik kare ve kaynak → dik normalize eşlemesi (CIImage'ın kendi yön dönüşümüyle)
         let t = img.orientationTransform(for: o)
@@ -1639,7 +1643,7 @@ enum PagePipeline {
             outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(lit, &info) : lit, &info, textPage: textPage))
         }
         guard !outs.isEmpty else { return nil }
-        return PipeResult(images: outs, words: words, blurry: blurry, info: info.joined(separator: "; "), graphic: chars / max(1, cuts.count) < 250 && darkFraction(outs[0]) > 0.25)
+        return PipeResult(images: outs, words: words, blurry: blurry, info: info.joined(separator: "; "), graphic: chars / max(1, cuts.count) < 250 && darkFraction(outs[0]) > 0.25, chars: chars)
     }
 }
 
@@ -2183,18 +2187,18 @@ enum PageFlattener {
 
     /// PagePipeline: yazı yönü + köşeler ∪ yazı alanı ile kırpma + açık kitabı sırttan ayırma + her sayfayı ayrı UVDoc.
     /// rejectBlurry: bulanık karede düzleştirme yapılmaz, paths boş döner (çağıran yeniden çeker)
-    static func flatten(_ img: CIImage, prefix: String = "duz", detect: Bool = true, rejectBlurry: Bool = false) -> (paths: [String], words: Set<String>, blurry: Bool, graphic: Bool)? {
+    static func flatten(_ img: CIImage, prefix: String = "duz", detect: Bool = true, rejectBlurry: Bool = false) -> (paths: [String], words: Set<String>, blurry: Bool, graphic: Bool, chars: Int)? {
         guard let d = get_() else { return nil }
         guard let r = PagePipeline.run(img, dewarper: d, detect: detect, maxSide: 2200, stopIfBlurry: rejectBlurry) else { return nil }
         nlog("boru hattı: " + r.info)
-        if r.images.isEmpty { return ([], r.words, r.blurry, r.graphic) }
+        if r.images.isEmpty { return ([], r.words, r.blurry, r.graphic, r.chars) }
         var paths: [String] = []
         for cg in r.images {
             guard let jpg = UIImage(cgImage: cg).jpegData(compressionQuality: 0.92) else { continue }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString).jpg")
             if (try? jpg.write(to: url)) != nil { paths.append(url.absoluteString) }
         }
-        return paths.isEmpty ? nil : (paths, r.words, r.blurry, r.graphic)
+        return paths.isEmpty ? nil : (paths, r.words, r.blurry, r.graphic, r.chars)
     }
 }
 

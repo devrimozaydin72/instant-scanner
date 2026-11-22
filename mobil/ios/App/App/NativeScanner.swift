@@ -254,6 +254,8 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
     // ana iş parçacığı
     /// her çekim bir grup: tek sayfa ya da açık kitabın iki sayfası + kelimeleri (aynı sayfa ikinci kez çekildi mi)
     private var caps: [(pages: [[String: Any]], words: Set<String>, graphic: Bool)] = []
+    /// bulanık çekilip geçici eklenen çekim (yeniden çekim gelince yerine geçilir)
+    private var provisional: Int? = nil
     private var pages: [[String: Any]] { caps.flatMap { $0.pages } }
     private var log: [String] = []
     private var pending = 0
@@ -528,16 +530,38 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             }
             let fr0 = PageFlattener.flatten(img, prefix: "canli", rejectBlurry: true)
             if let fr = fr0, fr.paths.isEmpty {
-                // bulanık / sayfa çevrilirken çekilmiş: eklenmez, tarayıcı sayfayı sabitlenince yeniden çeker
-                self.note("bulanık kare atıldı → yeniden çekilecek")
+                // bulanık / sayfa çevrilirken çekilmiş: tarayıcı sayfayı sabitlenince yeniden çeker. Bu arada bulanık hâli
+                // GEÇİCİ olarak eklenir: yeniden çekim gelirse yerine geçer; gelmezse ("Bitti" ya da sayfa çevrildi) sayfa
+                // kaybolmaz (son sayfalar çekim sesi duyulduğu hâlde PDF'e girmiyordu)
                 self.videoQueue.async { if self.phase == .waitChange { self.phase = .hunting; self.newPageAt = CACurrentMediaTime() } }
                 self.setHint(self.S("blurry", "Bulanık çıktı — sabit tut, yeniden çekiliyor"), warn: true)
+                let fb = PageFlattener.flatten(img, prefix: "canli")
+                DispatchQueue.main.async {
+                    guard let fb = fb, !fb.paths.isEmpty else { self.note("bulanık kare: düzleştirilemedi"); return }
+                    let grp: [[String: Any]] = fb.paths.map { ["path": $0, "flat": true] }
+                    if let k = self.provisional, k < self.caps.count { self.caps[k] = (grp, fb.words, fb.graphic) }
+                    else { self.caps.append((grp, fb.words, fb.graphic)); self.provisional = self.caps.count - 1 }
+                    self.note("bulanık kare geçici olarak eklendi (\(self.caps.count). çekim) → yeniden çekilirse değişecek")
+                    self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
+                    if let last = fb.paths.last, let ui = UIImage(contentsOfFile: URL(string: last)!.path) { self.thumb.image = ui }
+                }
                 return
             }
             if let fr = fr0, let last = fr.paths.last, let ui = UIImage(contentsOfFile: URL(string: last)!.path) {
                 let ms = (CACurrentMediaTime() - tf) * 1000
                 let grp: [[String: Any]] = fr.paths.map { ["path": $0, "flat": true] }
                 DispatchQueue.main.async {
+                    // bulanık çekimden sonraki ilk net çekim: aynı sayfanın yeniden çekimidir → geçici sayfanın yerine geçer
+                    // (sayfa bu arada çevrildiyse — kelimeler açıkça farklı — geçici sayfa kalır, yeni sayfa eklenir)
+                    if let k = self.provisional, k < self.caps.count, PageText.same(fr.words, self.caps[k].words) != false {
+                        self.provisional = nil
+                        self.caps[k] = (grp, fr.words, fr.graphic)
+                        self.note(String(format: "net çekim: %d. çekimdeki bulanık sayfanın yerine geçti (%.0f ms)", k + 1, ms))
+                        self.counter.text = self.S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(self.pages.count)")
+                        self.thumb.image = ui
+                        return
+                    }
+                    self.provisional = nil
                     // aynı sayfa ikinci kez çekildiyse (son 3 çekimle kelime karşılaştırması) daha dolu olan kalır
                     let lo = max(0, self.caps.count - 3)
                     for q in lo..<self.caps.count { let o = self.caps[q].words; nlog("tekrar denetimi: çekim \(q + 1) kelime \(o.count)/\(fr.words.count) ortak \(o.intersection(fr.words).count) → \(String(describing: PageText.same(fr.words, o)))") }

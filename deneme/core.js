@@ -1770,6 +1770,34 @@ function fillAlpha(d, w, h, alpha, col){
   }
 }
 
+/* satır profili keskinliği: yatay satırlar dümdüzse satır başına mürekkep sayısı satır ↔ satır arası keskin değişir.
+   Eğik / dalgalı yazıda profil bulanıklaşır. (komşu satır farklarının karesi / toplam mürekkep²) */
+function rowProfileScore(c){ return textTilt(c).sharp; }
+/* yazının eğikliği (derece): koyu pikseller θ açısıyla kaydırılarak satırlara yansıtılır; satır histogramı en keskin olan açı.
+   Sayfanın üst / alt yarısı ayrı ölçülür (dalgalanma). Dönen: {deg, top, bot, sharp} */
+function textTilt(c){
+  const w = 600, h = Math.max(8, Math.round(c.height*600/c.width));
+  const s = downscale(c, w, h), d = ctx2d(s).getImageData(0, 0, w, h).data;
+  const L = new Float32Array(w*h); for(let i=0;i<w*h;i++){ const j=i*4; L[i] = 0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]; }
+  const smp = []; for(let i=0;i<w*h;i+=7) smp.push(L[i]);
+  const p90 = quantile(smp, 0.9);
+  const pts = []; for(let y=0;y<h;y++) for(let x=Math.round(w*0.04); x<w*0.96; x++) if(L[y*w+x] < p90*0.6) pts.push(x, y);
+  const best = (y0, y1) => {
+    let bd = 0, bs = -1;
+    for(let a=-4; a<=4.001; a+=0.25){
+      const t = Math.tan(a*Math.PI/180), bins = new Float32Array(h + w);
+      let n = 0;
+      for(let k=0;k<pts.length;k+=2){ const y = pts[k+1]; if(y < y0 || y >= y1) continue; const b = Math.round(y - (pts[k] - w/2)*t + w/2); if(b >= 0 && b < bins.length){ bins[b]++; n++; } }
+      if(n < 200) return {deg: 0, sharp: 0};
+      let v = 0; for(let b=0;b<bins.length;b++) v += bins[b]*bins[b];
+      v /= n*n;
+      if(v > bs){ bs = v; bd = a; }
+    }
+    return {deg: bd, sharp: bs};
+  };
+  const all = best(0, h), top = best(0, h/2|0), bot = best(h/2|0, h);
+  return {deg: all.deg, top: top.deg, bot: bot.deg, sharp: all.sharp};
+}
 /* iyileştirme sonrası: kağıt ~beyaz, gölge/sırt bantları koyu kalır */
 /* grafik sayfa mı (kapak, fotoğraf, renkli çizim)? Kağıt gibi olmayan (belirgin renkli ya da koyu) piksellerin
    oranı büyükse evet. Böyle sayfada yerel kağıt rengine bölmek koyu zemini "gölge" sanıp beyaza çevirir */
@@ -3880,6 +3908,21 @@ function processCanvas(src, opts){
   metrics.ms = Date.now()-t0;
   dbg.push(tms.join(' '));
   dbg.push(`${W}x${H} → ${fw}x${fh} → ${outW}x${outH}, ${metrics.ms} ms`);
+  // düz sayfa + satır düzleştirme: sonuç girişten daha düz değilse (satır profili daha keskin değilse) düzleştirmesiz yapılır.
+  // iPhone sayfayı zaten düzleştirip eğikliğini düzeltiyor; satır izleme yanlış düzlem kurarsa sayfayı eğiyordu
+  if(opts.flat && TX && out && !opts._noTxRetry){
+    const r2 = processCanvas(src, Object.assign({}, opts, {tx: false, _noTxRetry: true}));
+    // eğiklik ölçüsü: tüm sayfa + üst / alt yarı (dalgalanma) — en kötüsü
+    const tA = r2.canvas ? textTilt(r2.canvas) : null, tB = textTilt(out);
+    const bad = t => Math.max(Math.abs(t.deg), Math.abs(t.top), Math.abs(t.bot));
+    const a = tA ? bad(tA) : 99, b = bad(tB);
+    const desc = `eğiklik düz ${tA ? tA.top + '/' + tA.bot : '-'}° düzleştirilmiş ${tB.top}/${tB.bot}°`;
+    if(r2.canvas && b > a){
+      r2.dbg = `satır düzleştirme alınmadı (${desc}) | ` + r2.dbg;
+      return r2;
+    }
+    dbg.push(`satır düzleştirme alındı (${desc})`);
+  }
   return {canvas: out, issues, metrics, dbg: dbg.join(' | '), lineSig: mode === 'yazı' ? lineSigs(P) : null};
 }
 

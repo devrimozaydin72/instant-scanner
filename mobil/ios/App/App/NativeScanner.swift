@@ -1399,6 +1399,61 @@ enum PagePipeline {
         info.append("ışık eşitlendi")
         return ctx.makeImage() ?? cg
     }
+
+    /// en güçlü kenarların gradyanı (yatay + dikey, 2 piksel aralık, %99.9'luk değer) — 1000 px görüntüde
+    static func sharpness(_ im: CIImage) -> Double {
+        let w = Int(im.extent.width), h = Int(im.extent.height)
+        guard w > 10, h > 10 else { return 999 }
+        var g = [UInt8](repeating: 0, count: w * h)
+        guard let cg = ci.createCGImage(im, from: im.extent.integral),
+              let ctx = CGContext(data: &g, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0) else { return 999 }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var hist = [Int](repeating: 0, count: 256), n = 0
+        for y in stride(from: 2, to: h - 2, by: 1) { for x in stride(from: 2, to: w - 2, by: 1) {
+            let i = y * w + x
+            let gx = abs(Int(g[i + 2]) - Int(g[i - 2])), gy = abs(Int(g[i + 2 * w]) - Int(g[i - 2 * w]))
+            hist[min(255, gx)] += 1; hist[min(255, gy)] += 1; n += 2
+        } }
+        var acc = 0, target = Int(Double(n) * 0.999)
+        for v in 0..<256 { acc += hist[v]; if acc >= target { return Double(v) } }
+        return 255
+    }
+
+    /// eğiklik düzeltme: yazı satırlarının ortanca eğimi (en az 6 satır, 3+ kelimeli). 0.3°-8° arası eğiklik döndürülerek
+    /// giderilir, açılan köşeler kağıt rengiyle doldurulur
+    static func deskew(_ cg: CGImage, _ info: inout [String]) -> CGImage {
+        let rows = Straighten.rows(cg).filter { $0.xs.count >= 3 && $0.x1 - $0.x0 > 0.2 }
+        guard rows.count >= 6 else { return cg }
+        let W = Double(cg.width), H = Double(cg.height)
+        var angs: [Double] = []
+        for r in rows {
+            let n = Double(r.xs.count), mx = r.xs.reduce(0, +) / CGFloat(n), my = r.ys.reduce(0, +) / CGFloat(n)
+            var sxy = 0.0, sxx = 0.0
+            for i in r.xs.indices { let dx = Double(r.xs[i] - mx) * W, dy = Double(r.ys[i] - my) * H; sxy += dx * dy; sxx += dx * dx }
+            if sxx > 0 { angs.append(atan(sxy / sxx)) }
+        }
+        guard angs.count >= 6 else { return cg }
+        angs.sort()
+        let a = angs[angs.count / 2], spread = angs[angs.count * 3 / 4] - angs[angs.count / 4]
+        let deg = a * 180 / .pi
+        guard abs(deg) >= 0.3, abs(deg) <= 8, spread < 0.03 else { return cg }
+        // görüntü koordinatında y aşağı: satır aşağı eğikse (a > 0) saat yönünde döndürülmüş demektir → CI'da (+a) döndür
+        let img = CIImage(cgImage: cg)
+        let c = CGPoint(x: W / 2, y: H / 2)
+        let t = CGAffineTransform(translationX: c.x, y: c.y).rotated(by: CGFloat(a)).translatedBy(x: -c.x, y: -c.y)
+        // kağıt rengi: görüntünün parlak %85'i
+        var px = [UInt8](repeating: 0, count: 64 * 64 * 4)
+        if let ctx = CGContext(data: &px, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 256, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) { ctx.draw(cg, in: CGRect(x: 0, y: 0, width: 64, height: 64)) }
+        var rs: [UInt8] = [], gs: [UInt8] = [], bs: [UInt8] = []
+        for i in 0..<(64 * 64) { rs.append(px[i * 4]); gs.append(px[i * 4 + 1]); bs.append(px[i * 4 + 2]) }
+        rs.sort(); gs.sort(); bs.sort()
+        let paper = CIColor(red: CGFloat(rs[rs.count * 85 / 100]) / 255, green: CGFloat(gs[gs.count * 85 / 100]) / 255, blue: CGFloat(bs[bs.count * 85 / 100]) / 255)
+        let ext = CGRect(x: 0, y: 0, width: W, height: H)
+        let rotated = img.transformed(by: t).composited(over: CIImage(color: paper).cropped(to: ext)).cropped(to: ext)
+        guard let out = ci.createCGImage(rotated, from: ext) else { return cg }
+        info.append(String(format: "eğiklik düzeltildi %.1f°", deg))
+        return out
+    }
     /// en parlak %10'a göre koyu piksel oranı (kapak ≈ %30-40, yazı sayfası ≤ %19)
     static func darkFraction(_ cg: CGImage) -> Double {
         let w = 120, h = max(8, cg.height * 120 / max(1, cg.width))
@@ -1435,12 +1490,15 @@ enum PagePipeline {
             dx += w / L * Double(str.count); dy += h / L * Double(str.count)
             for x in str.lowercased().split(whereSeparator: { !$0.isLetter }) where x.count >= 4 { words.insert(String(x)) }
         }
-        let blurry = chars >= 300 && Double(low) >= Double(chars) * 0.5
+        // kenar keskinliği (en güçlü %0.1 kenarın gradyanı): yazı miktarından bağımsız. Net karelerde 90-190, hareketle
+        // çekilmiş karede ≈ 78; net karelerde en az 108 (telefonla, 4 oturumda ölçüldü). Yazısız / az yazılı sayfada (ithaf) OCR ölçüsü bulanıklığı görmüyordu
+        let edgeSharp = sharpness(small)
+        let blurry = (chars >= 300 && Double(low) >= Double(chars) * 0.5) || edgeSharp < 95
         var o = CGImagePropertyOrientation.up
         // az yazılı sayfada da (imza / iç kapak): baskın eksen diğerinin 2 katıysa yön kesin sayılır
         let big = max(abs(dx), abs(dy)), small2 = min(abs(dx), abs(dy))
         if big >= 40 || (big >= 12 && big >= small2 * 2) { o = abs(dx) >= abs(dy) ? (dx > 0 ? .up : .down) : (dy > 0 ? .right : .left) }
-        info.append("yön \(o.rawValue) harf \(chars)" + (blurry ? " BULANIK" : ""))
+        info.append("yön \(o.rawValue) harf \(chars) keskinlik \(Int(edgeSharp))" + (blurry ? " BULANIK" : ""))
         // bulanık kare düzleştirilmez (zaman kaybı): çağıran yeniden çeker
         if blurry && stopIfBlurry { return PipeResult(images: [], words: words, blurry: true, info: info.joined(separator: "; "), chars: chars) }
 
@@ -1638,7 +1696,8 @@ enum PagePipeline {
             let textPage = chars / max(1, cuts.count) >= 250 || darkFraction(flat) < 0.15
             // 1. geçiş (ışık eşitlemeden önce): yalnız renk ve desen (parmak, masa, masa örtüsü) — eşitleme bunların rengini
             // kağıda yaklaştırıp tanınmaz yapıyordu. 2. geçiş (sonra): gölge, koyu kenar, çizgiler
-            let pre = textPage ? Straighten.cleanEdges(flat, &info, textPage: true, firstPass: true) : flat
+            let flatD = textPage ? deskew(flat, &info) : flat
+            let pre = textPage ? Straighten.cleanEdges(flatD, &info, textPage: true, firstPass: true) : flat
             let lit = textPage ? evenLight(pre, &info) : flat
             outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(lit, &info) : lit, &info, textPage: textPage))
         }

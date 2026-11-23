@@ -428,7 +428,8 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         history.removeAll { now - $0.t > 0.6 }
         let span = now - (history.first?.t ?? now)
         let wobble = history.map { $0.q.maxDist(q) }.max() ?? 1
-        let stable = span >= 0.30 && wobble < 0.018
+        // daha hızlı çekim: 0.25 sn sabitlik yeter (bulanık kare zaten yakalanıp yeniden çekiliyor)
+        let stable = span >= 0.25 && wobble < 0.018
         let inFrame = q.inside(0.012)
 
         if forceShot && phase != .capturing {
@@ -446,7 +447,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             // açık kitap kadrajı doldurabilir (köşeler dışarıda): sabitse yine de yeni sayfa denetimi yapılır
             // (yoksa son açık kitapta 10 sn'den fazla bekleniyordu)
             guard stable else { setHint(S("next", "✓ Tamam — sonraki sayfa")); return }
-            if now - lastTextCheck < 0.35 { return }
+            if now - lastTextCheck < 0.25 { return }
             lastTextCheck = now
             // aynı sayfa mı: önce sayfadaki kelimeler (Apple metin tanıma, hızlı mod); yazısız sayfada görüntü imzası
             let img = CIImage(cvPixelBuffer: pb)
@@ -1346,13 +1347,13 @@ enum PagePipeline {
     /// ışık eşitleme (yazı sayfası): yerel kağıt rengi (küçük ölçekte her kanalın 5×5 en büyüğü → harfler kaybolur,
     /// sonra yumuşatma) ile bölünür, hedef temiz kağıt rengi. Üstten gelen sarı ışık, sırta doğru koyulaşan gölge ve
     /// kenara vuran renkli ışık düzelir; yazı, işaretleme (fosforlu kalem) ve çizgiler korunur
-    static func evenLight(_ cg: CGImage, _ info: inout [String]) -> CGImage {
+    static func evenLight(_ cg: CGImage, _ info: inout [String], cell: Int = 6) -> CGImage {
         let W = cg.width, H = cg.height
         let cs = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let d = ctx.data else { return cg }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: W, height: H))
         let p = d.bindMemory(to: UInt8.self, capacity: W * H * 4)
-        let S = 6, sw = (W + S - 1) / S, sh = (H + S - 1) / S
+        let S = cell, sw = (W + S - 1) / S, sh = (H + S - 1) / S
         // küçük ölçek: hücre içi en parlak (mürekkep atılır)
         var sm = [Float](repeating: 0, count: sw * sh * 3)
         for cy in 0..<sh { for cx in 0..<sw {
@@ -1485,6 +1486,25 @@ enum PagePipeline {
         guard let out = ci.createCGImage(rotated, from: ext) else { return cg }
         info.append(String(format: "eğiklik düzeltildi %.1f°", deg))
         return out
+    }
+
+    /// doygun renkli piksel oranı (kapak / fotoğraf ayrımı): HSV doygunluğu > 0.35 ve parlaklık > 60
+    static func saturatedFraction(_ cg: CGImage) -> Double {
+        var px = [UInt8](repeating: 0, count: 96 * 128 * 4)
+        guard let ctx = CGContext(data: &px, width: 96, height: 128, bitsPerComponent: 8, bytesPerRow: 96 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return 0 }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: 96, height: 128))
+        // önce kağıt rengine göre dengelenir (her kanalın parlak %85'i beyaz sayılır): sarı ev ışığında kağıt da "renkli" görünüyordu
+        var rs: [Int] = [], gs: [Int] = [], bs: [Int] = []
+        for i in 0..<(96 * 128) { rs.append(Int(px[i * 4])); gs.append(Int(px[i * 4 + 1])); bs.append(Int(px[i * 4 + 2])) }
+        rs.sort(); gs.sort(); bs.sort()
+        let wr = 255 / Double(max(40, rs[rs.count * 85 / 100])), wg = 255 / Double(max(40, gs[gs.count * 85 / 100])), wb = 255 / Double(max(40, bs[bs.count * 85 / 100]))
+        var n = 0
+        for i in 0..<(96 * 128) {
+            let r = Double(px[i * 4]) * wr, g = Double(px[i * 4 + 1]) * wg, b = Double(px[i * 4 + 2]) * wb
+            let mx = max(r, g, b), mn = min(r, g, b)
+            if mx > 60 && (mx - mn) / mx > 0.35 { n += 1 }
+        }
+        return Double(n) / Double(96 * 128)
     }
     /// en parlak %10'a göre koyu piksel oranı (kapak ≈ %30-40, yazı sayfası ≤ %19)
     static func darkFraction(_ cg: CGImage) -> Double {
@@ -1744,12 +1764,15 @@ enum PagePipeline {
             // yazı sayfası mı: harf sayısı (sayfa başına ≥ 250) ya da az koyu piksel. Loş / sarı ışıkta gölgede kalan yazı
             // sayfası çok koyu görünür; harf sayısı onu kapaktan ayırır. Önce ışık eşitlenir, sonra kenarlar temizlenir
             // (eşit olmayan ışıkta temizlik büyük kağıt parçalarını "kağıt dışı" sanıp lekeli boyuyordu)
-            let textPage = chars / max(1, cuts.count) >= 250 || darkFraction(flat) < 0.15
+            // renkli sayfa (kapak, fotoğraf): yazı sayfası sayılmaz, ışık eşitlenmez (mavi kapak sarıya dönüyordu)
+            let colorful = saturatedFraction(flat) > 0.12
+            let textPage = !colorful && (chars / max(1, cuts.count) >= 250 || darkFraction(flat) < 0.15)
             // 1. geçiş (ışık eşitlemeden önce): yalnız renk ve desen (parmak, masa, masa örtüsü) — eşitleme bunların rengini
             // kağıda yaklaştırıp tanınmaz yapıyordu. 2. geçiş (sonra): gölge, koyu kenar, çizgiler
             let flatD = textPage ? deskew(flat, &info) : flat
             let pre = textPage ? Straighten.cleanEdges(flatD, &info, textPage: true, firstPass: true) : flat
-            let lit = textPage ? evenLight(pre, &info) : flat
+            // az yazılı ama renksiz sayfa (başlık, ithaf): ışık yine eşitlenir (gölge), büyük harfler silinmesin diye geniş pencereyle
+            let lit = textPage ? evenLight(pre, &info) : (!colorful ? evenLight(flat, &info, cell: 14) : flat)
             outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(lit, &info) : lit, &info, textPage: textPage))
         }
         guard !outs.isEmpty else { return nil }

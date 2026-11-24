@@ -541,7 +541,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                 let fb = PageFlattener.flatten(img, prefix: "canli")
                 DispatchQueue.main.async {
                     guard let fb = fb, !fb.paths.isEmpty else { self.note("bulanık kare: düzleştirilemedi"); return }
-                    let grp: [[String: Any]] = fb.paths.map { ["path": $0, "flat": true] }
+                    let grp: [[String: Any]] = fb.paths.map { ["path": $0, "flat": true, "graphic": fb.graphic] }
                     if let k = self.provisional, k < self.caps.count { self.caps[k] = (grp, fb.words, fb.graphic, fb.chars) }
                     else { self.caps.append((grp, fb.words, fb.graphic, fb.chars)); self.provisional = self.caps.count - 1 }
                     self.note("bulanık kare geçici olarak eklendi (\(self.caps.count). çekim) → yeniden çekilirse değişecek")
@@ -552,7 +552,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             }
             if let fr = fr0, let last = fr.paths.last, let ui = UIImage(contentsOfFile: URL(string: last)!.path) {
                 let ms = (CACurrentMediaTime() - tf) * 1000
-                let grp: [[String: Any]] = fr.paths.map { ["path": $0, "flat": true] }
+                let grp: [[String: Any]] = fr.paths.map { ["path": $0, "flat": true, "graphic": fr.graphic] }
                 DispatchQueue.main.async {
                     // bulanık çekimden sonraki ilk net çekim: aynı sayfanın yeniden çekimidir → geçici sayfanın yerine geçer
                     // (sayfa bu arada çevrildiyse — kelimeler açıkça farklı — geçici sayfa kalır, yeni sayfa eklenir)

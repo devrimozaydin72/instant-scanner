@@ -3424,6 +3424,11 @@ function txContent(P, dbg){
 /* ==TX-END== */
 function processCanvas(src, opts){
   const t0 = Date.now();
+  // iPhone'un kapak / fotoğraf olarak tanıdığı düz sayfa: hiçbir renk / temizlik işlemi yapılmaz, A4'e beyaz kenarla sığdırılır
+  if(opts.flat && opts.graphicPage && !opts.quick && opts.mode !== 'gray' && opts.mode !== 'doc'){
+    const out = toFinalPage(src, {x0:0, y0:0, x1:src.width, y1:src.height}, opts.outW || 1240, opts.outH || 1754, [255, 255, 255]);
+    return {canvas: out, issues: [], metrics: {mode: 'sayfa', lines: 0, ms: Date.now() - t0}, dbg: 'kapak / grafik sayfa (iPhone): renkler olduğu gibi', lineSig: null};
+  }
   // hızlı kontrol (canlı çekimde 'bip' kararı): küçük kaynak, küçük düzlemler, çıktı yok
   const quick = !!opts.quick;
   let qScale = 1;

@@ -507,7 +507,11 @@
   <!-- SONUÇLAR -->
   <section class="card" id="resultCard" hidden>
     <!-- yeni taramaya başlama: en üstte, büyük ve sayfa kaydırılsa da görünür -->
-    <button class="btn" id="btnReset" style="position:sticky; top:calc(env(safe-area-inset-top) + 6px); z-index:20; display:block; width:100%; margin:0 0 14px; padding:16px; font-size:20px; font-weight:800; background:var(--accent2); color:#08301c; border:0; border-radius:14px; box-shadow:0 4px 14px rgba(0,0,0,.35)" data-t>🔁 Baştan çek</button>
+    <!-- en üstte, sabit: PDF (gör / kaydet / paylaş tek pencere) ve yeni tarama -->
+    <div style="position:sticky; top:calc(env(safe-area-inset-top) + 6px); z-index:20; display:flex; gap:10px; margin:0 0 14px">
+      <button class="btn" id="btnPdfTop" style="flex:1.4; padding:16px 10px; font-size:19px; font-weight:800; background:#2f6fed; color:#fff; border:0; border-radius:14px; box-shadow:0 4px 14px rgba(0,0,0,.35)" data-t>📄 PDF'i Gör / Kaydet</button>
+      <button class="btn" id="btnReset" style="flex:1; padding:16px 10px; font-size:19px; font-weight:800; background:var(--accent2); color:#08301c; border:0; border-radius:14px; box-shadow:0 4px 14px rgba(0,0,0,.35)" data-t>🔁 Baştan çek</button>
+    </div>
     <h2><span data-t>2 · Sayfalar</span> <span id="pageCount" style="color:var(--accent2)"></span></h2>
     <p class="sub" data-t>Dokunarak büyüt · 📷 yeniden çek · 🔄 döndür · 🗑 sil.
       <b style="color:var(--danger)">Kırmızı</b> çerçeve: sayfada eksik/sorun var.
@@ -3040,6 +3044,7 @@ async function exportPdf(force){
   }
 }
 $('btnPdf').onclick = () => exportPdf(false);
+$('btnPdfTop').onclick = () => exportPdf(true);
 $('dlgCancel').onclick = () => { $('issueDlg').hidden = true; };
 $('dlgPdf').onclick = () => { $('issueDlg').hidden = true; state.issuesAccepted = true; exportPdf(true); };
 $('dlgRetake').onclick = () => {
@@ -3117,7 +3122,8 @@ async function importNativePages(r){
   if(list.length) hideOverlay();
   for(const l of (r && r.log) || []) diagLog.push(l);
   console.log('[tarama] ' + items.length + ' sayfa işlemeye gidiyor (meşgul: ' + state.busy + ')');
-  if(items.length) runFiles(items);
+  // tarama bitince doğrudan PDF penceresi açılır (PDF'i Gör / Paylaş / Dosyalara Kaydet); sayfa listesi arkada kalır
+  if(items.length){ await runFiles(items); if(state.pages.length && !state.busy) exportPdf(true); }
 }
 // iPhone uygulaması: canlı tarama yerel hızlı tarayıcıyla (Apple belge modeli her karede köşe bulur, sayfa ~0.3 sn durunca
 // çeker; kırpma + kıvrık sayfa düzleştirme UVDoc ile). Apple'ın kendi tarayıcısı sayfa başına 2-3 sn beklettiği için yedek.

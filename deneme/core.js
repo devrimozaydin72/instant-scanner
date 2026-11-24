@@ -1775,11 +1775,21 @@ function fillAlpha(d, w, h, alpha, col){
    değil. Leke çevresi 6 piksel genişletilip yumuşak kenarla boyanır */
 function fingerRemnants(d, w, h, dbg){
   const bx = Math.round(w*0.15), by = Math.round(h*0.15), Q = 4, qw = Math.ceil(w/Q), qh = Math.ceil(h/Q);
+  // harf yakını (6 px içinde koyu piksel) hiç sayılmaz: sarı ışıkta harf kenarlarında renk saçağı oluşuyor, o "pembe" değil
+  const near = new Uint8Array(w*h);
+  { const r0 = 6;
+    const row = new Uint8Array(w*h);
+    for(let y=0;y<h;y++){ let last = -1e9; for(let x=0;x<w;x++){ const j=(y*w+x)*4; if(0.299*d[j]+0.587*d[j+1]+0.114*d[j+2] < 140) last = x; if(x - last <= r0) row[y*w+x] = 1; }
+      last = 1e9; for(let x=w-1;x>=0;x--){ const j=(y*w+x)*4; if(0.299*d[j]+0.587*d[j+1]+0.114*d[j+2] < 140) last = x; if(last - x <= r0) row[y*w+x] = 1; } }
+    for(let x=0;x<w;x++){ let last = -1e9; for(let y=0;y<h;y++){ if(row[y*w+x] && (y === 0 || !row[(y-1)*w+x] || true)) {} }
+      for(let y=0;y<h;y++){ if(row[y*w+x]) last = y; if(y - last <= r0) near[y*w+x] = 1; }
+      last = 1e9; for(let y=h-1;y>=0;y--){ if(row[y*w+x]) last = y; if(last - y <= r0) near[y*w+x] = 1; } } }
   const m = new Uint8Array(qw*qh); let n = 0;
   for(let y=0;y<h;y+=2) for(let x=0;x<w;x+=2){
     if(x >= bx && x < w - bx && y >= by && y < h - by) continue;
+    if(near[y*w + x]) continue;
     const j = (y*w + x)*4, r = d[j], g = d[j+1], b = d[j+2];
-    if(r < 120) continue;
+    if(r < 150) continue;
     // r - g < 90: kırmızı mürekkep (başlık, sayfa no) değil
     if(r - g > 22 && r - g < 90 && r - b > 26 && g - b < 22){ const qi = ((y/Q)|0)*qw + ((x/Q)|0); if(!m[qi]){ m[qi] = 1; n++; } }
   }

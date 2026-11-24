@@ -624,7 +624,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                     let lo = max(0, self.caps.count - 3)
                     for q in lo..<self.caps.count { let o = self.caps[q].words; nlog("tekrar denetimi: çekim \(q + 1) kelime \(o.count)/\(fr.words.count) ortak \(o.intersection(fr.words).count) → \(String(describing: PageText.same(fr.words, o)))") }
                     // kapak ile iç başlık sayfası aynı kelimeleri taşır: biri grafik (kapak) diğeri değilse aynı sayfa değildir
-                    if let k = (lo..<self.caps.count).last(where: { self.caps[$0].graphic == fr.graphic && PageText.same(fr.words, self.caps[$0].words) == true }) {
+                    if let k = (lo..<self.caps.count).last(where: { self.caps[$0].graphic == fr.graphic && PageText.same(fr.words, self.caps[$0].words) == true && fr.words.contains("#renkli") == self.caps[$0].words.contains("#renkli") }) {
                         // daha tam olan kalır: okunan harf + rakam sayısı (kelime sayısı sayfa numarası sütununu görmüyordu)
                         if fr.chars > Int(Double(self.caps[k].chars) * 1.03) || fr.paths.count > self.caps[k].pages.count {
                             self.caps[k] = (grp, fr.words, fr.graphic, fr.chars)
@@ -1880,7 +1880,11 @@ enum PagePipeline {
             outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(lit, &info) : lit, &info, textPage: textPage))
         }
         guard !outs.isEmpty else { return nil }
-        return PipeResult(images: outs, words: words, blurry: blurry, info: info.joined(separator: "; "), graphic: chars / max(1, cuts.count) < 250 && darkFraction(outs[0]) > 0.25, chars: chars)
+        // renkli sayfa işareti: renkli kapak ile aynı yazıyı taşıyan siyah-beyaz iç kapak "tekrar çekim" sanılıp kapağın yerine
+        // geçiyordu (Veriye Dayalı Rekabet). Renkli / renksiz sayfalar birbirinin tekrarı sayılmaz
+        var wds = words
+        if saturatedFraction(outs[0]) > 0.12 { wds.insert("#renkli") }
+        return PipeResult(images: outs, words: wds, blurry: blurry, info: info.joined(separator: "; "), graphic: chars / max(1, cuts.count) < 250 && darkFraction(outs[0]) > 0.25, chars: chars)
     }
 }
 

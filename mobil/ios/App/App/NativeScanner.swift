@@ -211,6 +211,43 @@ struct PageQuad {
         return abs(s) / 2
     }
     var json: [[Double]] { p.map { [Double($0.x), Double($0.y)] } }
+    /// eğik tutuş ölçüsü: karşılıklı kenar uzunluklarının küçük/büyük oranlarının en küçüğü (1 = tam paralel)
+    func keystone(_ size: CGSize) -> CGFloat {
+        func d(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot((a.x - b.x) * size.width, (a.y - b.y) * size.height) }
+        let t = d(p[0], p[1]), b = d(p[3], p[2]), l = d(p[0], p[3]), r = d(p[1], p[2])
+        return min(min(t, b) / max(1, max(t, b)), min(l, r) / max(1, max(l, r)))
+    }
+}
+
+/// canlı karede sayfanın iç kısmında (kenarlardan %12 içeride) ten rengi oranı — YCbCr, sayfanın kendi rengine göre.
+/// Kitabı tutan parmaklar kenarda kalır; yazının üstüne giren el / parmak içerdedir
+func handOnPage(_ pb: CVPixelBuffer, _ q: PageQuad) -> Double {
+    CVPixelBufferLockBaseAddress(pb, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+    guard CVPixelBufferGetPlaneCount(pb) > 1, let yb = CVPixelBufferGetBaseAddressOfPlane(pb, 0), let cb = CVPixelBufferGetBaseAddressOfPlane(pb, 1) else { return 0 }
+    let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0), ybpr = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+    let cw = CVPixelBufferGetWidthOfPlane(pb, 1), ch = CVPixelBufferGetHeightOfPlane(pb, 1), cbpr = CVPixelBufferGetBytesPerRowOfPlane(pb, 1)
+    let Y = yb.assumingMemoryBound(to: UInt8.self), C = cb.assumingMemoryBound(to: UInt8.self)
+    let N = 40, M = 56
+    var ys: [Int] = [], cbs: [Int] = [], crs: [Int] = []
+    for j in 0..<M { for i in 0..<N {
+        let u = 0.12 + 0.76 * (CGFloat(i) + 0.5) / CGFloat(N), v = 0.12 + 0.76 * (CGFloat(j) + 0.5) / CGFloat(M)
+        let top = CGPoint(x: q.p[0].x + (q.p[1].x - q.p[0].x) * u, y: q.p[0].y + (q.p[1].y - q.p[0].y) * u)
+        let bot = CGPoint(x: q.p[3].x + (q.p[2].x - q.p[3].x) * u, y: q.p[3].y + (q.p[2].y - q.p[3].y) * u)
+        let x = top.x + (bot.x - top.x) * v, y = top.y + (bot.y - top.y) * v
+        let px = min(w - 1, max(0, Int(x * CGFloat(w)))), py = min(h - 1, max(0, Int(y * CGFloat(h))))
+        let cx = min(cw - 1, px / 2), cy = min(ch - 1, py / 2)
+        ys.append(Int(Y[py * ybpr + px])); cbs.append(Int(C[cy * cbpr + cx * 2])); crs.append(Int(C[cy * cbpr + cx * 2 + 1]))
+    } }
+    let sc = cbs.sorted(), sr = crs.sorted(), sy = ys.sorted()
+    let cb0 = sc[sc.count / 2], cr0 = sr[sr.count / 2], yp = sy[sy.count * 85 / 100]
+    // renkli sayfa (kapak, fotoğraf): renk zaten her yerde → parmak denetimi yapılmaz
+    var col = 0
+    for k in 0..<ys.count where abs(crs[k] - cr0) + abs(cbs[k] - cb0) > 30 { col += 1 }
+    if Double(col) > Double(ys.count) * 0.2 { return 0 }
+    var n = 0
+    for k in 0..<ys.count where ys[k] > yp * 35 / 100 && crs[k] - cr0 > 12 && crs[k] - cr0 < 34 && cb0 - cbs[k] > 3 && cb0 - cbs[k] < 20 { n += 1 }   // ten: Cr +12…34, Cb −3…20 (ölçüldü: el +21…27/−10…17; turuncu fosforlu kalem +36…45/−24…46)
+    return Double(n) / Double(ys.count)
 }
 
 final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate, AVCapturePhotoCaptureDelegate {
@@ -250,6 +287,9 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
     private var lastTextCheck: CFTimeInterval = 0
     private var newPageAt: CFTimeInterval = 0
     private var outSince: CFTimeInterval = 0
+    private var guardSince: CFTimeInterval = 0      // kılavuz uyarısı ne zamandır gösteriliyor (en çok ~1.5-2 sn bekletilir)
+    private var lastHandCheck: CFTimeInterval = 0
+    private var handFrac: Double = 0
 
     // ana iş parçacığı
     /// her çekim bir grup: tek sayfa ya da açık kitabın iki sayfası + kelimeleri (aynı sayfa ikinci kez çekildi mi)
@@ -479,8 +519,23 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
                 setHint(S("corners", "Dört köşe kadrajda olsun — telefonu biraz uzaklaştır"), warn: true); return
             }
             outSince = 0
+            // çekim kılavuzu: eğik tutuş ve yazının üstündeki parmak çekimden ÖNCE uyarılır (sonradan düzeltmek yerine).
+            // Uyarı en çok 1.5 sn (eğiklik) / 2 sn (parmak) bekletir, sonra yine çekilir — tarama hiç durmaz
+            let ks = q.keystone(bufSize)
+            if now - lastHandCheck > 0.25 { lastHandCheck = now; handFrac = handOnPage(pb, q) }
+            if ks < 0.68 || handFrac > 0.015 {
+                if guardSince == 0 { guardSince = now }
+                let lim = handFrac > 0.015 ? 2.0 : 1.5
+                if now - guardSince < lim {
+                    if handFrac > 0.015 { setHint(S("finger", "✋ Parmağını yazının üstünden çek"), warn: true) }
+                    else { setHint(S("tilt", "📐 Telefonu sayfaya paralel tut"), warn: true) }
+                    return
+                }
+                note(String(format: "kılavuz: uyarıya rağmen çekim (paralellik %.2f, parmak %.3f)", ks, handFrac))
+            }
+            guardSince = 0
             if !stable { setHint(S("hold", "Sabit tut — çekiliyor…")); return }
-            note(String(format: "çekim (yeni sayfa→çekim %.2f sn, model %.0f ms)", newPageAt > 0 ? now - newPageAt : now - t0, visionMs))
+            note(String(format: "çekim (yeni sayfa→çekim %.2f sn, model %.0f ms, paralellik %.2f, parmak %.3f)", newPageAt > 0 ? now - newPageAt : now - t0, visionMs, ks, handFrac))
             shoot(q, pb: pb, now: now)
         }
     }

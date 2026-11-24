@@ -1770,6 +1770,26 @@ function fillAlpha(d, w, h, alpha, col){
   }
 }
 
+/* parmak kalıntısı (düz sayfa, beyazlatmadan sonra): kenar bandında (%15) kalan pembe / ten renkli lekeler beyaza.
+   Kırmızılık (R - G) ve (R - B) belirgin, yeşil-mavi farkı küçük (fosforlu sarı değil); yazı koyuluğundaki pikseller dahil
+   değil. Leke çevresi 6 piksel genişletilip yumuşak kenarla boyanır */
+function fingerRemnants(d, w, h, dbg){
+  const bx = Math.round(w*0.15), by = Math.round(h*0.15), Q = 4, qw = Math.ceil(w/Q), qh = Math.ceil(h/Q);
+  const m = new Uint8Array(qw*qh); let n = 0;
+  for(let y=0;y<h;y+=2) for(let x=0;x<w;x+=2){
+    if(x >= bx && x < w - bx && y >= by && y < h - by) continue;
+    const j = (y*w + x)*4, r = d[j], g = d[j+1], b = d[j+2];
+    if(r < 120) continue;
+    // r - g < 90: kırmızı mürekkep (başlık, sayfa no) değil
+    if(r - g > 22 && r - g < 90 && r - b > 26 && g - b < 22){ const qi = ((y/Q)|0)*qw + ((x/Q)|0); if(!m[qi]){ m[qi] = 1; n++; } }
+  }
+  if(n < 3) return;
+  let g2 = m; for(let k=0;k<2;k++) g2 = dilate1(g2, qw, qh);
+  const a = new Float32Array(qw*qh); for(let i=0;i<qw*qh;i++) a[i] = g2[i];
+  const al = boxBlur(a, qw, qh, 1, 1); for(let i=0;i<qw*qh;i++) al[i] = Math.min(1, al[i]*2);
+  fillAlphaQ(d, w, h, al, qw, qh, Q, [255, 255, 255]);
+  dbg.push(`parmak kalıntısı silindi (${n} hücre)`);
+}
 /* kağıt temizliği (düz yazı sayfası, iyileştirmeden sonra): kağıda yakın açık gri lekeler, doku ve arka sayfadan vuran
    silik yazı beyaza çekilir; yumuşak geçişle (harflerin kenar yumuşaklığı korunur). Renkli piksellere (fosforlu kalem,
    renkli mürekkep) dokunulmaz. Ardından kağıt üzerindeki tek başına küçük noktalar (toz, doku) silinir */
@@ -3818,7 +3838,7 @@ function processCanvas(src, opts){
   else enhanceRGBA(pageData, fw, fhR, opts.mode, mode === 'yazı');
   if(fillQ){
     let m = dilate1(fillQ, qw, qh);
-    if(fingerQ) for(let k=0;k<2;k++) m = dilate1(m, qw, qh);
+    if(fingerQ) for(let k=0;k<3;k++) m = dilate1(m, qw, qh);
     const a = new Float32Array(qw*qh); for(let i=0;i<qw*qh;i++) a[i]=m[i];
     const alpha = boxBlur(a, qw, qh, 1, 1);
     for(let i=0;i<qw*qh;i++) alpha[i] = Math.min(1, alpha[i]*1.5);
@@ -3849,7 +3869,8 @@ function processCanvas(src, opts){
   if(skinT && skinT.n){
     // ten (parmak/el) kağıt rengine boyanır; yazı alanına taşıyorsa sayfa işaretlenir
     const {m, qw: sw, qh: sh, Q: SQ} = skinT;
-    let dm = m; for(let k=0;k<2;k++) dm = dilate1(dm, sw, sh);
+    // parmağın açık renkli kenarı (ten testine girmeyen pembe hale) da örtülsün: 3 hücre genişletme
+    let dm = m; for(let k=0;k<3;k++) dm = dilate1(dm, sw, sh);
     let onText = 0;
     if(content.env){
       for(let qy=0; qy<sh; qy++) for(let qx=0; qx<sw; qx++){
@@ -3859,13 +3880,14 @@ function processCanvas(src, opts){
       }
     }
     const a = new Float32Array(sw*sh); for(let i=0;i<sw*sh;i++) a[i] = dm[i];
-    const alpha = boxBlur(a, sw, sh, 1, 1); for(let i=0;i<sw*sh;i++) alpha[i] = Math.min(1, alpha[i]*1.6);
+    const alpha = boxBlur(a, sw, sh, 1, 1); for(let i=0;i<sw*sh;i++) alpha[i] = Math.min(1, alpha[i]*2.2);
     fillAlphaQ(pageData, fw, fhR, alpha, sw, sh, SQ, opts.mode === 'orig' ? paperColor(pageData, fw, fhR) : [255, 255, 255]);
     dbg.push(`ten silindi ${skinT.n} hücre, yazıda ${onText}`);
     // kenardaki parmak sessizce silinir; yazının belirgin kısmını örtmüşse (altındaki harfler hiç görünmedi) işaretlenir
     if(onText > sw*sh*0.01) issues.push({code:'finger', side:-1});
   }
   if(opts.flat && !graphic && !quick && opts.mode !== 'orig') cleanSideStrips(pageData, fw, fhR, dbg, true);
+  if(opts.flat && !graphic && !quick && opts.mode !== 'orig') fingerRemnants(pageData, fw, fhR, dbg);
   if(opts.flat && !graphic && !quick && opts.mode !== 'orig') paperClean(pageData, fw, fhR, dbg);
   T('iyileştir');
   const pageCanvas = quick ? null : putRGBA(pageData, fw, fh);

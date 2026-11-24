@@ -1777,9 +1777,14 @@ function paperClean(d, w, h, dbg){
   const N = w*h, L = new Float32Array(N);
   for(let i=0;i<N;i++){ const j=i*4; L[i] = 0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]; }
   const lo = 200, hi = 228;            // < lo: dokunulmaz (yazı); > hi: beyaz; arası yumuşak geçiş
+  // harf yakınında (7×7 komşulukta koyu piksel) dokunulmaz: soluk basılmış / ışıksız kalmış yazının açık kenarları silinmez
+  const nearInk = new Uint8Array(N);
+  { const r = 3, rowMin = new Float32Array(N);
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){ let m = 255; for(let k=Math.max(0,x-r); k<=Math.min(w-1,x+r); k++){ const v = L[y*w+k]; if(v < m) m = v; } rowMin[y*w+x] = m; }
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){ let m = 255; for(let k=Math.max(0,y-r); k<=Math.min(h-1,y+r); k++){ const v = rowMin[k*w+x]; if(v < m) m = v; } if(m < 160) nearInk[y*w+x] = 1; } }
   let n = 0;
   for(let i=0;i<N;i++){
-    const l = L[i]; if(l <= lo) continue;
+    const l = L[i]; if(l <= lo || nearInk[i]) continue;
     const j = i*4, mx = Math.max(d[j], d[j+1], d[j+2]), mn = Math.min(d[j], d[j+1], d[j+2]);
     if(mx - mn > 40) continue;          // renkli
     const t = l >= hi ? 1 : (l - lo)/(hi - lo), k = t*t*(3 - 2*t);

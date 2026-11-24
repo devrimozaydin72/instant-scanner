@@ -447,7 +447,7 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
             // açık kitap kadrajı doldurabilir (köşeler dışarıda): sabitse yine de yeni sayfa denetimi yapılır
             // (yoksa son açık kitapta 10 sn'den fazla bekleniyordu)
             guard stable else { setHint(S("next", "✓ Tamam — sonraki sayfa")); return }
-            if now - lastTextCheck < 0.25 { return }
+            if now - lastTextCheck < 0.3 { return }
             lastTextCheck = now
             // aynı sayfa mı: önce sayfadaki kelimeler (Apple metin tanıma, hızlı mod); yazısız sayfada görüntü imzası
             let img = CIImage(cvPixelBuffer: pb)
@@ -646,17 +646,30 @@ final class LiveScannerViewController: UIViewController, AVCaptureVideoDataOutpu
         finishing = true
         doneBtn.isEnabled = false
         doneBtn.alpha = 0.85
-        videoQueue.async { self.stopShooting = true }
+        videoQueue.async { self.stopShooting = true; self.session.stopRunning() }     // kamera hemen kapanır
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        // çekilmekte / düzleştirilmekte olan sayfalar beklenir; düğmede kalan sayı görünür (basıldığı anlaşılsın)
+        // kamera görüntüsünün yerine bekleme ekranı: dönen gösterge + kalan sayfa sayısı (iş bitmedi izlenimi olmasın)
+        let cover = UIView(frame: view.bounds)
+        cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        cover.backgroundColor = UIColor(white: 0.06, alpha: 1)
+        let spin = UIActivityIndicatorView(style: .large); spin.color = .white; spin.startAnimating()
+        let lbl = UILabel(); lbl.textColor = .white; lbl.font = .systemFont(ofSize: 20, weight: .semibold); lbl.textAlignment = .center; lbl.numberOfLines = 0
+        let stack = UIStackView(arrangedSubviews: [spin, lbl]); stack.axis = .vertical; stack.spacing = 18; stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cover.addSubview(stack)
+        NSLayoutConstraint.activate([stack.centerXAnchor.constraint(equalTo: cover.centerXAnchor), stack.centerYAnchor.constraint(equalTo: cover.centerYAnchor), stack.widthAnchor.constraint(lessThanOrEqualTo: cover.widthAnchor, constant: -40)])
+        view.addSubview(cover)
+        // çekilmekte / düzleştirilmekte olan sayfalar beklenir
+        let waitStart = CACurrentMediaTime()
         func waitDone() {
-            if pending > 0 {
-                doneBtn.setTitle(S("finishing", "Hazırlanıyor… {n}").replacingOccurrences(of: "{n}", with: "\(pending)"), for: .disabled)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: waitDone); return
+            // güvenlik: kamera kapanırken yarıda kalan bir çekimin geri bildirimi gelmezse 45 sn sonra yine bitirilir
+            if pending > 0 && CACurrentMediaTime() - waitStart < 45 {
+                lbl.text = S("finishing", "Hazırlanıyor… {n}").replacingOccurrences(of: "{n}", with: "\(pending)") + "\n" + S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(pages.count)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: waitDone); return
             }
+            lbl.text = S("count", "{n} sayfa").replacingOccurrences(of: "{n}", with: "\(pages.count)") + " ✓"
             let total = CACurrentMediaTime() - t0
             log.append(String(format: "yerel tarama: %d sayfa, %.1f sn, belge modeli ort %.0f ms", pages.count, total, visionMs))
-            videoQueue.async { self.session.stopRunning() }
             onFinish?(pages, log)
         }
         waitDone()
@@ -1433,6 +1446,45 @@ enum PagePipeline {
             for x in c.string.lowercased().split(whereSeparator: { !$0.isLetter }) where x.count >= 3 { w.insert(String(x)) } }
         return w
     }
+
+    /// normalize kutu (Vision, sol-alt orijin) içinde ten rengi piksel oranı — kağıt rengine göre dengelenmiş
+    static func skinFraction(_ im: CIImage, in box: CGRect) -> Double {
+        let w = 240, h = max(8, Int(240 * im.extent.height / max(1, im.extent.width)))
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        guard let cg = ci.createCGImage(im, from: im.extent.integral),
+              let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return 0 }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let x0 = Int(box.minX * CGFloat(w)), x1 = Int(box.maxX * CGFloat(w)), y0 = Int((1 - box.maxY) * CGFloat(h)), y1 = Int((1 - box.minY) * CGFloat(h))
+        guard x1 > x0 + 4, y1 > y0 + 4 else { return 0 }
+        var rs: [Int] = [], gs: [Int] = [], bs: [Int] = []
+        for y in y0..<y1 { for x in x0..<x1 { let o = (y * w + x) * 4; rs.append(Int(px[o])); gs.append(Int(px[o + 1])); bs.append(Int(px[o + 2])) } }
+        rs.sort(); gs.sort(); bs.sort()
+        let pr = Double(max(40, rs[rs.count * 85 / 100])), pg = Double(max(40, gs[gs.count * 85 / 100])), pb = Double(max(40, bs[bs.count * 85 / 100]))
+        // ten hücreleri → en büyük bağlı bölge. El / parmak büyük ve yüksek bir lekedir; fosforlu kalem satır boyunca ince
+        // yatay şerittir (yüksekliği bir satır) — o sayılmaz. Doygun (kapak) piksel ten sayılmaz
+        let bw = x1 - x0, bh = y1 - y0
+        var m = [UInt8](repeating: 0, count: bw * bh)
+        for y in y0..<y1 { for x in x0..<x1 {
+            let o = (y * w + x) * 4
+            let r = Double(px[o]) / pr * 255, g = Double(px[o + 1]) / pg * 255, b = Double(px[o + 2]) / pb * 255
+            let sat = (max(r, g, b) - min(r, g, b)) / max(1, max(r, g, b))
+            // ten: kırmızı - yeşil ≥ 30 ve doygunluk 0.22-0.55 (ölçüldü: el 45-66 / 0.35-0.45; sarımsı kağıt / masa 16-26 / 0.14)
+            if r - g > 30 && r - b > 35 && g - b > -6 && r > 90 && sat > 0.22 && sat < 0.55 { m[(y - y0) * bw + (x - x0)] = 1 }
+        } }
+        var best = 0, bestH = 0
+        var seen = [UInt8](repeating: 0, count: bw * bh)
+        for st in 0..<(bw * bh) where m[st] == 1 && seen[st] == 0 {
+            var q = [st]; seen[st] = 1; var k = 0, ymin = st / bw, ymax = st / bw, xmin = st % bw, xmax = st % bw
+            while k < q.count { let i = q[k]; k += 1; let x = i % bw, y = i / bw; ymin = min(ymin, y); ymax = max(ymax, y); xmin = min(xmin, x); xmax = max(xmax, x)
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] { let nx = x + dx, ny = y + dy
+                    if nx >= 0 && ny >= 0 && nx < bw && ny < bh { let j = ny * bw + nx; if m[j] == 1 && seen[j] == 0 { seen[j] = 1; q.append(j) } } } }
+            // ortalama kalınlık = alan / uzun kenar: el kalın bir leke; fosforlu kalem (yatay ya da yan çekimde dikey) ince şerit
+            let thick = Double(q.count) / Double(max(xmax - xmin + 1, ymax - ymin + 1))
+            if thick >= Double(min(bw, bh)) * 0.06 && q.count > best { best = q.count; bestH = ymax - ymin + 1 }
+        }
+        _ = bestH
+        return Double(best) / Double(bw * bh)
+    }
     /// en güçlü kenarların gradyanı (yatay + dikey, 2 piksel aralık, %99.9'luk değer) — 1000 px görüntüde
     static func sharpness(_ im: CIImage) -> Double {
         let w = Int(im.extent.width), h = Int(im.extent.height)
@@ -1551,12 +1603,17 @@ enum PagePipeline {
         // çekilmiş karede ≈ 78; net karelerde en az 108 (telefonla, 4 oturumda ölçüldü). Yazısız / az yazılı sayfada (ithaf) OCR ölçüsü bulanıklığı görmüyordu
         let edgeSharp = sharpness(small)
         // OCR güveni yan duran açık kitapta telefonda düşük çıkabiliyor: kenarlar keskinse (≥ 120) OCR'a göre bulanık sayılmaz
-        let blurry = (chars >= 300 && Double(low) >= Double(chars) * 0.5 && edgeSharp < 120) || edgeSharp < 95
+        // el / parmak yazının üstünde mi: yazı satırlarının kapladığı alanda ten rengi oranı (altındaki yazı kayıp → yeniden çek)
+        var tbox = CGRect.null
+        for r in obs { if (r.topCandidates(1).first?.confidence ?? 0) >= 0.5 { tbox = tbox.union(r.boundingBox) } }
+        let handFrac = tbox.isNull || tbox.width < 0.2 || tbox.height < 0.2 || chars < 250 ? 0 : skinFraction(small, in: tbox)
+        let handOnText = handFrac > 0.012
+        let blurry = (chars >= 300 && Double(low) >= Double(chars) * 0.5 && edgeSharp < 120) || edgeSharp < 95 || handOnText
         var o = CGImagePropertyOrientation.up
         // az yazılı sayfada da (imza / iç kapak): baskın eksen diğerinin 2 katıysa yön kesin sayılır
         let big = max(abs(dx), abs(dy)), small2 = min(abs(dx), abs(dy))
         if big >= 40 || (big >= 12 && big >= small2 * 2) { o = abs(dx) >= abs(dy) ? (dx > 0 ? .up : .down) : (dy > 0 ? .right : .left) }
-        info.append("yön \(o.rawValue) harf \(chars) keskinlik \(Int(edgeSharp))" + (blurry ? " BULANIK" : ""))
+        info.append("yön \(o.rawValue) harf \(chars) keskinlik \(Int(edgeSharp))" + (handOnText ? String(format: " EL YAZIDA %%%.1f", handFrac * 100) : "") + (blurry ? " BULANIK" : ""))
         // bulanık kare düzleştirilmez (zaman kaybı): çağıran yeniden çeker
         if blurry && stopIfBlurry { return PipeResult(images: [], words: words, blurry: true, info: info.joined(separator: "; "), chars: chars) }
 
@@ -1807,8 +1864,10 @@ enum PagePipeline {
             // kağıda yaklaştırıp tanınmaz yapıyordu. 2. geçiş (sonra): gölge, koyu kenar, çizgiler
             let flatD = textPage ? deskew(flat, &info) : flat
             let pre = textPage ? Straighten.cleanEdges(flatD, &info, textPage: true, firstPass: true) : flat
+            if textPage { Straighten.alias(pre, to: flatD) }
             // az yazılı ama renksiz sayfa (başlık, ithaf): ışık yine eşitlenir (gölge), büyük harfler silinmesin diye geniş pencereyle
             let lit = textPage ? evenLight(pre, &info) : (!colorful ? evenLight(flat, &info, cell: 14) : flat)
+            Straighten.alias(lit, to: textPage ? pre : flat)
             outs.append(Straighten.cleanEdges(straighten ? Straighten.apply(lit, &info) : lit, &info, textPage: textPage))
         }
         guard !outs.isEmpty else { return nil }
@@ -1826,8 +1885,21 @@ enum Straighten {
     static var lastSegs: [Seg] = []
 
     /// satırlar: kelime merkezleri (normalize, sol-üst orijin)
-    static var ocrSide: CGFloat = 1600
+    static var ocrSide: CGFloat = 1200
+    /// satır önbelleği: aynı sayfa için metin tanıma bir kez yapılır (ışık eşitleme / boyama sonrası görüntüler aynı geometride)
+    static var cache: (key: ObjectIdentifier, rows: [Row], segs: [Seg])? = nil
+    static var cacheAlias: [ObjectIdentifier] = []
+    static func alias(_ newImg: CGImage, to old: CGImage) {
+        if let c = cache, c.key == ObjectIdentifier(old) || cacheAlias.contains(ObjectIdentifier(old)) { cacheAlias.append(ObjectIdentifier(newImg)) }
+    }
     static func rows(_ cg: CGImage) -> [Row] {
+        let id = ObjectIdentifier(cg)
+        if let c = cache, c.key == id || cacheAlias.contains(id) { lastSegs = c.segs; return c.rows }
+        let r = rowsOCR(cg)
+        cache = (id, r, lastSegs); cacheAlias = []
+        return r
+    }
+    static func rowsOCR(_ cg: CGImage) -> [Row] {
         var im = CIImage(cgImage: cg)
         let k = min(1, ocrSide / max(im.extent.width, im.extent.height))
         im = im.transformed(by: CGAffineTransform(scaleX: k, y: k))
@@ -2251,6 +2323,45 @@ enum Straighten {
                 if !inText && dark && (tmax < 9 || lineV || lineH) { grow[i] = 1; nb += 1 }
             } }
             if nb > 0 { log.append(String(format: "kenar bandı %%%.1f", Double(nb) * 100 / Double(cw * ch))) }
+            // kenara değen leke (parmak ucu, sayfa köşesi, koyu üçgen): görüntü kenarından başlayıp temiz kağıt olmayan
+            // hücreler boyunca yayılan bölge — okunan parçalara ve yazı alanına girmez, en çok kenardan %22 içeri
+            let lim = 22
+            var fm = [UInt8](repeating: 0, count: cw * ch), fq: [Int] = []
+            // ten rengi (kağıda göre dengelenmiş: kırmızı > yeşil > mavi belirgin) — fosforlu sarı (kırmızı ≈ yeşil) değil
+            func skin(_ i: Int) -> Bool {
+                let r = Double(rgb[i * 4]) / pR * 255, g = Double(rgb[i * 4 + 1]) / pG * 255, b = Double(rgb[i * 4 + 2]) / pB * 255
+                return r - g > 14 && r - b > 18 && g - b > -6
+            }
+            func dirty(_ i: Int) -> Bool {
+                let x = i % cw, y = i / cw
+                let fx = (CGFloat(x) + 0.5) / CGFloat(cw), fy = (CGFloat(y) + 0.5) / CGFloat(ch)
+                if pmask[i] == 1 { return false }
+                // parmak / el yazının üstüne de girebilir: ten rengi hücreler yazı alanında da yayılır
+                if skin(i) { return true }
+                if fx >= rawBox.0 && fx <= rawBox.1 && fy >= rawBox.2 && fy <= rawBox.3 { return false }
+                if x > cw * lim / 100 && x < cw - cw * lim / 100 && y > ch * lim / 100 && y < ch - ch * lim / 100 { return false }
+                let r = Double(rgb[i * 4]), g = Double(rgb[i * 4 + 1]), b = Double(rgb[i * 4 + 2]), l = max(1, lum[i])
+                let cdist = ((r / l - pR / pL) * (r / l - pR / pL) + (g / l - pG / pL) * (g / l - pG / pL) + (b / l - pB / pL) * (b / l - pB / pL)).squareRoot()
+                return l < pL * 0.88 || cdist > 0.07
+            }
+            for y in 0..<ch { for x in 0..<cw where x == 0 || y == 0 || x == cw - 1 || y == ch - 1 { let i = y * cw + x; if dirty(i) { fm[i] = 1; fq.append(i) } } }
+            var fk = 0
+            while fk < fq.count {
+                let i = fq[fk]; fk += 1
+                let x = i % cw, y = i / cw
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let nx = x + dx, ny = y + dy
+                    guard nx >= 0, ny >= 0, nx < cw, ny < ch else { continue }
+                    let j = ny * cw + nx
+                    if fm[j] == 0 && dirty(j) { fm[j] = 1; fq.append(j) }
+                }
+            }
+            if fq.count < cw * ch / 4 {
+                for i in fq { let x = i % cw, y = i / cw
+                    for dy in -2...2 { for dx in -2...2 { let nx = x + dx, ny = y + dy
+                        if nx >= 0 && ny >= 0 && nx < cw && ny < ch && pmask[ny * cw + nx] == 0 { grow[ny * cw + nx] = 1 } } } }
+                if !fq.isEmpty { log.append(String(format: "kenara değen leke %%%.1f", Double(fq.count) * 100 / Double(cw * ch))) }
+            }
         }
         // en dış ince kenar (≈ %0.8): sayfa / sırt kenarı çizgisi kalıntısı; yazı alanı hariç
         let edge = 3     // ≈ %1.2 (yumuşatmadan sonra da tam örtsün)

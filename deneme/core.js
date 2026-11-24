@@ -1770,40 +1770,6 @@ function fillAlpha(d, w, h, alpha, col){
   }
 }
 
-/* kağıt temizliği (düz yazı sayfası, iyileştirmeden sonra): kağıda yakın açık gri lekeler, doku ve arka sayfadan vuran
-   silik yazı beyaza çekilir; yumuşak geçişle (harflerin kenar yumuşaklığı korunur). Renkli piksellere (fosforlu kalem,
-   renkli mürekkep) dokunulmaz. Ardından kağıt üzerindeki tek başına küçük noktalar (toz, doku) silinir */
-function paperClean(d, w, h, dbg){
-  const N = w*h, L = new Float32Array(N);
-  for(let i=0;i<N;i++){ const j=i*4; L[i] = 0.299*d[j] + 0.587*d[j+1] + 0.114*d[j+2]; }
-  const lo = 200, hi = 228;            // < lo: dokunulmaz (yazı); > hi: beyaz; arası yumuşak geçiş
-  // harf yakınında (7×7 komşulukta koyu piksel) dokunulmaz: soluk basılmış / ışıksız kalmış yazının açık kenarları silinmez
-  const nearInk = new Uint8Array(N);
-  { const r = 3, rowMin = new Float32Array(N);
-    for(let y=0;y<h;y++) for(let x=0;x<w;x++){ let m = 255; for(let k=Math.max(0,x-r); k<=Math.min(w-1,x+r); k++){ const v = L[y*w+k]; if(v < m) m = v; } rowMin[y*w+x] = m; }
-    for(let y=0;y<h;y++) for(let x=0;x<w;x++){ let m = 255; for(let k=Math.max(0,y-r); k<=Math.min(h-1,y+r); k++){ const v = rowMin[k*w+x]; if(v < m) m = v; } if(m < 160) nearInk[y*w+x] = 1; } }
-  let n = 0;
-  for(let i=0;i<N;i++){
-    const l = L[i]; if(l <= lo || nearInk[i]) continue;
-    const j = i*4, mx = Math.max(d[j], d[j+1], d[j+2]), mn = Math.min(d[j], d[j+1], d[j+2]);
-    if(mx - mn > 40) continue;          // renkli
-    const t = l >= hi ? 1 : (l - lo)/(hi - lo), k = t*t*(3 - 2*t);
-    d[j] = d[j] + (255 - d[j])*k; d[j+1] = d[j+1] + (255 - d[j+1])*k; d[j+2] = d[j+2] + (255 - d[j+2])*k;
-    if(k > 0.5) n++;
-  }
-  // küçük nokta temizliği: 3×3 komşulukta tek / iki koyu piksel ve çevresi tamamen beyaz → beyaz
-  let sp = 0;
-  for(let y=2;y<h-2;y++) for(let x=2;x<w-2;x++){
-    const i = y*w + x; if(d[i*4] > 200) continue;
-    let dark = 0, ring = 0;
-    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) if(d[((y+dy)*w + x+dx)*4] < 200) dark++;
-    if(dark > 2) continue;
-    for(let k=-2;k<=2;k++){ if(d[((y-2)*w + x+k)*4] < 230 || d[((y+2)*w + x+k)*4] < 230 || d[((y+k)*w + x-2)*4] < 230 || d[((y+k)*w + x+2)*4] < 230){ ring = 1; break; } }
-    if(ring) continue;
-    const j = i*4; d[j] = d[j+1] = d[j+2] = 255; sp++;
-  }
-  dbg.push(`kağıt temizliği: ${(n*100/N).toFixed(1)}% beyazlatıldı, ${sp} nokta`);
-}
 /* satır profili keskinliği: yatay satırlar dümdüzse satır başına mürekkep sayısı satır ↔ satır arası keskin değişir.
    Eğik / dalgalı yazıda profil bulanıklaşır. (komşu satır farklarının karesi / toplam mürekkep²) */
 function rowProfileScore(c){ return textTilt(c).sharp; }
@@ -3866,7 +3832,6 @@ function processCanvas(src, opts){
     if(onText > sw*sh*0.01) issues.push({code:'finger', side:-1});
   }
   if(opts.flat && !graphic && !quick && opts.mode !== 'orig') cleanSideStrips(pageData, fw, fhR, dbg, true);
-  if(opts.flat && !graphic && !quick && opts.mode !== 'orig') paperClean(pageData, fw, fhR, dbg);
   T('iyileştir');
   const pageCanvas = quick ? null : putRGBA(pageData, fw, fh);
   let fbox = {x0:0,y0:0,x1:fw,y1:fhR};

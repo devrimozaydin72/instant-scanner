@@ -1065,8 +1065,7 @@ const proc = {
 proc.init();
 
 function procOpts(p){
-  // iPhone'da düzleştirilmiş sayfa zaten yüksek çözünürlüklü (2200 px): PDF'e de 200 dpi (1654×2339) konur — harfler daha keskin
-  const [outW, outH] = p.flat && String(settings.quality) !== '0.7' ? OUT_SIZE['0.92'] : (OUT_SIZE[String(settings.quality)] || OUT_SIZE['0.85']);
+  const [outW, outH] = OUT_SIZE[String(settings.quality)] || OUT_SIZE['0.85'];
   // pageHint: çekim anında ekranda gösterilen (eğitilmiş modelle bulunan) sayfa dörtgeni — yazısız sayfa (kapak) kırpması ona uyar
   return {mode:p.mode || settings.mode, smartCrop: p.flat ? false : settings.smartCrop, flat: !!p.flat, quality:settings.quality, outW, outH, rot:p.rot||0, pageHint: p.hint || undefined};
 }

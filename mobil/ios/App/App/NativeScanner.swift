@@ -1731,6 +1731,27 @@ enum PagePipeline {
             info.append("açık kitap bulunamadı → yalnız köşelerdeki sayfa")
         }
 
+        // gerçek en/boy oranı (Zhang & He 2004): köşelerin perspektif görüntüsünden, kameranın odak uzaklığı bilinerek.
+        // Perspektif kırpması eğik çekimde sayfayı yatayda %10-15 sıkıştırıyordu (harfler dar görünüyordu)
+        var trueAspect: Double? = nil
+        let unionUsed2 = info.contains { $0.hasPrefix("köşeler tek sayfayı buldu") } && cuts.count == 2
+        if let q = quad, !unionUsed2 {
+            let exif = img0.properties["{Exif}"] as? [String: Any]
+            let f35 = (exif?["FocalLenIn35mmFilm"] as? Double) ?? 26
+            let f = f35 * Double((UW * UW + UH * UH).squareRoot()) / 43.27
+            func v(_ p: CGPoint) -> (Double, Double, Double) { (Double(p.x * UW - UW / 2), Double(p.y * UH - UH / 2), 1) }
+            func cross(_ a: (Double, Double, Double), _ b: (Double, Double, Double)) -> (Double, Double, Double) { (a.1 * b.2 - a.2 * b.1, a.2 * b.0 - a.0 * b.2, a.0 * b.1 - a.1 * b.0) }
+            func dot(_ a: (Double, Double, Double), _ b: (Double, Double, Double)) -> Double { a.0 * b.0 + a.1 * b.1 + a.2 * b.2 }
+            let m1 = v(q[0]), m2 = v(q[1]), m3 = v(q[3]), m4 = v(q[2])
+            let d2 = dot(cross(m2, m4), m3), d3 = dot(cross(m3, m4), m2)
+            if abs(d2) > 1e-9 && abs(d3) > 1e-9 {
+                let k2 = dot(cross(m1, m4), m3) / d2, k3 = dot(cross(m1, m4), m2) / d3
+                let n2 = (k2 * m2.0 - m1.0, k2 * m2.1 - m1.1, k2 * m2.2 - m1.2), n3 = (k3 * m3.0 - m1.0, k3 * m3.1 - m1.1, k3 * m3.2 - m1.2)
+                let a2 = (n2.0 * n2.0 + n2.1 * n2.1) / (f * f) + n2.2 * n2.2, b2 = (n3.0 * n3.0 + n3.1 * n3.1) / (f * f) + n3.2 * n3.2
+                if a2 > 0 && b2 > 0 { trueAspect = (a2 / b2).squareRoot() }
+            }
+        }
+
         // 4) her sayfa ayrı düzleştirilir
         var outs: [CGImage] = []
         for c in cuts {
@@ -1746,6 +1767,21 @@ enum PagePipeline {
             }
             page = page.transformed(by: CGAffineTransform(translationX: -page.extent.minX, y: -page.extent.minY))
             guard page.extent.width > 100, page.extent.height > 100 else { continue }
+            if let ta = trueAspect {
+                // ölçülen oran: perspektif kırpmasında sayfanın kendisi; açık kitapta tüm kırpma alanı (iki yarı aynı düzeltmeyi alır)
+                var measured = Double(page.extent.width / page.extent.height)
+                if persp == nil, let q = quad {
+                    // açık kitap (eksene paralel kırpma): köşelerin görüntüdeki ortalama kenar oranı
+                    func d(_ a: CGPoint, _ b: CGPoint) -> Double { Double(hypot((a.x - b.x) * UW, (a.y - b.y) * UH)) }
+                    measured = (d(q[0], q[1]) + d(q[3], q[2])) / (d(q[0], q[3]) + d(q[1], q[2]))
+                }
+                let fix = ta / measured
+                if abs(fix - 1) > 0.03 && fix > 0.8 && fix < 1.35 {
+                    page = page.transformed(by: CGAffineTransform(scaleX: CGFloat(fix), y: 1))
+                    page = page.transformed(by: CGAffineTransform(translationX: -page.extent.minX, y: -page.extent.minY))
+                    if c == cuts[0] { info.append(String(format: "en/boy düzeltildi ×%.2f (gerçek %.3f)", fix, ta)) }
+                }
+            }
             // açık kitabın yarısı: kesilen (sırt) tarafa koyu bir şerit eklenir. Böylece UVDoc sayfa kenarını kesim çizgisi
             // sayar; yoksa sırt gölgesini kenar sanıp sırta yakın içeriği (içindekilerdeki sayfa numaraları) kesiyordu
             if cuts.count == 2 && padSpine {
